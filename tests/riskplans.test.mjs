@@ -138,3 +138,33 @@ test('days to ruin follows the tiers down as losses pile up', async () => {
   assert.equal(daysToRuin([], {}, DEFAULT_RISK, null), null);
   void today;
 });
+
+test('risk profiles: accounts can follow a saved profile, and edits to it reach every account using it', async () => {
+  const { riskSourceOf, profilesOf, matchingProfiles } = await import('../src/lib/playbook.js');
+  const small = { ...DEFAULT_RISK, tiers: DEFAULT_RISK.tiers.map((t) => ({ ...t, dailyLL: t.dailyLL / 4 })) };
+  const settings = {
+    risk: { damageDD: 3000 },
+    riskProfiles: [{ id: 'p2k', name: '$2k DD', maxDD: 2000, plan: small }, { id: 'p5k', name: '$5k DD', maxDD: 5000, plan: { ...DEFAULT_RISK, damageDD: 2500 } }, { id: 'broken' }],
+    riskByAccount: { A: { profile: 'p2k' }, B: { profile: 'p2k' }, C: { profile: 'gone' }, D: { ...DEFAULT_RISK, damageDD: 900 } },
+  };
+  const s = st(settings);
+  assert.equal(profilesOf(s).length, 2); // the broken entry is ignored
+  assert.equal(riskOf(s, 'A').tiers[2].dailyLL, 125);
+  assert.equal(riskOf(s, 'B').tiers[2].dailyLL, 125);
+  assert.equal(riskSourceOf(s, 'A').kind, 'profile');
+  assert.equal(riskSourceOf(s, 'A').profile.name, '$2k DD');
+  assert.equal(riskSourceOf(s, 'C').kind, 'default'); // its profile was deleted
+  assert.equal(riskOf(s, 'C').damageDD, 3000);
+  assert.equal(riskSourceOf(s, 'D').kind, 'own');
+  assert.equal(riskOf(s, 'D').damageDD, 900);
+  assert.equal(riskSourceOf(s, 'E').kind, 'default');
+  assert.equal(riskSourceOf(s, 'all').kind, 'default');
+  // editing the profile changes both accounts that follow it
+  const edited = st({ ...settings, riskProfiles: [{ ...settings.riskProfiles[0], plan: { ...small, maxLossStreak: 3 } }] });
+  assert.equal(riskOf(edited, 'A').maxLossStreak, 3);
+  assert.equal(riskOf(edited, 'B').maxLossStreak, 3);
+  // suggestions by drawdown size
+  assert.deepEqual(matchingProfiles(profilesOf(s), { maxDrawdown: 2000 }).map((p) => p.id), ['p2k']);
+  assert.deepEqual(matchingProfiles(profilesOf(s), { maxDrawdown: 3000 }), []);
+  assert.deepEqual(matchingProfiles(profilesOf(s), {}), []);
+});

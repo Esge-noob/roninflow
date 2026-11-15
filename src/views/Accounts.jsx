@@ -5,10 +5,11 @@ import { Seg, Popover, Modal, ModalHead, Money, Private, TrendBadge, Confirm, us
 import { PnlChart } from '../components/Charts';
 import ImportModal from '../components/ImportModal';
 import { useAtasSync } from '../components/AtasSync';
-import { summarize, equityCurve, fmtDate, fmtShortDate, fmtMoney, fmtCompact, groupByDay, fmtTime12, todayKey, inRange } from '../lib/stats';
+import { summarize, equityCurve, fmtDate, fmtShortDate, fmtMoney, fmtCompact, groupByDay, fmtTime12, todayKey, inRange, money0 } from '../lib/stats';
 import { accountCost, accountBought, portfolioStats } from '../lib/accountStats';
 import { accountBalanceInfo } from '../lib/balance';
 import { accountDrawdown, DD_TYPES, ddTypeOf, ddTypeLabel, floorSeries } from '../lib/accountDD';
+import { profilesOf, riskSourceOf, matchingProfiles } from '../lib/playbook';
 
 const AcctLogo = ({ name = '' }) => <div className="acct-logo">{(name.match(/[A-Za-z]/) || ['A'])[0].toUpperCase()}</div>;
 const STATUSES = ['Active', 'Breached', 'Passed', 'Funded'];
@@ -76,12 +77,24 @@ function CostModal({ account, onClose }) {
 }
 
 function AccountForm({ open, onClose, account }) {
-  const { addAccount, updateAccount, state } = useStore();
+  const { addAccount, updateAccount, state, setSetting } = useStore();
   const toast = useToast();
   const init = () => ({ cost: '', fees: '', purchasedAt: account?.createdAt || todayKey(), ...(account || { name: '', phase: 'Challenge', market: 'Futures', plan: 'Classic', status: 'Active', initial: 50000, profitTarget: 3000, maxDrawdown: 2000, dailyLossLimit: 1000, broker: 'ATAS', autoSync: true }) });
   const [f, setF] = useState(init);
+  // risk rules: 'default', 'profile:<id>' or 'own' (keep the account's own rules). A new account gets the profile
+  // made for its max drawdown, until you pick something yourself.
+  const profiles = profilesOf(state);
+  const riskInit = () => { if (!account) return null; const src = riskSourceOf(state, account.id); return src.kind === 'profile' ? `profile:${src.profile.id}` : src.kind; };
+  const [riskSel, setRiskSel] = useState(riskInit);
   const [was, setWas] = useState(open);
-  if (was !== open) { setWas(open); if (open) setF(init()); }
+  if (was !== open) { setWas(open); if (open) { setF(init()); setRiskSel(riskInit()); } }
+  const matches = matchingProfiles(profiles, f);
+  const risk = riskSel ?? (matches[0] ? `profile:${matches[0].id}` : 'default');
+  const saveRisk = (id) => {
+    const cur = account ? (() => { const src = riskSourceOf(state, account.id); return src.kind === 'profile' ? `profile:${src.profile.id}` : src.kind; })() : 'default';
+    if (risk === cur || risk === 'own') return;
+    setSetting('riskByAccount', (m) => { const next = { ...(m || {}) }; if (risk === 'default') delete next[id]; else next[id] = { profile: risk.slice(8) }; return Object.keys(next).length ? next : null; });
+  };
   const set = (k, num) => (e) => setF((x) => ({ ...x, [k]: num ? Number(e.target.value) : e.target.value }));
   const dupe = !account && state.accounts.some((a) => a.id === f.name.trim());
   return (
@@ -107,13 +120,21 @@ function AccountForm({ open, onClose, account }) {
           </label>
         )}
         <div className="field"><label className="label">Daily loss limit (USD)</label><input className="input" type="number" value={f.dailyLossLimit} onChange={set('dailyLossLimit', true)} /></div>
+        <div className="field full"><label className="label">Risk rules</label>
+          <select className="select" value={risk} onChange={(e) => setRiskSel(e.target.value)}>
+            <option value="default">Default plan</option>
+            {account && riskInit() === 'own' && <option value="own">Its own rules</option>}
+            {profiles.map((p) => <option key={p.id} value={`profile:${p.id}`}>Profile: {p.name}{matches.some((m) => m.id === p.id) ? ' (matches max drawdown)' : ''}</option>)}
+          </select>
+          <span className="muted" style={{ fontSize: 12, marginTop: 4 }}>{profiles.length ? (riskSel == null && matches[0] ? `Picked “${matches[0].name}” for a ${money0(f.maxDrawdown)} max drawdown.` : 'Save profiles in Risk Management → Risk rules.') : 'Save risk profiles in Risk Management → Risk rules to pick one here.'}</span>
+        </div>
         <div className="field full"><label className="label">Broker / platform</label><input className="input" value={f.broker} onChange={set('broker')} /></div>
         <div className="field full form-sep">Cost <span className="muted">— used for return on investment with your payouts</span></div>
         <CostFields f={f} setF={setF} />
       </div>
       <div className="modal-foot">
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn white" disabled={!f.name.trim() || dupe} onClick={() => { const g = cleanCost(f); if (account) updateAccount(account.id, g); else addAccount({ ...g, name: f.name.trim(), id: f.name.trim() }); toast(account ? 'Account updated' : 'Account added'); onClose(); }}>{account ? 'Save' : 'Add account'}</button>
+        <button className="btn white" disabled={!f.name.trim() || dupe} onClick={() => { const g = cleanCost(f); const id = account ? account.id : f.name.trim(); if (account) updateAccount(account.id, g); else addAccount({ ...g, name: f.name.trim(), id }); saveRisk(id); toast(account ? 'Account updated' : 'Account added'); onClose(); }}>{account ? 'Save' : 'Add account'}</button>
       </div>
     </Modal>
   );

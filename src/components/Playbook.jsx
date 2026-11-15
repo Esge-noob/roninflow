@@ -4,7 +4,7 @@ import { balanceGap } from '../lib/balance';
 import { useStore, useAccountTrades, navigate } from '../store/store';
 import { Modal, ModalHead, Stars, useToast, Private, Switch, Seg, Popover } from './ui';
 import { accountDrawdown, ddTypeLabel } from '../lib/accountDD';
-import { DEFAULT_PLAYBOOK, playbookOf, riskOf, defaultRiskOf, suggestRisk, normalIndex, newTier, tierDD, withTierDD, regimeStats, blockerStats, riskState, lastTomorrowNote, tradeBlockers, daysToRuin } from '../lib/playbook';
+import { DEFAULT_PLAYBOOK, playbookOf, riskOf, defaultRiskOf, suggestRisk, normalIndex, newTier, tierDD, withTierDD, profilesOf, matchingProfiles, DEFAULT_RISK, regimeStats, blockerStats, riskState, lastTomorrowNote, tradeBlockers, daysToRuin } from '../lib/playbook';
 import { fmtDate, fmtMoney, fmtTime12, pfText, todayKey, uid } from '../lib/stats';
 
 export const MOODS = ['😫', '😕', '😐', '🙂', '😄'];
@@ -481,7 +481,8 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
   const toast = useToast();
   const [pb, setPb] = useState(null);
   const [plans, setPlans] = useState(null); // { default: plan, own: { [accountId]: plan | null } }
-  const [who, setWho] = useState('default'); // which plan the risk tab is editing
+  const [who, setWho] = useState('default'); // which plan the risk tab is editing: 'default', 'profile:<id>' or an account id
+  const [saveAs, setSaveAs] = useState(null); // { name, maxDD } while naming a new profile
   const [tab, setTab] = useState(initialTab);
   const [was, setWas] = useState(open);
   if (was !== open) {
@@ -489,20 +490,45 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
     if (open) {
       setTab(initialTab);
       setPb(JSON.parse(JSON.stringify(playbookOf(state))));
-      const own = Object.fromEntries(Object.entries(state.settings.riskByAccount || {}).map(([id, v]) => [id, v ? withTierDD(riskOf(state, id)) : v]));
-      setPlans({ default: withTierDD(JSON.parse(JSON.stringify(defaultRiskOf(state)))), own: JSON.parse(JSON.stringify(own)) });
+      const profiles = profilesOf(state).map((p) => ({ ...p, plan: withTierDD({ ...DEFAULT_RISK, ...p.plan }) }));
+      // an account's entry: { profile: id } when it follows a profile, its own plan, or nothing (default plan)
+      const own = Object.fromEntries(Object.entries(state.settings.riskByAccount || {}).map(([id, v]) => [id, !v ? v : v.profile ? (profiles.some((p) => p.id === v.profile) ? { profile: v.profile } : null) : withTierDD(riskOf(state, id))]));
+      setPlans(JSON.parse(JSON.stringify({ default: withTierDD(defaultRiskOf(state)), own, profiles })));
+      setSaveAs(null);
       setWho(state.settings.account !== 'all' && state.accounts.some((a) => a.id === state.settings.account) ? state.settings.account : 'default');
     }
   }
   if (!open || !pb) return null;
-  const rk = who === 'default' ? plans.default : plans.own[who] || null;
-  const setRk = (f) => setPlans((p) => {
-    const cur = who === 'default' ? p.default : p.own[who];
-    const next = typeof f === 'function' ? f(cur) : f;
-    return who === 'default' ? { ...p, default: next } : { ...p, own: { ...p.own, [who]: next } };
-  });
-  const usesDefault = state.accounts.filter((a) => !plans.own[a.id]).length;
+  const profId = who.startsWith('profile:') ? who.slice(8) : null;
+  const whoProf = profId ? plans.profiles.find((p) => p.id === profId) : null;
   const whoAcct = state.accounts.find((a) => a.id === who);
+  const acctEntry = whoAcct ? plans.own[who] || null : null;
+  const linked = acctEntry?.profile ? plans.profiles.find((p) => p.id === acctEntry.profile) : null; // the account follows this profile
+  const rk = who === 'default' ? plans.default : whoProf ? whoProf.plan : acctEntry && !acctEntry.profile ? acctEntry : null;
+  const setRk = (f) => setPlans((p) => {
+    const cur = who === 'default' ? p.default : profId ? p.profiles.find((x) => x.id === profId)?.plan : p.own[who];
+    const next = typeof f === 'function' ? f(cur) : f;
+    if (who === 'default') return { ...p, default: next };
+    if (profId) return { ...p, profiles: p.profiles.map((x) => (x.id === profId ? { ...x, plan: next } : x)) };
+    return { ...p, own: { ...p.own, [who]: next } };
+  });
+  const setOwn = (v) => setPlans((p) => ({ ...p, own: { ...p.own, [who]: v } }));
+  const usersOf = (pid) => state.accounts.filter((a) => plans.own[a.id]?.profile === pid);
+  const usesDefault = state.accounts.filter((a) => !plans.own[a.id]).length;
+  const acctLabel = (a) => { const e = plans.own[a.id]; return !e ? 'uses default' : e.profile ? `profile: ${plans.profiles.find((x) => x.id === e.profile)?.name}` : 'own rules'; };
+  const matches = whoAcct ? matchingProfiles(plans.profiles, whoAcct) : [];
+  const startSaveAs = () => {
+    const dd = Number(whoAcct?.maxDrawdown) || null;
+    setSaveAs({ name: dd ? `${money0(dd)} max DD` : whoProf ? `${whoProf.name} copy` : 'My risk profile', maxDD: dd ?? whoProf?.maxDD ?? '' });
+  };
+  const commitSaveAs = () => {
+    const id = `rp${Date.now().toString(36)}`;
+    const prof = { id, name: saveAs.name.trim() || 'Risk profile', maxDD: Number(saveAs.maxDD) || null, plan: JSON.parse(JSON.stringify(rk)) };
+    // an account's own rules become the profile, and the account follows it from now on
+    setPlans((p) => ({ ...p, profiles: [...p.profiles, prof], own: whoAcct ? { ...p.own, [who]: { profile: id } } : p.own }));
+    setSaveAs(null);
+    toast(`Saved profile “${prof.name}”`);
+  };
   const upd = (k, i, f, v) => setPb((p) => ({ ...p, [k]: p[k].map((x, j) => (j === i ? { ...x, [f]: v } : x)) }));
   const del = (k, i) => setPb((p) => ({ ...p, [k]: p[k].filter((_, j) => j !== i) }));
   const TABS = [['pre', 'Pre-market routine'], ['post', 'Post-market routine'], ['regimes', 'Market conditions'], ['blockers', 'Edge blockers'], ['risk', 'Risk tiers']];
@@ -572,29 +598,87 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
           <>
             <div className="risk-who">
               <label className="label" htmlFor="risk-who">Rules for</label>
-              <select id="risk-who" className="select" value={who} onChange={(e) => setWho(e.target.value)}>
+              <select id="risk-who" className="select" value={who} onChange={(e) => { setWho(e.target.value); setSaveAs(null); }}>
                 <option value="default">Default plan{state.accounts.length ? ` — used by ${usesDefault} account${usesDefault === 1 ? '' : 's'}` : ''}</option>
-                {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}{a.status && a.status !== 'Active' ? ` (${a.status})` : ''} — {plans.own[a.id] ? 'own rules' : 'uses default'}</option>)}
+                {plans.profiles.length > 0 && (
+                  <optgroup label="Profiles">
+                    {plans.profiles.map((p) => { const n = usersOf(p.id).length; return <option key={p.id} value={`profile:${p.id}`}>{p.name} — {n ? `used by ${n} account${n === 1 ? '' : 's'}` : 'not in use'}</option>; })}
+                  </optgroup>
+                )}
+                {state.accounts.length > 0 && (
+                  <optgroup label="Accounts">
+                    {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}{a.status && a.status !== 'Active' ? ` (${a.status})` : ''} — {acctLabel(a)}</option>)}
+                  </optgroup>
+                )}
               </select>
-              {who !== 'default' && rk && <button className="btn sm" onClick={() => setPlans((p) => ({ ...p, own: { ...p.own, [who]: null } }))}>Use the default plan instead</button>}
+              {whoAcct && acctEntry && <button className="btn sm" onClick={() => setOwn(null)}>Use the default plan instead</button>}
             </div>
-            {who === 'default' && state.accounts.length > 0 && <div className="muted" style={{ fontSize: 12.5 }}>Every account follows these rules unless you give it its own. Pick an account above to set rules just for it.</div>}
-            {who !== 'default' && !rk && (
+
+            {who === 'default' && state.accounts.length > 0 && <div className="muted" style={{ fontSize: 12.5 }}>Every account follows these rules unless you give it a profile or its own rules. Pick a profile or an account above to set rules for it.</div>}
+
+            {whoProf && (
+              <div className="risk-prof-head">
+                <label className="field"><span className="label">Profile name</span><input className="input" value={whoProf.name} onChange={(e) => setPlans((p) => ({ ...p, profiles: p.profiles.map((x) => (x.id === profId ? { ...x, name: e.target.value } : x)) }))} /></label>
+                <label className="field"><span className="label">For accounts with max drawdown (USD)</span><input className="input" type="number" placeholder="any" value={whoProf.maxDD ?? ''} onChange={(e) => setPlans((p) => ({ ...p, profiles: p.profiles.map((x) => (x.id === profId ? { ...x, maxDD: e.target.value === '' ? null : Number(e.target.value) } : x)) }))} /></label>
+                <button className="btn sm danger-ghost" onClick={() => { const n = usersOf(profId).length; setPlans((p) => ({ ...p, profiles: p.profiles.filter((x) => x.id !== profId), own: Object.fromEntries(Object.entries(p.own).map(([k, v]) => [k, v?.profile === profId ? null : v])) })); setWho('default'); toast(n ? `Profile deleted — ${n} account${n === 1 ? '' : 's'} back on the default plan` : 'Profile deleted'); }}><Trash size={13} /> Delete profile</button>
+                <div className="muted full" style={{ fontSize: 12.5 }}>{usersOf(profId).length ? <>Changes here apply to every account that follows this profile: {usersOf(profId).map((a) => a.name || a.id).join(', ')}.</> : 'No account follows this profile yet — pick an account above and choose it.'}</div>
+              </div>
+            )}
+
+            {whoAcct && linked && (
               <div className="risk-own-empty">
-                <div><b>{whoAcct?.name || who}</b> follows the default plan.</div>
-                <div className="muted" style={{ fontSize: 12.5 }}>Give it its own rules to set different tiers, loss limits and drawdown thresholds for this account only.{whoAcct?.maxDrawdown ? <> Its firm limits: max drawdown {money0(whoAcct.maxDrawdown)}{whoAcct.dailyLossLimit ? <>, daily loss limit {money0(whoAcct.dailyLossLimit)}</> : null}.</> : null}</div>
+                <div><b>{whoAcct.name || who}</b> follows the profile <b>“{linked.name}”</b>.</div>
+                <div className="muted" style={{ fontSize: 12.5 }}>Edits to the profile apply to this account{usersOf(linked.id).length > 1 ? ` and ${usersOf(linked.id).length - 1} other${usersOf(linked.id).length > 2 ? 's' : ''}` : ''}.</div>
                 <div className="row gap8 wrap" style={{ marginTop: 6 }}>
-                  {Number(whoAcct?.maxDrawdown) > 0 && <button className="btn white sm" onClick={() => setRk(suggestRisk(plans.default, whoAcct))} title="The default plan's tiers and thresholds, scaled to this account's max drawdown and capped at its daily loss limit">Start from this account’s limits</button>}
-                  <button className={`btn sm ${Number(whoAcct?.maxDrawdown) > 0 ? '' : 'white'}`} onClick={() => setRk(JSON.parse(JSON.stringify(plans.default)))}>Copy the default plan</button>
+                  <button className="btn white sm" onClick={() => setWho(`profile:${linked.id}`)}>Edit the profile</button>
+                  <button className="btn sm" onClick={() => setOwn(JSON.parse(JSON.stringify(linked.plan)))} title="A copy of the profile's rules that only this account uses">Give it its own copy</button>
+                  <ProfilePicker profiles={plans.profiles} matches={matches} value={linked.id} onPick={(id) => setOwn({ profile: id })} label="Switch profile" />
                 </div>
               </div>
             )}
+
+            {whoAcct && !acctEntry && (
+              <div className="risk-own-empty">
+                <div><b>{whoAcct.name || who}</b> follows the default plan.</div>
+                <div className="muted" style={{ fontSize: 12.5 }}>Give it a profile, or its own rules, to set different tiers, loss limits and drawdown thresholds for it.{whoAcct.maxDrawdown ? <> Its firm limits: max drawdown {money0(whoAcct.maxDrawdown)}{whoAcct.dailyLossLimit ? <>, daily loss limit {money0(whoAcct.dailyLossLimit)}</> : null}.</> : null}</div>
+                {matches.length > 0 && (
+                  <div className="risk-match">
+                    <span>Profile for {money0(whoAcct.maxDrawdown)} max drawdown:</span>
+                    {matches.map((m) => <button key={m.id} className="btn white sm" onClick={() => setOwn({ profile: m.id })}>Use “{m.name}”</button>)}
+                  </div>
+                )}
+                <div className="row gap8 wrap" style={{ marginTop: 6 }}>
+                  {plans.profiles.length > 0 && <ProfilePicker profiles={plans.profiles} matches={matches} onPick={(id) => setOwn({ profile: id })} label="Use a profile" />}
+                  {Number(whoAcct.maxDrawdown) > 0 && <button className={`btn sm ${matches.length || plans.profiles.length ? '' : 'white'}`} onClick={() => setRk(suggestRisk(plans.default, whoAcct))} title="The default plan's tiers and thresholds, scaled to this account's max drawdown and capped at its daily loss limit">Start from this account’s limits</button>}
+                  <button className="btn sm" onClick={() => setRk(JSON.parse(JSON.stringify(plans.default)))}>Copy the default plan</button>
+                </div>
+              </div>
+            )}
+
+            {rk && (
+              <div className="risk-saveas">
+                {saveAs ? (
+                  <>
+                    <input className="input" autoFocus value={saveAs.name} onChange={(e) => setSaveAs({ ...saveAs, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') commitSaveAs(); if (e.key === 'Escape') setSaveAs(null); }} aria-label="Profile name" placeholder="Profile name" />
+                    <input className="input" type="number" value={saveAs.maxDD} onChange={(e) => setSaveAs({ ...saveAs, maxDD: e.target.value })} aria-label="For accounts with max drawdown" placeholder="Max DD (any)" title="Accounts with this max drawdown get this profile suggested" style={{ width: 130 }} />
+                    <button className="btn white sm" onClick={commitSaveAs}><Check size={13} /> Save profile</button>
+                    <button className="btn sm" onClick={() => setSaveAs(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <span className="muted" style={{ fontSize: 12.5 }}>{whoProf ? 'Want a variation?' : 'Use these rules for other accounts of this size?'}</span>
+                    <button className="btn sm" onClick={startSaveAs}><Plus size={13} /> {whoProf ? 'Save as a new profile' : 'Save as profile'}</button>
+                  </>
+                )}
+              </div>
+            )}
+            {saveAs && whoAcct && <div className="muted" style={{ fontSize: 12 }}>{whoAcct.name || who} will follow the new profile.</div>}
             {rk && <RiskEditor rk={rk} setRk={setRk} account={whoAcct} />}
           </>
         )}
       </div>
       <div className="modal-foot">
-        <button className="btn" onClick={() => { setSetting('playbook', null); setSetting('risk', null); setSetting('riskByAccount', null); toast('Playbook reset to defaults'); onClose(); }}>Reset to defaults</button>
+        <button className="btn" onClick={() => { setSetting('playbook', null); setSetting('risk', null); setSetting('riskByAccount', null); toast('Playbook reset to defaults — risk profiles kept'); onClose(); }}>Reset to defaults</button>
         <div className="grow" />
         <button className="btn" onClick={onClose}>Cancel</button>
         <button className="btn white" onClick={() => {
@@ -602,12 +686,30 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
           // damageDD / riskOffDD mirror the first two tiers' thresholds, for older versions of the app
           const legacy = (pl) => { const d = tierDD(pl); return { ...pl, damageDD: d[0] ?? pl.damageDD, riskOffDD: d[1] ?? pl.riskOffDD }; };
           setSetting('risk', legacy(plans.default));
-          const own = Object.fromEntries(Object.entries(plans.own).filter(([id, v]) => v && state.accounts.some((a) => a.id === id)).map(([id, v]) => [id, legacy(v)]));
+          setSetting('riskProfiles', plans.profiles.length ? plans.profiles.map((p) => ({ ...p, plan: legacy(p.plan) })) : null);
+          const own = Object.fromEntries(Object.entries(plans.own).filter(([id, v]) => v && state.accounts.some((a) => a.id === id) && (!v.profile || plans.profiles.some((p) => p.id === v.profile))).map(([id, v]) => [id, v.profile ? { profile: v.profile } : legacy(v)]));
           setSetting('riskByAccount', Object.keys(own).length ? own : null);
           toast('Playbook saved'); onClose();
         }}><Check size={15} /> Save</button>
       </div>
     </Modal>
+  );
+}
+
+/** A small menu of saved profiles; ones made for this account's drawdown size come first. */
+function ProfilePicker({ profiles, matches = [], value, onPick, label }) {
+  const first = new Set(matches.map((m) => m.id));
+  const list = [...profiles].sort((a, b) => (first.has(b.id) ? 1 : 0) - (first.has(a.id) ? 1 : 0));
+  return (
+    <Popover trigger={({ toggle }) => <button className="btn sm" onClick={toggle}>{label} <ChevronDown size={13} /></button>} width={280}>
+      {(close) => list.map((p) => (
+        <button key={p.id} className={`pop-item ${p.id === value ? 'on' : ''}`} onClick={() => { onPick(p.id); close(); }}>
+          <span className="grow">{p.name}</span>
+          {p.maxDD ? <span className="muted" style={{ fontSize: 11.5 }}>{money0(p.maxDD)} DD{first.has(p.id) ? ' · match' : ''}</span> : null}
+          {p.id === value && <Check size={13} />}
+        </button>
+      ))}
+    </Popover>
   );
 }
 

@@ -4,7 +4,7 @@ import { useStore, useAccountTrades } from '../store/store';
 import { AccountPicker, Private, Money, Seg } from '../components/ui';
 import { PnlChart } from '../components/Charts';
 import { TierCards, BlockerStrip, BiggestBlocker, PlaybookSettings, useRisk, DaysToRuin, useDaysToRuin } from '../components/Playbook';
-import { riskOf, ownRiskOf } from '../lib/playbook';
+import { riskOf, riskSourceOf } from '../lib/playbook';
 import { equityCurve, fmtDate, fmtShortDate, fmtMoney, money0, POINT_VALUE, fmtTime12 } from '../lib/stats';
 import { useOpenDay } from '../lib/dayPopup';
 import CoachReview from '../components/CoachReview';
@@ -36,10 +36,13 @@ export default function Risk() {
   const riskChart = state.settings.riskChart === 'dd' ? 'dd' : 'equity';
   const equity = useMemo(() => equityCurve(trades).map((p) => ({ label: fmtDate(p.x), y: Math.round(p.y * 100) / 100, tip: `${fmtDate(p.x)} · ${fmtTime12(p.x)} · ${p.t.symbol}` })), [trades]);
   // the account's own plan if it has one, else the default plan
-  const own = ownRiskOf(state, state.settings.account);
-  const setDdMode = (ddMode) => (own
-    ? setSetting('riskByAccount', (m) => ({ ...(m || {}), [state.settings.account]: { ...m[state.settings.account], ddMode } }))
-    : setSetting('risk', (r) => ({ ...(r || {}), ddMode })));
+  const src = riskSourceOf(state, state.settings.account);
+  const own = src.kind !== 'default';
+  const setDdMode = (ddMode) => (src.kind === 'profile'
+    ? setSetting('riskProfiles', (ps) => ps.map((p) => (p.id === src.profile.id ? { ...p, plan: { ...p.plan, ddMode } } : p)))
+    : src.kind === 'own'
+      ? setSetting('riskByAccount', (m) => ({ ...(m || {}), [state.settings.account]: { ...m[state.settings.account], ddMode } }))
+      : setSetting('risk', (r) => ({ ...(r || {}), ddMode })));
 
   // ---- coach review of the account's condition: recent window + everything the risk page knows ----
   const ruin = useDaysToRuin();
@@ -109,8 +112,8 @@ export default function Risk() {
       <div className="toolbar">
         <AccountPicker />
         <div className="grow" />
-        <span className="risk-plan-tag" title={own ? 'This account has its own risk rules' : 'This account follows the default risk plan — open Risk rules to give it its own'}>
-          <ShieldCheck size={13} /> {own ? <b>Own rules for this account</b> : state.settings.account === 'all' ? 'Default rules' : <>Default rules</>}
+        <span className="risk-plan-tag" title={src.kind === 'profile' ? `This account follows the risk profile “${src.profile.name}” — the Start/Peak switch changes the profile` : own ? 'This account has its own risk rules' : 'This account follows the default risk plan — open Risk rules to give it a profile or its own rules'}>
+          <ShieldCheck size={13} /> {src.kind === 'profile' ? <>Profile: <b>{src.profile.name}</b></> : own ? <b>Own rules for this account</b> : 'Default rules'}
         </span>
         <button className="btn" onClick={() => setSettings(true)}><Settings size={15} /> Risk rules</button>
       </div>

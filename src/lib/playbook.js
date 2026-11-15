@@ -45,13 +45,38 @@ export const DEFAULT_RISK = {
 export const playbookOf = (state) => { const pb = { ...DEFAULT_PLAYBOOK, ...(state.settings.playbook || {}) }; delete pb.nadro; delete pb.framework; return pb; };
 /** The default risk plan (used by every account that doesn't have its own). */
 export const defaultRiskOf = (state) => ({ ...DEFAULT_RISK, ...(state.settings.risk || {}), tiers: state.settings.risk?.tiers || DEFAULT_RISK.tiers });
-/** An account's own risk plan, or null when it uses the default. */
-export const ownRiskOf = (state, id) => (id && id !== 'all' ? state.settings.riskByAccount?.[id] || null : null);
-/** The risk plan in force for an account (the selected account by default): its own plan, else the default. */
+/** Saved risk profiles: [{ id, name, maxDD, plan }] — reusable plans, e.g. one per account drawdown size. */
+export const profilesOf = (state) => (Array.isArray(state.settings.riskProfiles) ? state.settings.riskProfiles.filter((p) => p?.id && p.plan) : []);
+
+/** What an account follows: { kind: 'default' } | { kind: 'profile', profile } | { kind: 'own', plan }.
+ *  An account linked to a profile that's since been deleted falls back to the default. */
+export function riskSourceOf(state, id = state.settings.account) {
+  const own = id && id !== 'all' ? state.settings.riskByAccount?.[id] : null;
+  if (!own) return { kind: 'default' };
+  if (own.profile) {
+    const profile = profilesOf(state).find((p) => p.id === own.profile);
+    return profile ? { kind: 'profile', profile } : { kind: 'default' };
+  }
+  return { kind: 'own', plan: own };
+}
+
+/** An account's own plan (its own rules or its profile's), or null when it uses the default. */
+export function ownRiskOf(state, id) {
+  const src = riskSourceOf(state, id);
+  return src.kind === 'profile' ? src.profile.plan : src.kind === 'own' ? src.plan : null;
+}
+
+/** The risk plan in force for an account (the selected account by default): its own rules, its profile, or the default. */
 export function riskOf(state, id = state.settings.account) {
   const own = ownRiskOf(state, id);
   const base = defaultRiskOf(state);
   return own ? { ...DEFAULT_RISK, ...own, tiers: own.tiers?.length ? own.tiers : base.tiers } : base;
+}
+
+/** Profiles made for an account's drawdown size (max drawdown equal to the profile's), best first. */
+export function matchingProfiles(profiles, account) {
+  const dd = Number(account?.maxDrawdown) || 0;
+  return dd ? profiles.filter((p) => Number(p.maxDD) === dd) : [];
 }
 
 /** A starting point for an account's own plan, scaled from the default plan to the account's max drawdown. */
