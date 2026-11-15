@@ -666,6 +666,15 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
                   </>
                 ) : (
                   <>
+                    {!whoProf && (plans.profiles.length > 0
+                      ? <ProfilePicker profiles={plans.profiles} matches={matches} label={whoAcct ? 'Use a profile' : 'Copy from a profile'} title={whoAcct ? 'Switch this account to follow a saved profile (replaces its own rules)' : 'Replace the default plan’s rules with a copy of a profile’s'}
+                          onPick={(id) => {
+                            const pr = plans.profiles.find((x) => x.id === id);
+                            if (whoAcct) { setOwn({ profile: id }); toast(`${whoAcct.name || who} now follows “${pr.name}”`); }
+                            else { setRk(JSON.parse(JSON.stringify(pr.plan))); toast(`Copied “${pr.name}” into the default plan`); }
+                          }} />
+                      : <button className="btn sm" disabled title="Save a profile first — then you can pick it here">Use a profile <ChevronDown size={13} /></button>)}
+                    <div className="grow" />
                     <span className="muted" style={{ fontSize: 12.5 }}>{whoProf ? 'Want a variation?' : 'Use these rules for other accounts of this size?'}</span>
                     <button className="btn sm" onClick={startSaveAs}><Plus size={13} /> {whoProf ? 'Save as a new profile' : 'Save as profile'}</button>
                   </>
@@ -697,11 +706,11 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
 }
 
 /** A small menu of saved profiles; ones made for this account's drawdown size come first. */
-function ProfilePicker({ profiles, matches = [], value, onPick, label }) {
+function ProfilePicker({ profiles, matches = [], value, onPick, label, title }) {
   const first = new Set(matches.map((m) => m.id));
   const list = [...profiles].sort((a, b) => (first.has(b.id) ? 1 : 0) - (first.has(a.id) ? 1 : 0));
   return (
-    <Popover trigger={({ toggle }) => <button className="btn sm" onClick={toggle}>{label} <ChevronDown size={13} /></button>} width={280}>
+    <Popover trigger={({ toggle }) => <button className="btn sm" onClick={toggle} title={title}>{label} <ChevronDown size={13} /></button>} width={280}>
       {(close) => list.map((p) => (
         <button key={p.id} className={`pop-item ${p.id === value ? 'on' : ''}`} onClick={() => { onPick(p.id); close(); }}>
           <span className="grow">{p.name}</span>

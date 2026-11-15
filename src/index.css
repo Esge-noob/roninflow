@@ -1873,7 +1873,7 @@ a.ruin-chip { cursor: pointer; }
 .risk-prof-head .field { margin: 0; }
 .risk-prof-head .full { grid-column: 1 / -1; }
 .risk-match { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; padding: 8px 10px; margin-top: 4px; border: 1px solid color-mix(in srgb, var(--pos) 35%, var(--border)); background: color-mix(in srgb, var(--pos) 7%, transparent); }
-.risk-saveas { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.risk-saveas { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .risk-saveas .input { height: 32px; width: 220px; }
 .danger-ghost:hover { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 45%, var(--border)); }
 @media (max-width: 760px) { .risk-prof-head { grid-template-columns: 1fr; } .risk-saveas { justify-content: flex-start; } .risk-saveas .input { width: 100%; } }

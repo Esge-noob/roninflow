@@ -2,6 +2,14 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.4.0
+
+- **Risk profiles:** save any set of risk rules as a named profile (e.g. "$2k eval") for a given max drawdown, then have accounts follow it. Edit the profile once and every account on it updates; "Give it its own copy" splits one account off.
+  - A profile made for an account's max drawdown is suggested automatically — in Risk rules and in the Add / Edit account form, which now has a **Risk rules** dropdown that picks the matching profile for you.
+  - "Use a profile" switches an account to a profile; on the default plan, "Copy from a profile" loads a profile's rules.
+  - Profiles appear in the "Rules for" picker with how many accounts use them; rename, change the drawdown size, edit or delete them there (deleting puts their accounts back on the default plan). The Risk page shows which profile an account follows.
+- **Days to ruin** on the Current risk card: how many full max-loss days the account can take before hitting its max drawdown, running your risk rules forward — tiers step down with losing streaks and drawdown thresholds, each day capped at the firm's daily loss limit, measured to the account's real max-loss floor. Click it for the day-by-day path. Stacks under the title on phones.
+
 ## 1.3.0
 
 - **Risk rules per account:** Risk rules now has a "Rules for" picker — the default plan or any account. Accounts use the default plan until you give them their own, either as a copy of the default or scaled to the account's max drawdown (with daily loss limits capped at the firm's). The Risk page, sidebar risk box and diary follow the plan of the account you're viewing, and the Start/Peak switch only changes that plan.
