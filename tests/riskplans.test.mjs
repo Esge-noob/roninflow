@@ -105,3 +105,36 @@ test('each tier below Normal can kick in at its own drawdown', async () => {
   assert.equal(r.ddLevel, 0);
   assert.equal(r.nextDrop, null);
 });
+
+test('days to ruin follows the tiers down as losses pile up', async () => {
+  const { daysToRuin } = await import('../src/lib/playbook.js');
+  const today = new Date().toISOString().slice(0, 10);
+  // default plan: Normal $500/day; 2 max-loss days → Risk off ($200, also at $1,000 drawdown); every red day after → Damage control ($100)
+  const wed = '2026-11-18'; // a weekday, so today counts as day 1
+  const r = daysToRuin([], {}, DEFAULT_RISK, 3000, { today: wed });
+  // today 500 + 500 (→ Risk off) + 200 (→ Damage control) = 1,200; then $100 days while staying under 3,000: 17 → 20 days, ruin on the 21st
+  assert.deepEqual(r.segments.map((s) => [s.name, s.from, s.to, s.loss]), [['Normal', 1, 1, 500], ['Normal', 2, 2, 500], ['Risk off', 3, 3, 200], ['Damage control', 4, 20, 100]]);
+  assert.equal(r.days, 20);
+  assert.equal(r.ruinDay, 21);
+  assert.equal(r.lost, 2900);
+  assert.ok(r.segments[0].today);
+  // the firm's daily loss limit caps each day
+  assert.equal(r.ruinDate, '2026-12-16'); // 20 trading days from Wed 18th, then the next one
+  // on a weekend there's no session today: day 1 is Monday
+  const sun = daysToRuin([], {}, DEFAULT_RISK, 3000, { today: '2026-11-15' });
+  assert.equal(sun.days, 20); assert.ok(!sun.segments[0].today);
+  const capped = daysToRuin([], {}, DEFAULT_RISK, 3000, { firmDaily: 300, today: wed });
+  assert.equal(capped.segments[0].loss, 300);
+  // drawdown thresholds kick in on their own: a plan with no streak rule still drops at 1,000 and 2,000
+  const noStreak = { ...DEFAULT_RISK, maxLossStreak: 99 };
+  const n = daysToRuin([], {}, noStreak, 3000, { today: wed });
+  assert.deepEqual(n.segments.map((s) => [s.name, s.loss]).slice(-2), [['Risk off', 200], ['Damage control', 100]]);
+  assert.equal(n.segments.filter((s) => s.name === 'Normal').reduce((a, s) => a + (s.to - s.from + 1), 0), 2); // 500 + 500 hits the 1,000 threshold
+  // already at or past the floor
+  assert.deepEqual([daysToRuin([], {}, DEFAULT_RISK, 0).days, daysToRuin([], {}, DEFAULT_RISK, 0).ruinDay], [0, 1]);
+  // a bigger cushion takes longer but finishes instantly (the lowest tier is worked out, not looped)
+  const t0 = Date.now(); const big = daysToRuin([], {}, DEFAULT_RISK, 100000, { today: wed });
+  assert.equal(big.days, 3 + 987); assert.ok(Date.now() - t0 < 500);
+  assert.equal(daysToRuin([], {}, DEFAULT_RISK, null), null);
+  void today;
+});

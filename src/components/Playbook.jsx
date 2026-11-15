@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Minus, Plus, Trash, ShieldCheck, TrendingDown, Lightbulb, Pencil, X } from 'lucide-react';
 import { balanceGap } from '../lib/balance';
 import { useStore, useAccountTrades, navigate } from '../store/store';
-import { Modal, ModalHead, Stars, useToast, Private, Switch, Seg } from './ui';
-import { DEFAULT_PLAYBOOK, playbookOf, riskOf, defaultRiskOf, suggestRisk, normalIndex, newTier, tierDD, withTierDD, regimeStats, blockerStats, riskState, lastTomorrowNote, tradeBlockers } from '../lib/playbook';
+import { Modal, ModalHead, Stars, useToast, Private, Switch, Seg, Popover } from './ui';
+import { accountDrawdown, ddTypeLabel } from '../lib/accountDD';
+import { DEFAULT_PLAYBOOK, playbookOf, riskOf, defaultRiskOf, suggestRisk, normalIndex, newTier, tierDD, withTierDD, regimeStats, blockerStats, riskState, lastTomorrowNote, tradeBlockers, daysToRuin } from '../lib/playbook';
 import { fmtDate, fmtMoney, fmtTime12, pfText, todayKey, uid } from '../lib/stats';
 
 export const MOODS = ['😫', '😕', '😐', '🙂', '😄'];
@@ -17,6 +18,73 @@ export function useRisk() {
   const account = state.accounts.find((a) => a.id === id);
   return useMemo(() => riskState(trades, account ? { ...account, balanceGap: balanceGap(state, id) } : id === 'all' ? { balanceGap: balanceGap(state, 'all') } : account, riskOf(state)), [trades, account, state, id]);
 }
+/** Days to ruin for the selected account: { r, account, dd } or a reason it can't be worked out. */
+export function useDaysToRuin() {
+  const { state } = useStore();
+  const trades = useAccountTrades();
+  const id = state.settings.account;
+  const account = state.accounts.find((a) => a.id === id);
+  return useMemo(() => {
+    if (!account) return { why: 'all' };
+    if (!(Number(account.maxDrawdown) > 0)) return { why: 'nodd', account };
+    const dd = accountDrawdown(state, account);
+    const r = daysToRuin(trades, { ...account, balanceGap: balanceGap(state, id) }, riskOf(state), dd.left, { firmDaily: Number(account.dailyLossLimit) || 0 });
+    return { r, account, dd };
+  }, [trades, account, state, id]);
+}
+
+/** "N days to ruin" chip for the Current risk card; click it for the day-by-day path. */
+export function DaysToRuin() {
+  const { r, account, dd, why } = useDaysToRuin();
+  if (why === 'all') return <span className="ruin-chip muted" title="Days to ruin is worked out per account — pick one at the top">Days to ruin: pick an account</span>;
+  if (why === 'nodd') return <a className="ruin-chip muted" href="#/accounts" title="Set the account’s max drawdown to see days to ruin">Days to ruin: set a max drawdown</a>;
+  if (!r) return null;
+  const tone = r.days <= 3 ? 'neg' : r.days <= 10 ? 'warn' : 'pos';
+  const inf = r.ruinDay == null;
+  const when = r.ruinDate ? fmtDate(r.ruinDate).replace(/, \d{4}$/, '') : null;
+  return (
+    <Popover
+      align="right"
+      width={360}
+      className="ruin-pop"
+      trigger={({ toggle }) => (
+        <button className={`ruin-chip ${tone}`} onClick={toggle} title="How many full max-loss days the account can take before it hits its max drawdown — click for details">
+          <span className="ruin-n">{inf ? `${r.days}+` : r.days}</span>
+          <span className="ruin-l"><b>day{r.days === 1 ? '' : 's'} to ruin</b><em><Private>{money0(dd.left)}</Private> to max drawdown</em></span>
+        </button>
+      )}
+    >
+      {() => (
+        <div className="ruin-body">
+          <div className="ruin-h"><b className={tone}>{inf ? `${r.days}+` : r.days}</b> full max-loss day{r.days === 1 ? '' : 's'} before the max drawdown</div>
+          <p className="muted">If every trading day from {r.segments[0]?.today ? 'today' : 'tomorrow'} lost its whole daily loss limit, {account.name || account.id} would hit its max drawdown on trading day {r.ruinDay}{when ? ` (${when})` : ''}. Tiers step down as your risk rules say.</p>
+          <div className="ruin-path">
+            {r.segments.map((g) => {
+              const n = g.to - g.from + 1;
+              return (
+                <div key={g.from} className="ruin-seg">
+                  <i style={{ background: g.color }} />
+                  <span className="ruin-d">{g.today ? 'Today' : n === 1 ? `Day ${g.from}` : `Days ${g.from}–${g.to}`}</span>
+                  <span className="grow">{g.name}</span>
+                  <span className="muted ruin-calc">−{money0(g.loss)}{n > 1 ? ` × ${n}` : ''}</span>
+                  <b><Private>−{money0(g.loss * n)}</Private></b>
+                </div>
+              );
+            })}
+            {r.ruinDay != null && <div className="ruin-seg end"><i /><span className="ruin-d">Day {r.ruinDay}</span><span className="grow">Max drawdown hit</span><span className="muted ruin-calc">only <Private>{money0(dd.left - r.lost)}</Private> of room left</span></div>}
+          </div>
+          <div className="ruin-foot">
+            <div><span>Room to the max-loss floor</span><b><Private>{money0(dd.left)}</Private></b></div>
+            <div><span>Floor ({ddTypeLabel(account)})</span><b><Private>{money0(dd.floor)}</Private></b></div>
+            {Number(account.dailyLossLimit) > 0 && <div><span>Each day capped at the firm’s daily limit</span><b>{money0(account.dailyLossLimit)}</b></div>}
+          </div>
+          <div className="muted" style={{ fontSize: 11.5 }}>Assumes no green days in between — a worst case to size risk against, not a forecast.</div>
+        </div>
+      )}
+    </Popover>
+  );
+}
+
 export function useBlockers() {
   const { state } = useStore();
   const trades = useAccountTrades();

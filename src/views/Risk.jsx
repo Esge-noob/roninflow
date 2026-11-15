@@ -3,7 +3,7 @@ import { Settings, TrendingDown, TrendingUp, TriangleExclamationPoint as Triangl
 import { useStore, useAccountTrades } from '../store/store';
 import { AccountPicker, Private, Money, Seg } from '../components/ui';
 import { PnlChart } from '../components/Charts';
-import { TierCards, BlockerStrip, BiggestBlocker, PlaybookSettings, useRisk } from '../components/Playbook';
+import { TierCards, BlockerStrip, BiggestBlocker, PlaybookSettings, useRisk, DaysToRuin, useDaysToRuin } from '../components/Playbook';
 import { riskOf, ownRiskOf } from '../lib/playbook';
 import { equityCurve, fmtDate, fmtShortDate, fmtMoney, money0, POINT_VALUE, fmtTime12 } from '../lib/stats';
 import { useOpenDay } from '../lib/dayPopup';
@@ -42,6 +42,7 @@ export default function Risk() {
     : setSetting('risk', (r) => ({ ...(r || {}), ddMode })));
 
   // ---- coach review of the account's condition: recent window + everything the risk page knows ----
+  const ruin = useDaysToRuin();
   const coach = useMemo(() => {
     const days = Math.max(14, Math.min(90, Number(cfg.lookbackDays) || 30, 30));
     const from = keyOf(new Date(Date.now() - days * 86400000));
@@ -72,6 +73,7 @@ export default function Risk() {
       balanceAdjustment: gap ? Math.round(gap * 100) / 100 : undefined,
       drawdownMode: risk.ddMode === 'start' ? 'from starting balance' : 'from high watermark',
       currentDrawdown: Math.round(risk.dd * 100) / 100,
+      daysToRuin: ruin.r ? { fullMaxLossDays: ruin.r.days, maxDrawdownHitOnDay: ruin.r.ruinDay, path: ruin.r.segments.map((g) => `${g.today ? 'today' : g.from === g.to ? `day ${g.from}` : `days ${g.from}-${g.to}`}: ${g.name} -${g.loss}/day`).join('; ') } : undefined,
       highWatermark: Math.round(hwm * 100) / 100,
       highWatermarkDate: risk.peakAt ? String(risk.peakAt).slice(0, 10) : null,
       firmMaxDrawdown: firmMax,
@@ -94,7 +96,7 @@ export default function Risk() {
     };
     const sig = `${Math.round(risk.dd)}|${risk.level}|${Math.round(current)}|${recent.length}`;
     return { recent, prev, extra, days, sig };
-  }, [trades, state, risk, cfg, acct]);
+  }, [trades, state, risk, cfg, acct, ruin]);
 
   const pv = POINT_VALUE[sym] || 1;
   const perContract = stop * pv + fee * 2;
@@ -148,7 +150,7 @@ export default function Risk() {
       </div>
 
       <div className="panel" style={{ marginBottom: 22 }}>
-        <div className="panel-head"><div className="card-title">Current risk <span className="muted" style={{ fontWeight: 400 }}>(based on performance and market/edge alignment)</span></div></div>
+        <div className="panel-head ruin-head"><div className="card-title">Current risk <span className="muted" style={{ fontWeight: 400 }}>(based on performance and market/edge alignment)</span></div><DaysToRuin /></div>
         <TierCards risk={risk} />
         <div className="muted" style={{ fontSize: 12.5, marginTop: 12, textAlign: 'center' }}>
           Reduce risk after {cfg.maxLossStreak} consecutive max-loss days, then reduce after every consecutive red day thereafter. Increase risk after every sizable green day until normal risk is reached.

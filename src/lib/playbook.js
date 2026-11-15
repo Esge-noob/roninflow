@@ -165,7 +165,7 @@ export function blockerStats(trades, blockers, lookback = 90) {
  * 2. Day-by-day rules: after `maxLossStreak` consecutive max-loss days step down one tier, then step down again
  *    after every consecutive red day; every sizable green day steps up one tier until normal is reached.
  */
-export function riskState(trades, account, risk) {
+export function riskState(trades, account, risk, opts = {}) {
   const tiers = risk.tiers;
   // the Normal tier: chosen in the plan (normalTier), else the third tier as in the original four-tier plan.
   // Tiers above it are locked until unlocked in a risk review; then green days can climb all the way up.
@@ -187,7 +187,7 @@ export function riskState(trades, account, risk) {
   const sessions = [...groupByDay(trades)].reverse(); // oldest → newest
   let L = normal, mlStreak = 0, reducing = false;
   const history = [];
-  const today = todayKey();
+  const today = opts.today || todayKey(); // opts.today: run the engine as of another day (days-to-ruin simulation)
   for (const d of sessions) {
     if (d.date === today) continue; // today's result doesn't change today's tier
     const tier = tiers[L];
@@ -244,3 +244,70 @@ export function lastTomorrowNote(diary, date) {
 }
 
 export const isWeekend = (key) => [0, 6].includes(toDate(key).getDay());
+
+/** Next weekday after a YYYY-MM-DD key. */
+function nextWeekday(key) {
+  const d = toDate(key);
+  do d.setDate(d.getDate() + 1); while (d.getDay() === 0 || d.getDay() === 6);
+  return keyOf(d);
+}
+
+/**
+ * Days to ruin: how many full max-loss days the account can take before it hits its max drawdown, if every day
+ * from now on loses the whole daily loss limit of the tier you'd be in. The real tier engine is run forward a day
+ * at a time, so losing streaks step you down and drawdown thresholds kick in exactly as they would.
+ *   room       — distance from the balance to the account's max-loss floor (losing days don't move a trailing floor).
+ *   firmDaily  — the firm's daily loss limit, if any: a day can't lose more than that.
+ * Today counts as day 1 if there's still some of today's limit left.
+ * Returns { days, ruinDay, segments: [{ tier, name, color, from, to, loss }], room } — or null with no room info.
+ */
+export function daysToRuin(trades, account, risk, room, { firmDaily = 0, today = todayKey(), max = 1000 } = {}) {
+  if (room == null || !Number.isFinite(room)) return null;
+  const cap = (v) => (firmDaily > 0 ? Math.min(v, firmDaily) : v);
+  const days = []; // { tier, loss, date }
+  let cum = 0;
+  let breached = room <= 0;
+  const sim = [...trades];
+  let st = riskState(sim, account, risk, { today });
+  // today: whatever is left of today's limit (and of the firm's daily limit)
+  const firmLeftToday = firmDaily > 0 ? firmDaily + Math.min(0, st.todayNet) : Infinity;
+  const weekend = [0, 6].includes(toDate(today).getDay()); // no session today: start with the next weekday
+  const todayLoss = weekend ? 0 : Math.max(0, Math.min(st.remaining, firmLeftToday));
+  if (!breached && todayLoss > 0) {
+    if (cum + todayLoss >= room) breached = true;
+    else {
+      cum += todayLoss;
+      days.push({ tier: st.level, loss: todayLoss, date: today, today: true });
+      sim.push({ id: 'sim-today', entry: `${today}T23:58:00`, exit: `${today}T23:59:00`, pnl: -todayLoss, qty: 1, symbol: 'SIM' });
+    }
+  }
+  let date = [today, ...trades.map((t) => String(t.exit || t.entry).slice(0, 10))].sort().at(-1);
+  while (!breached && days.length < max) {
+    // the tier for the next day, with every day so far (today included) counted
+    if (days.length) st = riskState(sim, account, risk, { today: nextWeekday(date) });
+    const loss = cap(risk.tiers[st.level].dailyLL);
+    if (!(loss > 0)) break; // a tier with no loss limit never runs out
+    if (st.level === 0) {
+      // the lowest tier: nothing changes from here on, so the rest is arithmetic
+      const more = Math.min(max - days.length, Math.max(0, Math.ceil((room - cum) / loss) - 1));
+      for (let k = 0; k < more; k++) { date = nextWeekday(date); days.push({ tier: 0, loss, date }); }
+      cum += more * loss;
+      breached = days.length < max;
+      break;
+    }
+    if (cum + loss >= room) { breached = true; break; }
+    date = nextWeekday(date);
+    cum += loss;
+    days.push({ tier: st.level, loss, date });
+    sim.push({ id: `sim-${date}`, entry: `${date}T10:00:00`, exit: `${date}T10:05:00`, pnl: -loss, qty: 1, symbol: 'SIM' });
+  }
+  // group into stretches of the same tier and loss
+  const segments = [];
+  days.forEach((d, i) => {
+    const last = segments.at(-1);
+    if (last && last.tier === d.tier && last.loss === d.loss && !d.today && !last.today) last.to = i + 1;
+    else segments.push({ tier: d.tier, name: risk.tiers[d.tier].name, color: risk.tiers[d.tier].color, from: i + 1, to: i + 1, loss: d.loss, today: !!d.today });
+  });
+  const lastDate = days.at(-1)?.date || date;
+  return { days: days.length, ruinDay: breached ? days.length + 1 : null, ruinDate: breached ? (days.length ? nextWeekday(lastDate) : (weekend ? nextWeekday(today) : today)) : null, segments, room, lost: cum, endDate: days.at(-1)?.date || null };
+}
