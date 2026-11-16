@@ -2,6 +2,13 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.6.2
+
+- **Market conditions and strategy performance on monthly, quarterly and yearly reviews:** a card per market condition and per strategy with a small P&L curve, P&L, win rate and profit factor for that period (plus "No condition logged" / "No strategy" cards). Click one for its full stats — EV, Performance Ratio, ROMAD, the metric grid and the equity curve — with a condition's "How to spot it" or a strategy's rules on top.
+- **Strategy page:** Trading strategies now match Market conditions — the same 30 days / 90 days / 1 year / All time range, a "best strategy" line, cards with the P&L curve, Net P&L, win rate, trades and EV per trade, and the stats pop-up on click (with a button to the strategy's page). Market condition cards look the same and open their stats too.
+- A strategy's own page uses the same stats layout (EV / PR / ROMAD, metric grid, equity curve) above its checklist, notes and trades.
+- The Strategy page now follows the account picker, like Market conditions (it used to count trades from every account).
+
 ## 1.6.1
 
 - **Price data settings:** every source in Settings → Price data now has an on/off switch.
