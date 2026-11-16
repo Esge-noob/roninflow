@@ -273,7 +273,7 @@ function Strategies() {
   const [open, setOpen] = useState(false);
   const tourDone = state.settings.strategyTourDone;
   const list = state.strategies.filter((s) => !cat || s.category === cat);
-  const stats = (id) => summarize(state.trades.filter((t) => t.strategyId === id));
+  const stats = (id) => { const trades = state.trades.filter((t) => t.strategyId === id); return { ...summarize(trades), trades }; };
   return (
     <div>
       <div className="row page-head-row" style={{ marginBottom: 18 }}>
@@ -316,6 +316,7 @@ function Strategies() {
                 {s.media[0] && <img src={s.media[0]} alt="" style={{ width: '100%', aspectRatio: '16/8', objectFit: 'cover', border: '1px solid var(--border)' }} />}
                 <div className="row between"><b style={{ fontWeight: 600, fontSize: 16 }}>{s.name}</b><span className="badge neutral">{s.category}</span></div>
                 <div className="row gap6 wrap">{[...s.timeframes, ...s.tags].slice(0, 5).map((t) => <span key={t} className="chip" style={{ padding: '2px 7px' }}>{t}</span>)}</div>
+                {st.count ? <div className="strat-curve" title="P&L curve"><PnlChart data={[{ label: '', y: 0 }, ...equityCurve(st.trades).map((c) => ({ label: '', y: c.y }))]} height={70} compact /></div> : <div className="strat-curve empty">No trades yet</div>}
                 <div className="row gap24" style={{ fontSize: 13 }}>
                   <div><div className="muted">Net P&L</div><Money v={st.net} colored /></div>
                   <div><div className="muted"><StatLabel ctx={st}>Win rate</StatLabel></div>{st.count ? `${Math.round(st.winRate)}%` : '—'}</div>

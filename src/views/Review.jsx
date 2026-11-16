@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Maximize2, ChevronLeft, ChevronRight, ChartArea, ChartColumn, ChartColumnStacked, CircleCheck, CircleDashed, Clock3, Flag, Quote, RotateCcw, TriangleExclamationPoint as TriangleAlert, ArrowRight, Pencil, ChevronUp, ChevronDown, Trash, Plus, Check } from 'lucide-react';
+import { X, Maximize2, ChevronLeft, ChevronRight, ChartArea, ChartColumn, ChartColumnStacked, CircleCheck, CircleDashed, Clock3, Flag, Quote, RotateCcw, TriangleExclamationPoint as TriangleAlert, ArrowRight, Pencil, Target, ChevronUp, ChevronDown, Trash, Plus, Check } from 'lucide-react';
 import { useStore, useAccountTrades, navigate } from '../store/store';
 import { AccountPicker, Fit, Seg, Private, Modal, ModalHead, useToast } from '../components/ui';
 import { PnlChart, MarkerScale } from '../components/Charts';
@@ -36,7 +36,7 @@ function RevLink({ p, className, children, style }) {
   );
 }
 import {
-  uid, periodMetrics, groupByDay, keyOf, fmtMoney, fmtDate, fmtTime12, pfText, ratioText, MONTHS, MONTHS_LONG, WEEKDAYS, toDate, startOfCalWeek, fmtCompact, equityCurve, startOfWeek, fmtShortDate,
+  uid, periodMetrics, summarize, groupByDay, keyOf, fmtMoney, fmtDate, fmtTime12, pfText, ratioText, MONTHS, MONTHS_LONG, WEEKDAYS, toDate, startOfCalWeek, fmtCompact, equityCurve, startOfWeek, fmtShortDate,
 } from '../lib/stats';
 import {
   REVIEW_TYPES, REVIEW_PROMPTS, reviewPrompts, commitmentField, periodFromId, periodOf, shiftPeriod, reviewKey, reviewHref, reviewStatus, inPeriod, dueReviews, withReviewNotifications,
@@ -550,6 +550,8 @@ function Monthly({ period, trades }) {
           })}
         </div>
       </div>
+      <PeriodConditions period={period} trades={trades} />
+      <PeriodStrategies period={period} trades={trades} />
       <ReviewForm period={period} />
     </>
   );
@@ -566,6 +568,83 @@ function PeriodPnl({ period, label, net }) {
       <div className={`rv-hval ${tone.money(total)}`} style={{ fontSize: 40 }}><Private>{money0(total)}</Private></div>
       {gap !== 0 && <div className="muted" style={{ fontSize: 12, marginTop: 2 }} title="P&L is your ATAS balance minus your starting balance. The adjustment is what the journal's trades don't account for (missing fills, account fees…), so it isn't in the quarter or month figures.">Trades <Private>{money0(net)}</Private> · balance adj. <Private>{fmtMoney(gap, { sign: true, dp: 0 })}</Private></div>}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------- market conditions & strategies
+const PERIOD_WORD = { monthly: 'month', quarterly: 'quarter', yearly: 'year' };
+
+/** How each market condition went in this period (hidden until market conditions are set up). */
+function PeriodConditions({ period, trades }) {
+  const { state } = useStore();
+  if (!playbookOf(state).regimes?.length) return null;
+  return (
+    <div className="panel" style={{ padding: 18 }}>
+      <div className="card-title" style={{ marginBottom: 12 }}>Market conditions this {PERIOD_WORD[period.type]}</div>
+      <RegimeCards trades={trades} lookback={100000} caption={period.label} />
+    </div>
+  );
+}
+
+const curveOf = (trades) => [{ label: '', y: 0 }, ...equityCurve(trades).map((c) => ({ label: '', y: c.y }))];
+
+/** Each strategy's results in this period; click one for its full stats. */
+function PeriodStrategies({ period, trades }) {
+  const { state } = useStore();
+  const [open, setOpen] = useState(null);
+  const rows = useMemo(() => {
+    const known = new Map(state.strategies.map((x) => [x.id, x]));
+    const by = new Map();
+    for (const t of trades) { const k = known.has(t.strategyId) ? t.strategyId : ''; (by.get(k) || by.set(k, []).get(k)).push(t); }
+    return [...by].map(([id, list]) => ({ id, name: id ? known.get(id).name : 'No strategy', category: id ? known.get(id).category : '', trades: list, st: summarize(list) }))
+      .sort((a, b) => (a.id ? 0 : 1) - (b.id ? 0 : 1) || b.st.net - a.st.net);
+  }, [trades, state.strategies]);
+  if (!trades.length) return null;
+  const sel = open && rows.find((r) => r.id === open.id);
+  return (
+    <div className="panel" style={{ padding: 18 }}>
+      <div className="panel-head" style={{ marginBottom: 12 }}>
+        <div className="card-title">Strategy performance this {PERIOD_WORD[period.type]}</div>
+        <span className="muted hide-m" style={{ fontSize: 12.5 }}>Click a strategy for its stats</span>
+      </div>
+      <div className="rv-strats">
+        {rows.map((r) => (
+          <button key={r.id || 'none'} className={`rv-strat ${r.id ? '' : 'none'}`} onClick={() => setOpen(r)}>
+            <div className="row between gap8">
+              <b className="truncate" style={{ fontWeight: 600 }}>{r.name}</b>
+              <span className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{nTrades(r.st.count)}</span>
+            </div>
+            <div className="rv-strat-curve"><PnlChart data={curveOf(r.trades)} height={54} compact /></div>
+            <div className="rv-strat-stats">
+              <div><span>P&L</span><b className={tone.money(r.st.net)}><Private>{money0(r.st.net)}</Private></b></div>
+              <div><span>Win rate</span><b className={tone.winRate(r.st.winRate)}>{Math.round(r.st.winRate)}%</b></div>
+              <div><span>PF</span><b className={tone.pf(r.st.profitFactor)}>{pfText(r.st.profitFactor)}</b></div>
+            </div>
+          </button>
+        ))}
+      </div>
+      {!state.strategies.length && <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>Create strategies on the Strategy page and pick one on each trade to compare them here.</div>}
+      {sel && createPortal(<StrategyPeriodModal row={sel} period={period} onClose={() => setOpen(null)} />, document.body)}
+    </div>
+  );
+}
+
+function StrategyPeriodModal({ row, period, onClose }) {
+  const m = useMetrics(row.trades);
+  return (
+    <Modal open onClose={onClose} width={1100} className="rv-strat-modal">
+      <ModalHead
+        title={<span className="row gap8"><Target size={17} className="muted" /> {row.name}{row.category && <span className="badge neutral">{row.category}</span>}</span>}
+        sub={`${period.label} · ${nTrades(row.trades.length)}`}
+        onClose={onClose}
+      />
+      <div className="modal-body col gap16">
+        <Headline m={m} />
+        <MetricGrid m={m} />
+        <EquityPanel trades={row.trades} title="Equity curve" height={220} />
+        {row.id && <div className="row" style={{ justifyContent: 'flex-end' }}><button className="btn" onClick={() => { onClose(); navigate(`strategy/${row.id}`); }}>Open strategy <ArrowRight size={14} /></button></div>}
+      </div>
+    </Modal>
   );
 }
 
@@ -605,10 +684,8 @@ function Quarterly({ period, trades, allTrades }) {
           </table>
         </div>
       </div>
-      <div className="panel" style={{ padding: 18 }}>
-        <div className="card-title" style={{ marginBottom: 12 }}>Market conditions this quarter</div>
-        <RegimeCards trades={trades} lookback={100000} caption={period.label} />
-      </div>
+      <PeriodConditions period={period} trades={trades} />
+      <PeriodStrategies period={period} trades={trades} />
       <ReviewForm period={period} />
     </>
   );
@@ -676,6 +753,8 @@ function Yearly({ period, trades }) {
           </table>
         </div>
       </div>
+      <PeriodConditions period={period} trades={trades} />
+      <PeriodStrategies period={period} trades={trades} />
       <ReviewForm period={period} />
     </>
   );

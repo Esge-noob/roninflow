@@ -1963,3 +1963,18 @@ a.ruin-chip { cursor: pointer; }
 .share-item:last-child { border-bottom: 0; }
 .share-item.off { opacity: 0.6; }
 @media (max-width: 760px) { .share-what { grid-template-columns: 1fr; } }
+
+/* review: strategy performance */
+.rv-strats { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.rv-strat { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 14px; background: var(--card-2, var(--panel)); border: 1px solid var(--border); color: var(--fg); cursor: pointer; min-width: 0; font: inherit; }
+.rv-strat:hover { border-color: var(--border-2); }
+.rv-strat.none { opacity: 0.85; }
+.rv-strat.none b { font-style: italic; font-weight: 500 !important; }
+.rv-strat-curve { height: 54px; }
+.rv-strat-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 12px; }
+.rv-strat-stats > div > span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+.rv-strat-stats b { font-weight: 600; font-size: 14px; }
+.rv-strat-modal .modal-body .rv-tiles.five { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+/* strategy page: P&L curve on each card */
+.strat-curve { height: 70px; margin: 2px 0; }
+.strat-curve.empty { display: grid; place-items: center; border: 1px dashed var(--border); color: var(--muted-2); font-size: 12px; }
