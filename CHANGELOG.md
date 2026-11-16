@@ -2,6 +2,13 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.5.0
+
+- **Share your journal, view-only:** a Share button at the top makes a link anyone can open to see your whole journal or just the page you're on (a review, a diary day, the dashboard…). Nobody can change anything, account numbers are hidden and accounts show as "Account 1, 2…", and only your first name appears. Pick when a link expires, optionally hide dollar amounts, and turn off or remove links any time; each link shows how often it's been viewed.
+  - **Live links** work from anywhere through Tailscale Funnel (turn it on from the dialog) or your own public address. A page link only includes that page's dates.
+  - **Snapshot file:** download a single HTML file of the same view that opens offline, with no server needed — handy for sending in a chat or email.
+- **Sync trade reviews across accounts** (Review page): notes, tags, strategy, edge blockers, rating, screenshots and "reviewed" you add to a trade are saved on the same trade on your other accounts — all of them or the ones you pick — so a breached account's journal isn't lost. "Copy existing reviews now" fills in what's missing on past trades and shows what it will copy.
+
 ## 1.4.0
 
 - **Risk profiles:** save any set of risk rules as a named profile (e.g. "$2k eval") for a given max drawdown, then have accounts follow it. Edit the profile once and every account on it updates; "Give it its own copy" splits one account off.
