@@ -13,6 +13,10 @@ export const tfLabel = (s) => String(s || '1m').replace(/^60m$/, '1h').replace(/
 const nyFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const nyParts = (u) => Object.fromEntries(nyFmt.formatToParts(new Date(u * 1000)).map((x) => [x.type, x.value]));
 const sinceOpen = (u) => { const p = nyParts(u); return ((Number(p.hour) - 18 + 24) % 24) * 3600 + Number(p.minute) * 60 + Number(p.second); };
+/** UTC seconds → when that futures session opened (6 PM New York) — for indicators that restart each session */
+export const sessionStart = (u) => u - sinceOpen(u);
+/** chart time (shifted to local, see toLocal) → UTC seconds */
+export const fromLocal = (t) => t + new Date(t * 1000).getTimezoneOffset() * 60;
 /** UTC seconds → the chart time of the bar that holds it (daily bars are labelled with the session's trading date) */
 export function barTime(u, iv) {
   if (iv <= 60) return toLocal(u - (u % 60));

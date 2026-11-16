@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize2, RefreshCw, Palette, Check, ChevronDown } from 'lucide-react';
+import { Maximize2, RefreshCw, Palette, Check, ChevronDown, Expand } from 'lucide-react';
+import { lazy, Suspense } from 'react';
 import { useStore } from '../store/store';
 import { todayKey, fmtMoney, fmtTime12 } from '../lib/stats';
 import { Modal, ModalHead, Popover } from './ui';
@@ -9,8 +10,10 @@ import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, toLocal, barTime, aggregate } fr
 // Candlestick chart of the day with your executions, drawn with TradingView Lightweight Charts™.
 // Candles come from the journal server (/api/candles, cached on your PC); the library is served by it too.
 
+const ChartStudio = lazy(() => import('./ChartStudio'));
+
 let libPromise = null;
-function loadLib() {
+export function loadLib() {
   if (window.LightweightCharts) return Promise.resolve(window.LightweightCharts);
   if (!libPromise) {
     libPromise = new Promise((resolve, reject) => {
@@ -25,10 +28,10 @@ function loadLib() {
   return libPromise;
 }
 
-const TICKS = { ES: 0.25, MES: 0.25, NQ: 0.25, MNQ: 0.25, YM: 1, MYM: 1, RTY: 0.1, M2K: 0.1, CL: 0.01, MCL: 0.01, QM: 0.025, GC: 0.1, MGC: 0.1, SI: 0.005, SIL: 0.005, HG: 0.0005, NG: 0.001, QG: 0.005, ZB: 0.03125, ZN: 0.015625, '6E': 0.00005, M6E: 0.0001, '6J': 0.0000005, '6B': 0.0001, '6A': 0.00005, BTC: 5, MBT: 5, ETH: 0.5, MET: 0.05 };
+export const TICKS = { ES: 0.25, MES: 0.25, NQ: 0.25, MNQ: 0.25, YM: 1, MYM: 1, RTY: 0.1, M2K: 0.1, CL: 0.01, MCL: 0.01, QM: 0.025, GC: 0.1, MGC: 0.1, SI: 0.005, SIL: 0.005, HG: 0.0005, NG: 0.001, QG: 0.005, ZB: 0.03125, ZN: 0.015625, '6E': 0.00005, M6E: 0.0001, '6J': 0.0000005, '6B': 0.0001, '6A': 0.00005, BTC: 5, MBT: 5, ETH: 0.5, MET: 0.05 };
 const ROOTS = Object.keys(TICKS).sort((a, b) => b.length - a.length);
-const rootOf = (s) => { const u = String(s || '').toUpperCase(); return ROOTS.find((r) => u.startsWith(r)) || u; };
-const decimals = (x) => { const s = String(x); return s.includes('e-') ? Number(s.split('e-')[1]) : (s.split('.')[1] || '').length; };
+export const rootOf = (s) => { const u = String(s || '').toUpperCase(); return ROOTS.find((r) => u.startsWith(r)) || u; };
+export const decimals = (x) => { const s = String(x); return s.includes('e-') ? Number(s.split('e-')[1]) : (s.split('.')[1] || '').length; };
 
 const epoch = (iso) => Math.floor(new Date(iso).getTime() / 1000); // journal times are local wall-clock
 
@@ -68,15 +71,15 @@ export function chartColors(setting) {
   return { ...c, ...base, ...preset, ...(setting.colors || {}) };
 }
 
-const alpha = (hex, a) => {
+export const alpha = (hex, a) => {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
   if (!m) return hex;
   const n = parseInt(m[1], 16);
   return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 };
 
-/** Executions for one symbol → markers, trade lines and the time span to show. */
-export function buildExecutions(trades, barTimes, toBar = (u) => toLocal(u)) {
+/** Executions for one symbol → markers, trade lines and the time span to show (only fills up to `until`, UTC seconds). */
+export function buildExecutions(trades, barTimes, toBar = (u) => toLocal(u), until = Infinity) {
   const snap = (t) => { // the bar that contains time t
     let lo = 0, hi = barTimes.length - 1, ans = barTimes[0];
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (barTimes[mid] <= t) { ans = barTimes[mid]; lo = mid + 1; } else hi = mid - 1; }
@@ -86,7 +89,7 @@ export function buildExecutions(trades, barTimes, toBar = (u) => toLocal(u)) {
   const lines = [];
   let first = Infinity, last = -Infinity;
   const add = (iso, price, side, qty, tradeId, kind) => {
-    if (!iso || !Number.isFinite(Number(price))) return null;
+    if (!iso || !Number.isFinite(Number(price)) || epoch(iso) > until) return null;
     const raw = toBar(epoch(iso));
     first = Math.min(first, raw); last = Math.max(last, raw);
     const time = snap(raw);
@@ -105,7 +108,7 @@ export function buildExecutions(trades, barTimes, toBar = (u) => toLocal(u)) {
       add(f.entry, f.entryPrice, buyFirst ? 'buy' : 'sell', f.qty || t.qty, t.id, 'entry');
       add(f.exit, f.exitPrice, buyFirst ? 'sell' : 'buy', f.qty || t.qty, t.id, 'exit');
     }
-    if (t.entry && t.exit && Number.isFinite(Number(t.entryPrice)) && Number.isFinite(Number(t.exitPrice))) {
+    if (t.entry && t.exit && epoch(t.exit) <= until && Number.isFinite(Number(t.entryPrice)) && Number.isFinite(Number(t.exitPrice))) {
       const a = snap(toBar(epoch(t.entry))), b = snap(toBar(epoch(t.exit)));
       if (b > a) lines.push({ id: t.id, pnl: t.pnl, points: [{ time: a, value: Number(t.entryPrice) }, { time: b, value: Number(t.exitPrice) }] });
     }
@@ -139,6 +142,7 @@ export default function ExecChart({ date: dateProp, trades: tradesProp, onOpenTr
   const viewRef = useRef(null); // keeps your zoom when the chart redraws (live refresh, theme change)
   const themeKey = `${state.settings.themeId}|${state.settings.theme}|${JSON.stringify(state.settings.customThemes || [])}|${JSON.stringify(state.settings.chartColors || {})}`;
   const [colorsOpen, setColorsOpen] = useState(false);
+  const [studioOpen, setStudioOpen] = useState(false);
   const legendColors = useMemo(() => chartColors(state.settings.chartColors), [themeKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const isToday = date === todayKey();
   const tf = TIMEFRAMES.includes(state.settings.execTf) ? state.settings.execTf : '1m';
@@ -327,6 +331,7 @@ export default function ExecChart({ date: dateProp, trades: tradesProp, onOpenTr
           <button className="icon-btn" title="Chart colours" onClick={() => setColorsOpen(true)}><Palette size={15} /></button>
           <button className="icon-btn" title={focus ? 'Zoom to this trade' : 'Fit all executions'} onClick={() => fitRef.current()}><Maximize2 size={15} /></button>
           <button className="icon-btn" title="Reload prices" onClick={() => setNonce((n) => n + 1)}><RefreshCw size={15} /></button>
+          <button className="icon-btn ec-studio-btn" title="Full-screen chart: drawing tools, indicators and replay" onClick={() => setStudioOpen(true)}><Expand size={15} /></button>
         </div>
       </div>
       <div className="ec-stage">
@@ -357,6 +362,7 @@ export default function ExecChart({ date: dateProp, trades: tradesProp, onOpenTr
         )}
       </div>
       {colorsOpen && <ChartColors onClose={() => setColorsOpen(false)} />}
+      {studioOpen && <Suspense fallback={null}><ChartStudio date={date} trades={trades} initialSym={sym} onClose={() => setStudioOpen(false)} onOpenTrade={onOpenTrade ? (t) => { setStudioOpen(false); onOpenTrade(t); } : undefined} /></Suspense>}
     </div>
   );
 }

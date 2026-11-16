@@ -326,6 +326,7 @@ function WidgetView({ item, c }) {
     case 'daily': return <DailyW days={days} />;
     case 'drawdown': return <DrawdownW curve={curve} dd={dd} ctx={sctx} />;
     case 'weekday': case 'hour': case 'holdDur': case 'symbols': case 'strategy': case 'tags': return <Breakdown item={item} c={c} />;
+    case 'cross': return <CrossAnalysis item={item} c={c} />;
     case 'recent': return <Recent trades={trades} onOpen={c.setOpenTrade} priv={c.state.settings.privacy} />;
     case 'avgtrade': return <AvgWinLoss title="Average Trade" unit="trade" win={s.avgWin} loss={Math.abs(s.avgLoss)} wins={s.wins} losses={s.losses} total={s.count} winRate={s.winRate} avg={s.avgTrade} rateLabel="Your win rate" />;
     case 'avgday': return <AvgDayPanel days={days} />;
@@ -435,6 +436,72 @@ function Breakdown({ item, c }) {
           <span>Largest loss <Private className="neg">{fmtMoney(s.largestLoss)}</Private></span>
         </div>
       )}
+    </Frame>
+  );
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const CROSS_COLS = {
+  daily: { cols: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], of: (d) => (d.getDay() + 6) % 7 },
+  weekly: { cols: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'], of: (d) => Math.min(4, Math.floor((d.getDate() - 1) / 7)) },
+  monthly: { cols: MONTHS, of: (d) => d.getMonth() },
+  quarterly: { cols: ['Q1', 'Q2', 'Q3', 'Q4'], of: (d) => Math.floor(d.getMonth() / 3) },
+};
+const compactMoney = (v) => { const a = Math.abs(v); const sgn = v < 0 ? '-' : '+'; return a >= 1000 ? `${sgn}$${(a / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, '')}k` : `${sgn}$${Math.round(a)}`; };
+
+/** Symbols down the side, weekdays / weeks of the month / months / quarters across: where each one makes or loses money. */
+function CrossAnalysis({ item, c }) {
+  const { trades } = c;
+  const period = optionOf(item, 'period');
+  const metric = optionOf(item, 'metric');
+  const { cols, of } = CROSS_COLS[period] || CROSS_COLS.daily;
+  const rows = useMemo(() => {
+    const by = new Map();
+    for (const t of trades) {
+      if (!by.has(t.symbol)) by.set(t.symbol, { symbol: t.symbol, n: 0, cells: cols.map(() => ({ pnl: 0, n: 0, wins: 0 })) });
+      const r = by.get(t.symbol);
+      const cell = r.cells[of(toDate(t.entry))];
+      cell.pnl += t.pnl; cell.n += 1; if (t.pnl > 0) cell.wins += 1; r.n += 1;
+    }
+    return [...by.values()].sort((a, b) => b.n - a.n);
+  }, [trades, period]); // eslint-disable-line react-hooks/exhaustive-deps
+  const max = Math.max(1, ...rows.flatMap((r) => r.cells.map((x) => Math.abs(x.pnl))));
+  const shade = (x) => {
+    if (!x.n) return {};
+    if (metric === 'winRate') { const wr = x.wins / x.n; const k = Math.min(1, Math.abs(wr - 0.5) * 2); return { '--cx': wr >= 0.5 ? 'var(--pos)' : 'var(--neg)', '--cxa': `${Math.round(30 + k * 55)}%` }; }
+    const k = Math.min(1, Math.sqrt(Math.abs(x.pnl) / max));
+    return { '--cx': x.pnl >= 0 ? 'var(--pos)' : 'var(--neg)', '--cxa': `${Math.round(30 + k * 55)}%` };
+  };
+  return (
+    <Frame
+      title="Cross Analysis"
+      className="wcross"
+      right={(
+        <div className="row gap8">
+          <Seg value={period} onChange={(v) => c.setOpt(item.id, 'period', v)} options={[{ value: 'daily', label: 'D', title: 'Daily — by weekday' }, { value: 'weekly', label: 'W', title: 'Weekly — by week of the month' }, { value: 'monthly', label: 'M', title: 'Monthly — by month' }, { value: 'quarterly', label: 'Q', title: 'Quarterly — by quarter' }]} />
+          <Seg value={metric} onChange={(v) => c.setOpt(item.id, 'metric', v)} options={[{ value: 'pnl', label: '$', title: 'Net P&L' }, { value: 'winRate', label: '%', title: 'Win rate' }]} />
+        </div>
+      )}
+    >
+      <div className="cross-wrap">
+        <table className="cross" style={{ '--cols': cols.length }}>
+          <thead><tr><th />{cols.map((h) => <th key={h}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.symbol}>
+                <th className="truncate" title={`${r.symbol} · ${r.n} trade${r.n === 1 ? '' : 's'}`}>{r.symbol}</th>
+                {r.cells.map((x, i) => (
+                  <td key={i}>
+                    <div className={`cross-cell ${x.n ? 'on' : ''}`} style={shade(x)} title={x.n ? `${r.symbol} · ${cols[i]}\n${x.n} trade${x.n === 1 ? '' : 's'} · ${Math.round((x.wins / x.n) * 100)}% win rate · ${fmtMoney(x.pnl, { sign: true })}` : `${r.symbol} · ${cols[i]}: no trades`}>
+                      {!x.n ? '—' : metric === 'winRate' ? `${Math.round((x.wins / x.n) * 100)}%` : <Private>{compactMoney(x.pnl)}</Private>}
+                    </div>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Frame>
   );
 }

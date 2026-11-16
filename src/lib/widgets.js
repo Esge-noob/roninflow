@@ -37,6 +37,8 @@ export const WIDGETS = {
   holdDur: { name: 'Performance by Hold Duration', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results by how long the trade was held', options: [PNL_OR_RATE] },
   symbols: { name: 'Performance by Symbol', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per symbol, with largest win and loss', options: [PNL_OR_RATE] },
   strategy: { name: 'Strategy Performance', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per strategy from your playbook', options: [PNL_OR_RATE] },
+  cross: { name: 'Cross Analysis', cat: 'chart', w: 8, h: 6, minW: 4, minH: 4, desc: 'Each symbol by weekday, week of the month, month or quarter',
+    options: [{ key: 'period', label: 'Columns', choices: [['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['quarterly', 'Quarterly']], def: 'daily' }, { key: 'metric', label: 'Show', choices: [['pnl', '$ P&L'], ['winRate', '% Win rate']], def: 'pnl' }] },
   tags: { name: 'Performance by Tag', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per trade tag', options: [PNL_OR_RATE] },
 
   recent: { name: 'Recent Trades', cat: 'table', w: 6, h: 6, minW: 3, minH: 3, desc: 'Your latest trades; click one to open it' },
