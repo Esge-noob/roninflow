@@ -1,6 +1,7 @@
+import { linkedTrades, shareTargets } from '../lib/linkedTrades';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash, Pencil, ImagePlus, Clock, Check, X, Plus, MessageCircle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Trash, Pencil, ImagePlus, Clock, Check, X, Plus, MessageCircle, ChevronLeft, ChevronRight, Link2 } from 'lucide-react';
 import { useStore } from '../store/store';
 import { Modal, ModalHead, Drawer, Money, Stars, Seg, useToast, Confirm, fileToDataUrl } from './ui';
 import { computePnl, fmtDate, fmtTime12, fmtHold, holdSeconds, POINT_VALUE, pad, fmtMoney } from '../lib/stats';
@@ -215,6 +216,8 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
   const t = live;
   const up = (patch) => updateTrade(t.id, patch);
   const acct = state.accounts.find((a) => a.id === t.accountId);
+  // the same trade on other accounts that this review is shared with (Review page → Share reviews)
+  const copies = linkedTrades(t, state.trades, shareTargets(state.settings.reviewSync, state.accounts, t.accountId));
   // stepping through the day's trades
   const list = siblings ? siblings.map((x) => state.trades.find((y) => y.id === x.id) || x) : null;
   const at = list ? list.findIndex((x) => x.id === t.id) : -1;
@@ -271,6 +274,7 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
               {!t.reviewed && <span className="badge neutral">Inbox</span>}
             </div>
             <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>{fmtDate(t.entry)} · {fmtTime12(t.entry)} → {fmtTime12(t.exit)}</div>
+            {copies.length > 0 && <div className="shared-line" title={`Your notes, tags, rating and other review fields on this trade are also saved on: ${copies.map((c) => c.accountId).join(', ')}`}><Link2 size={12} /> Review shared with {copies.length === 1 ? copies[0].accountId : `${copies.length} copies (${copies.map((c) => c.accountId).join(', ')})`}</div>}
           </div>
           <div className="row gap8">
             <button className="icon-btn" title="Edit" onClick={() => setEdit(true)}><Pencil size={16} /></button>

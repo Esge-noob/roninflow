@@ -1,3 +1,4 @@
+import { reviewPart, shareTargets, linkedTrades, backfillReviews } from '../lib/linkedTrades';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { initialState } from '../data/seed';
 import { DEMO_ACCOUNT, demoTrades } from '../data/demo';
@@ -262,7 +263,18 @@ export function StoreProvider({ children }) {
         return trade;
       },
       addTrades: (list) => update((s) => ({ ...s, trades: [...list.map((t) => ({ id: uid('t'), tags: [], notes: '', rating: 0, reviewed: false, screenshots: [], strategyId: null, ...t })), ...s.trades] })),
-      updateTrade: (id, patch) => patchList('trades', id, patch),
+      // review edits (notes, tags, rating…) are mirrored onto the same trade on other accounts when sharing is on
+      updateTrade: (id, patch) => update((s) => {
+        const src = s.trades.find((x) => x.id === id);
+        if (!src) return s;
+        const p = typeof patch === 'function' ? patch(src) : patch;
+        const share = reviewPart(p);
+        const targets = Object.keys(share).length ? shareTargets(s.settings.reviewSync, s.accounts, src.accountId) : [];
+        const copies = new Set(linkedTrades(src, s.trades, targets).map((x) => x.id));
+        return { ...s, trades: s.trades.map((x) => (x.id === id ? { ...x, ...p } : copies.has(x.id) ? { ...x, ...share } : x)) };
+      }),
+      /** Copy existing reviews onto linked trades (fills gaps only, never overwrites). */
+      backfillReviews: () => update((s) => { const r = backfillReviews(s.trades, s.accounts, s.settings.reviewSync); return r.changed ? { ...s, trades: r.trades } : s; }),
       /** Atomic import: create accounts, optionally clear a date range per account, add trades. */
       importBatch: ({ newAccounts = [], trades = [], removeIds = [], note }) =>
         update((s) => {

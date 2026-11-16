@@ -12,6 +12,7 @@ import { statKey } from '../lib/statInfo';
 import { useOpenReview as useGlobalOpenReview } from '../lib/dayPopup';
 import { WrappedButton } from '../components/Wrapped';
 import CoachReview from '../components/CoachReview';
+import ReviewShare from '../components/ReviewShare';
 import { periodBalanceGap } from '../lib/balance';
 
 /** Opens a day's diary in a pop-up on top of the review page. */
@@ -786,6 +787,7 @@ export default function Review({ type = 'weekly', id }) {
         <StatusBadge status={status} />
         {trades.length > 0 && <WrappedButton key={`${period.type}:${period.id}`} period={period} />}
         <div className="grow" />
+        <ReviewShare />
         <Seg value={kind} onChange={(v) => navigate(`review/${v}`)} options={REVIEW_TYPES.map((t) => ({ value: t.id, label: t.label }))} />
       </div>
       <ReviewBody period={period} all={all} />

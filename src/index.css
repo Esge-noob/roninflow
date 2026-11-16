@@ -1877,3 +1877,20 @@ a.ruin-chip { cursor: pointer; }
 .risk-saveas .input { height: 32px; width: 220px; }
 .danger-ghost:hover { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 45%, var(--border)); }
 @media (max-width: 760px) { .risk-prof-head { grid-template-columns: 1fr; } .risk-saveas { justify-content: flex-start; } .risk-saveas .input { width: 100%; } }
+/* sharing trade reviews across accounts */
+.rshare-btn b { font-weight: 600; color: var(--fg); }
+.rshare-btn.on { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+.rshare-btn.on svg:first-child { color: var(--primary); }
+.rshare { display: flex; flex-direction: column; gap: 12px; padding: 6px 6px 4px; font-size: 13px; }
+.rshare p { margin: 0; font-size: 12.5px; line-height: 1.5; }
+.rshare-h { font-size: 14px; }
+.rshare .seg { align-self: flex-start; }
+.rshare-accts { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; border: 1px solid var(--border); padding: 6px; }
+.rshare-acct { display: flex; align-items: center; gap: 8px; padding: 6px; cursor: pointer; font-size: 13px; }
+.rshare-acct:hover { background: var(--hover); }
+.rshare-back { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-2); background: var(--card); font-size: 12.5px; }
+.rshare-back .btn:disabled { opacity: 0.45; }
+.rshare-foot { font-size: 11.5px; line-height: 1.45; }
+.shared-line { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; font-size: 12px; color: var(--primary); }
+@media (max-width: 760px) { .rshare-pop .pop { left: auto !important; right: 0 !important; max-width: calc(100vw - 32px); } }
+.rshare-what { font-size: 12px; color: var(--fg-2); }
