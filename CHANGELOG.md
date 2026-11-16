@@ -5,7 +5,6 @@ Each release's notes on GitHub come from its section here (`## x.y.z`, newest fi
 ## 1.5.1
 
 - **About RoninFlow in shared journals:** clicking the RoninFlow name at the top left of a view-only link or snapshot file opens a short popup explaining what RoninFlow is, with buttons to the GitHub repository and the latest download.
-- Shared view-only pages now scroll like a normal web page (the page could get stuck on long reviews).
 
 ## 1.5.0
 
