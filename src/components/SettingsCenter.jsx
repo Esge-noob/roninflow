@@ -145,6 +145,9 @@ function Security({ onNetwork }) {
   );
 }
 
+const PLATFORM_IDS = ['atas', 'ninjatrader', 'quantower', 'sierrachart', 'metatrader', 'ctrader'];
+const PLATFORM_NAMES = { atas: 'ATAS', ninjatrader: 'NinjaTrader', quantower: 'Quantower', sierrachart: 'Sierra Chart', metatrader: 'MetaTrader', ctrader: 'cTrader', other: 'Other tools (webhook)' };
+
 function Prices() {
   const toast = useToast();
   const [cfg, setCfg] = useState(null);
@@ -174,14 +177,39 @@ function Prices() {
           </div>
         </div>
         <div className="muted" style={{ fontSize: 12.5 }}>Your own data feed, free and private. The NinjaTrader, Quantower, Sierra Chart, MetaTrader and cTrader add-ons load the 1-minute bars for each day you traded from the platform’s data connection and send them while the platform is open; the ATAS indicator sends the bars of the chart it’s on (keep it on a 1-minute chart). Update an older add-on to get this. Other tools can POST bars to <code>/api/candles/ingest</code> with your webhook token.{!cfg.addon && <> <b style={{ color: 'var(--fg)', fontWeight: 500 }}>Off:</b> charts don’t use bars from your platform, and the add-ons stop fetching them.</>}</div>
+        {cfg.addon && (
+          <div className="row gap8" style={{ flexWrap: 'wrap', marginTop: 4 }}>
+            <span style={{ fontSize: 12.5 }}>Use bars from</span>
+            <select className="input" style={{ width: 'auto', minWidth: 220, height: 32, fontSize: 12.5 }} value={cfg.addonSource || 'any'} disabled={busy} onChange={(e) => save({ addonSource: e.target.value })}>
+              <option value="any">Any platform (the one with the most data)</option>
+              {[...new Set([...PLATFORM_IDS, ...(cfg.addonSources || []).map((x) => x.id), ...(cfg.addonSource && cfg.addonSource !== 'any' ? [cfg.addonSource] : [])])].map((id) => {
+                const got = (cfg.addonSources || []).find((x) => x.id === id);
+                return <option key={id} value={id}>{PLATFORM_NAMES[id] || id}{got ? ` · ${got.symbols} symbol${got.symbols === 1 ? '' : 's'} received` : ''}</option>;
+              })}
+            </select>
+            {cfg.addonSource && cfg.addonSource !== 'any' && <span className="muted" style={{ fontSize: 12 }}>Other platforms’ add-ons won’t fetch bars.</span>}
+          </div>
+        )}
       </div>
       <div className="panel col gap8" style={{ padding: 14 }}>
-        <div className="row between"><b style={{ fontWeight: 600 }}>2 · Databento <span className="muted" style={{ fontWeight: 400 }}>— CME futures</span></b>{cfg.databento && <span className="badge pos-soft"><Check size={12} /> Key saved</span>}</div>
+        <div className="row between gap8" style={{ flexWrap: 'wrap' }}>
+          <b style={{ fontWeight: 600 }}>2 · Databento <span className="muted" style={{ fontWeight: 400 }}>— CME futures</span></b>
+          <div className="row gap8" style={{ marginLeft: 'auto' }}>
+            {cfg.databento && <span className="badge pos-soft"><Check size={12} /> Key saved</span>}
+            <span title={cfg.databento ? '' : 'Save a key first'}><Switch on={!!cfg.databento && cfg.useDatabento} disabled={!cfg.databento || busy} onChange={(v) => save({ useDatabento: v })} /></span>
+          </div>
+        </div>
         <div className="muted" style={{ fontSize: 12.5 }}>Licensed CME Globex 1-minute bars with your own key (pay-as-you-go; new accounts get free credit). <a className="accent" href="https://databento.com/signup" target="_blank" rel="noreferrer">Get a key <ExternalLink size={11} /></a></div>
         <div className="row gap8"><input className="input grow" type="password" autoComplete="off" placeholder={cfg.databento ? 'Saved — paste a new key to replace' : 'db-…'} value={keys.databentoKey} onChange={(e) => setKeys((k) => ({ ...k, databentoKey: e.target.value }))} /><button className="btn" disabled={busy || !keys.databentoKey} onClick={() => save({ databentoKey: keys.databentoKey })}>Save</button>{cfg.databento && <button className="btn" disabled={busy} onClick={() => save({ databentoKey: '' })}>Remove</button>}</div>
       </div>
       <div className="panel col gap8" style={{ padding: 14 }}>
-        <div className="row between"><b style={{ fontWeight: 600 }}>3 · Polygon <span className="muted" style={{ fontWeight: 400 }}>— stocks, crypto, forex</span></b>{cfg.polygon && <span className="badge pos-soft"><Check size={12} /> Key saved</span>}</div>
+        <div className="row between gap8" style={{ flexWrap: 'wrap' }}>
+          <b style={{ fontWeight: 600 }}>3 · Polygon <span className="muted" style={{ fontWeight: 400 }}>— stocks, crypto, forex</span></b>
+          <div className="row gap8" style={{ marginLeft: 'auto' }}>
+            {cfg.polygon && <span className="badge pos-soft"><Check size={12} /> Key saved</span>}
+            <span title={cfg.polygon ? '' : 'Save a key first'}><Switch on={!!cfg.polygon && cfg.usePolygon} disabled={!cfg.polygon || busy} onChange={(v) => save({ usePolygon: v })} /></span>
+          </div>
+        </div>
         <div className="muted" style={{ fontSize: 12.5 }}>1-minute bars with your own key (free tier available). <a className="accent" href="https://polygon.io/dashboard/signup" target="_blank" rel="noreferrer">Get a key <ExternalLink size={11} /></a></div>
         <div className="row gap8"><input className="input grow" type="password" autoComplete="off" placeholder={cfg.polygon ? 'Saved — paste a new key to replace' : 'API key'} value={keys.polygonKey} onChange={(e) => setKeys((k) => ({ ...k, polygonKey: e.target.value }))} /><button className="btn" disabled={busy || !keys.polygonKey} onClick={() => save({ polygonKey: keys.polygonKey })}>Save</button>{cfg.polygon && <button className="btn" disabled={busy} onClick={() => save({ polygonKey: '' })}>Remove</button>}</div>
       </div>

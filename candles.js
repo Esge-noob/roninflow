@@ -7,7 +7,7 @@
 //        → { items: [{ symbol, contract, from, to }] }  or lines "symbol|contract|from|to" (newest day first)
 //        MetaTrader and Sierra Chart can't make web requests: the same list is written to price-wanted.txt in their
 //        drop folders, and they drop bars back as <name>.bars.jsonl (one ingest body per line).
-//   GET  /api/candles/config  · POST /api/candles/config { yahoo, addon?, databentoKey?, polygonKey? }   (journal only)
+//   GET  /api/candles/config  · POST /api/candles/config { yahoo, addon?, addonSource?, useDatabento?, usePolygon?, databentoKey?, polygonKey? }
 //   GET  /api/candles/lib     → TradingView Lightweight Charts (downloaded once, then served from data/vendor)
 //
 // Where prices come from is up to you (Settings → Price data). In order:
@@ -127,17 +127,29 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   let cfg = readCfg();
   const keyOf = (name) => vault?.get(`price:${name}`) || null;
 
-  // ---------- bars from platform add-ons: data/bars/<ROOT>/<UTC date>.json  { "<t>": [t,o,h,l,c,v] } ----------
-  const barFile = (root, t) => path.join(barsDir, root.replace(/[^\w.-]/g, '_'), `${new Date(t * 1000).toISOString().slice(0, 10)}.json`);
-  function storeBars(symbol, bars) {
+  // ---------- bars from platform add-ons: data/bars/<platform>/<ROOT>/<UTC date>.json  { "<t>": [t,o,h,l,c,v] } ----------
+  // Bars saved before they were kept per platform are in data/bars/_earlier/<ROOT>; they back up whichever platform is used.
+  const EARLIER = '_earlier';
+  const srcId = (s) => String(s || 'other').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32) || 'other';
+  (function moveEarlier() {
+    let names;
+    try { names = fs.readdirSync(barsDir, { withFileTypes: true }); } catch { return; }
+    for (const e of names) {
+      if (!e.isDirectory() || e.name === EARLIER || e.name === e.name.toLowerCase()) continue; // platform folders are lower case, roots aren't
+      try { fs.mkdirSync(path.join(barsDir, EARLIER), { recursive: true }); fs.renameSync(path.join(barsDir, e.name), path.join(barsDir, EARLIER, e.name)); } catch (err) { log('[candles] could not move saved bars', e.name, err.message); }
+    }
+  })();
+  const barFile = (source, root, t) => path.join(barsDir, source, root.replace(/[^\w.-]/g, '_'), `${new Date(t * 1000).toISOString().slice(0, 10)}.json`);
+  function storeBars(symbol, bars, source) {
     const root = rootOf(symbol);
+    const src = srcId(source);
     const byFile = new Map();
     for (const b of bars) {
       const t = Math.floor(Number(Array.isArray(b) ? b[0] : (b.time ?? b.t)));
       const row = Array.isArray(b) ? b.slice(0, 6).map(Number) : [t, +b.open, +b.high, +b.low, +b.close, +(b.volume || 0)];
       row[0] = t > 1e12 ? Math.floor(t / 1000) : t;
       if (!Number.isFinite(row[0]) || row.slice(1, 5).some((v) => !Number.isFinite(v))) continue;
-      const f = barFile(root, row[0]);
+      const f = barFile(src, root, row[0]);
       (byFile.get(f) || byFile.set(f, []).get(f)).push(row);
     }
     let n = 0;
@@ -149,16 +161,30 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     }
     return n;
   }
-  function addonBars(symbol, from, to) {
+  const listDir = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; } };
+  /** Platforms that have sent bars, with how many symbols each. */
+  const addonSources = () => listDir(barsDir).filter((n) => n !== EARLIER).map((id) => ({ id, symbols: listDir(path.join(barsDir, id)).length }));
+  function barsFrom(source, symbol, from, to) {
     const out = [];
     // a micro trades at the same price as its full-size contract, so either chart's bars will do (MES ↔ ES …)
     for (const root of [rootOf(symbol), ...(TWIN[rootOf(symbol)] ? [TWIN[rootOf(symbol)]] : [])]) {
       for (let t = from - (from % DAY); t <= to; t += DAY) {
-        const cur = readCache(barFile(root, t));
+        const cur = readCache(barFile(source, root, t));
         if (cur) for (const r of Object.values(cur)) if (r[0] >= from && r[0] < to) out.push(r);
       }
       if (out.length) break;
     }
+    return out;
+  }
+  /** Bars from the platform chosen in Settings → Price data ("any" = the platform with the most for that day). */
+  function addonBars(symbol, from, to) {
+    const pick = cfg.addonSource && cfg.addonSource !== 'any' ? cfg.addonSource : null;
+    let out = [];
+    for (const src of pick ? [pick] : addonSources().map((x) => x.id)) {
+      const got = barsFrom(src, symbol, from, to);
+      if (got.length > out.length) out = got;
+    }
+    if (out.length < 5) { const old = barsFrom(EARLIER, symbol, from, to); if (old.length > out.length) out = old; }
     out.sort((a, b) => a[0] - b[0]);
     // bar size from the data (an add-on on a 1-minute chart sends 1-minute bars)
     const step = out.length > 2 ? Math.min(...out.slice(1, 50).map((r, i) => r[0] - out[i][0]).filter((d) => d > 0)) : 60;
@@ -166,17 +192,18 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   }
 
   // ---------- which trade days the add-ons should still fetch bars for ----------
-  // price-covered.json: { "<ROOT>": [[from, to], …] } — time ranges (unix seconds) add-ons already sent bars for. A range
+  // price-covered.json: { "<platform>|<ROOT>": [[from, to], …] } — time ranges (unix seconds) add-ons already sent bars for. A range
   // an add-on asked its platform for counts even when the platform had nothing, so it isn't asked for again.
   const coverFile = path.join(dataDir, 'price-covered.json');
   let covered = {};
   try { covered = JSON.parse(fs.readFileSync(coverFile, 'utf8')) || {}; } catch { /* first run */ }
   const WANT_DAYS = 45;
   const localDate = (unix, tz) => new Date(unix * 1000).toLocaleDateString('en-CA', { timeZone: tz });
-  function markCovered(symbol, from, to) {
+  for (const k of Object.keys(covered)) if (!k.includes('|')) delete covered[k]; // from before bars were kept per platform
+  function markCovered(source, symbol, from, to) {
     from = Math.floor(Number(from)); to = Math.floor(Number(to));
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return;
-    const root = rootOf(symbol);
+    const root = `${srcId(source)}|${rootOf(symbol)}`;
     const cut = Math.floor(Date.now() / 1000) - (WANT_DAYS + 5) * DAY; // forget what nobody will ask about again
     const list = [...(covered[root] || []), [from, to]].filter((r) => r[1] > cut).sort((x, y) => x[0] - y[0]);
     const merged = [];
@@ -191,6 +218,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   /** Trade days (newest first) whose 1-minute bars an add-on for `source` should fetch from its platform. */
   function wanted(source, { tz = Intl.DateTimeFormat().resolvedOptions().timeZone, now = Math.floor(Date.now() / 1000), limit = 20 } = {}) {
     if (cfg.addon === false) return []; // add-on price data switched off: nothing to fetch
+    if (cfg.addonSource && cfg.addonSource !== 'any' && cfg.addonSource !== source) return []; // bars come from another platform
     const ck = `${source}|${tz}`;
     const hit = wantCache.get(ck);
     if (hit && now - hit.at < 20) return hit.items;
@@ -208,7 +236,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const { from, to } = dayWindow(d.date, tz);
       if (from > now) continue;
       const end = Math.min(to, now);
-      const have = coveredTo(rootOf(d.symbol), from);
+      const have = coveredTo(`${source}|${rootOf(d.symbol)}`, from);
       if (have >= end - (end === now ? 90 : 0)) continue;              // today: refreshed every ~minute and a half
       if (!have) {                                                      // another add-on (ATAS on a chart) may have sent them
         const ab = addonBars(d.symbol, from, end);
@@ -240,8 +268,9 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     let n = 0;
     for (const g of groups) {
       if (!g?.symbol) continue;
-      if (Array.isArray(g.bars)) n += storeBars(g.symbol, g.bars);
-      if (g.from !== undefined && g.to !== undefined) markCovered(g.symbol, g.from, g.to);
+      const source = g.source || body.source;
+      if (Array.isArray(g.bars)) n += storeBars(g.symbol, g.bars, source);
+      if (g.from !== undefined && g.to !== undefined) markCovered(source, g.symbol, g.from, g.to);
     }
     return n;
   }
@@ -278,7 +307,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const addonRec = ab.candles.length >= 5 ? { symbol: rootOf(symbol), ysym, date, tz, from, to, interval: ab.interval, source: 'Your platform (add-on)', fetchedAt: now, final: false, candles: ab.candles } : null;
       if (addonRec && ab.interval === '1m') return addonRec; // coarser add-on bars are used if nothing better is set up
       // 2. Databento (futures)
-      const dbKey = keyOf('databento');
+      const dbKey = cfg.useDatabento === false ? null : keyOf('databento');
       if (dbKey && isFutures(symbol)) {
         try {
           const candles = await databento(dbKey, rootOf(symbol), from, end);
@@ -286,7 +315,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         } catch (e) { lastErr = e; }
       }
       // 3. Polygon (stocks, crypto, forex)
-      const pgKey = keyOf('polygon');
+      const pgKey = cfg.usePolygon === false ? null : keyOf('polygon');
       const pt = polygonTicker(symbol);
       if (pgKey && pt && !isFutures(symbol)) {
         try {
@@ -383,14 +412,21 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (u.pathname === '/api/candles/config') {
         if (req.method === 'POST') {
           const b = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
-          cfg = { ...cfg, yahoo: !!b.yahoo, decided: true, ...(typeof b.addon === 'boolean' ? { addon: b.addon } : {}) };
+          cfg = { ...cfg, yahoo: !!b.yahoo, decided: true };
+          for (const k of ['addon', 'useDatabento', 'usePolygon']) if (typeof b[k] === 'boolean') cfg[k] = b[k];
+          if (typeof b.addonSource === 'string') cfg.addonSource = b.addonSource === 'any' ? 'any' : srcId(b.addonSource);
           wantCache.clear();
           for (const k of ['databento', 'polygon']) if (typeof b[`${k}Key`] === 'string' && b[`${k}Key`] !== '••••••••') vault?.set(`price:${k}`, b[`${k}Key`].trim());
           fs.mkdirSync(dataDir, { recursive: true });
           fs.writeFileSync(cfgFile, JSON.stringify(cfg));
         }
-        const rootsWithBars = (() => { try { return fs.readdirSync(barsDir); } catch { return []; } })();
-        return send(res, 200, { yahoo: !!cfg.yahoo, addon: cfg.addon !== false, decided: !!cfg.decided, databento: !!keyOf('databento'), polygon: !!keyOf('polygon'), addonSymbols: rootsWithBars, vault: !!vault });
+        const sources = addonSources();
+        const roots = [...new Set(sources.flatMap((x) => listDir(path.join(barsDir, x.id))))];
+        return send(res, 200, {
+          yahoo: !!cfg.yahoo, addon: cfg.addon !== false, addonSource: cfg.addonSource || 'any', addonSources: sources, addonSymbols: roots,
+          useDatabento: cfg.useDatabento !== false, usePolygon: cfg.usePolygon !== false,
+          decided: !!cfg.decided, databento: !!keyOf('databento'), polygon: !!keyOf('polygon'), vault: !!vault,
+        });
       }
       if (u.pathname === '/api/candles/lib') {
         const buf = await lib();

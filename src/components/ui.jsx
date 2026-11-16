@@ -110,7 +110,7 @@ export function Seg({ options, value, onChange, icon = false }) {
   );
 }
 
-export const Switch = ({ on, onChange }) => <button className={`switch ${on ? 'on' : ''}`} onClick={() => onChange(!on)} aria-pressed={on} />;
+export const Switch = ({ on, onChange, disabled }) => <button className={`switch ${on ? 'on' : ''}`} onClick={() => onChange(!on)} aria-pressed={on} disabled={disabled} />;
 
 /** Pick the account the page shows. `compact` renders it as a toolbar button instead of a title. */
 export function AccountPicker({ compact = false, counts }) {

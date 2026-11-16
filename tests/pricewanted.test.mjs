@@ -51,8 +51,8 @@ test('a range an add-on sent is not asked for again; today is refreshed from whe
   ] });
   const [today, past] = h.wanted('ninjatrader', { tz: TZ, now });
   // the platform had nothing for the past day — still counts as done
-  h.ingestBars({ symbol: past.symbol, from: past.from, to: past.to, bars: [] });
-  h.ingestBars({ symbol: today.symbol, from: today.from, to: now - 30, bars: bars(today.from, 50) });
+  h.ingestBars({ source: 'ninjatrader', symbol: past.symbol, from: past.from, to: past.to, bars: [] });
+  h.ingestBars({ source: 'ninjatrader', symbol: today.symbol, from: today.from, to: now - 30, bars: bars(today.from, 50) });
   assert.deepEqual(h.wanted('ninjatrader', { tz: TZ, now }), [], 'nothing right after');
   const later = h.wanted('ninjatrader', { tz: TZ, now: now + 300 });
   assert.equal(later.length, 1);
@@ -64,7 +64,7 @@ test('days another add-on already sent 1-minute bars for are skipped', () => {
   const now = Math.floor(Date.parse('2026-11-16T20:00:00Z') / 1000);
   const { h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }] });
   const w = dayWindow('2026-11-13', TZ);
-  h.ingestBars({ symbol: 'MNQZ6', bars: bars(w.from, Math.floor((w.to - w.from) / 60)) }); // ATAS on a 1-minute chart (no from/to)
+  h.ingestBars({ source: 'atas', symbol: 'MNQZ6', bars: bars(w.from, Math.floor((w.to - w.from) / 60)) }); // ATAS on a 1-minute chart (no from/to)
   assert.deepEqual(h.wanted('ninjatrader', { tz: TZ, now }), []);
 });
 
@@ -99,8 +99,8 @@ test('bars dropped as a .bars.jsonl file reach the price data and the file is cl
   fs.utimesSync(file, old, old);
   scan();
   assert.ok(!fs.existsSync(file), 'removed once fully read and quiet');
-  const files = fs.readdirSync(path.join(dir, 'bars'));
-  assert.deepEqual(files, ['EURUSD']);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'bars')), ['other']);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'bars', 'other')), ['EURUSD']);
 });
 
 test('switching add-on price data off stops the list and the charts using it', async () => {
@@ -115,7 +115,7 @@ test('switching add-on price data off stops the list and the charts using it', a
     h(req, res);
   });
   const w = dayWindow(date, Intl.DateTimeFormat().resolvedOptions().timeZone);
-  h.ingestBars({ symbol: 'MNQ', bars: bars(w.from + 15 * 3600, 30) });
+  h.ingestBars({ source: 'ninjatrader', symbol: 'MNQ', bars: bars(w.from + 15 * 3600, 30) });
   assert.equal((await call('GET', '/api/candles/config')).body.addon, true, 'on by default');
   assert.equal((await call('GET', `/api/candles?symbol=MNQ&date=${date}`)).body.source, 'Your platform (add-on)');
   assert.equal((await call('POST', '/api/candles/config', { yahoo: false, addon: false })).body.addon, false);
@@ -124,4 +124,65 @@ test('switching add-on price data off stops the list and the charts using it', a
   assert.equal((await call('POST', '/api/candles/config', { yahoo: false })).body.addon, false, 'kept when other settings are saved');
   await call('POST', '/api/candles/config', { yahoo: false, addon: true });
   assert.equal(h.wanted('ninjatrader').length, 1);
+});
+
+function caller(h) {
+  return (method, url, body) => new Promise((resolve) => {
+    const { Readable } = require('node:stream');
+    const req = Readable.from(body ? [JSON.stringify(body)] : []);
+    Object.assign(req, { method, url, headers: {}, setEncoding() {} });
+    const res = { headers: {}, setHeader(k, v) { this.headers[k] = v; }, end(t) { resolve({ status: this.statusCode, body: JSON.parse(t) }); } };
+    h(req, res);
+  });
+}
+
+test('choosing one platform: charts use its bars, only its add-on fetches, earlier bars still back it up', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const date = new Date((now - 3 * 86400) * 1000).toLocaleDateString('en-CA');
+  const date2 = new Date((now - 4 * 86400) * 1000).toLocaleDateString('en-CA');
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const dir = tmp();
+  // bars saved before they were kept per platform (data/bars/<ROOT>/…)
+  const w2 = dayWindow(date2, tz);
+  const old = path.join(dir, 'bars', 'MNQ');
+  fs.mkdirSync(old, { recursive: true });
+  const day2 = new Date((w2.from + 16 * 3600) * 1000).toISOString().slice(0, 10);
+  fs.writeFileSync(path.join(old, `${day2}.json`), JSON.stringify(Object.fromEntries(bars(w2.from + 16 * 3600, 20).map((b) => [b[0], b]))));
+  fs.writeFileSync(path.join(dir, 'price-covered.json'), JSON.stringify({ MNQ: [[1, 2]] }));
+  const trades = [
+    { symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: `${date}T06:40:00` },
+    { symbol: 'MNQ', contract: 'MNQZ6', source: 'quantower', entry: `${date}T06:40:00` },
+  ];
+  const h = createCandleHandler(dir, { readTrades: () => trades, dropDirs: () => [] });
+  const call = caller(h);
+  assert.ok(fs.existsSync(path.join(dir, 'bars', '_earlier', 'MNQ')), 'earlier bars moved aside');
+  const w = dayWindow(date, tz);
+  h.ingestBars({ source: 'ninjatrader', symbol: 'MNQ', bars: bars(w.from + 15 * 3600, 30).map((b) => [b[0], 10, 11, 9, 10, 1]) });
+  h.ingestBars({ source: 'quantower', symbol: 'MNQ', bars: bars(w.from + 15 * 3600, 60).map((b) => [b[0], 20, 21, 19, 20, 1]) });
+  let cfg = (await call('GET', '/api/candles/config')).body;
+  assert.equal(cfg.addonSource, 'any');
+  assert.deepEqual(cfg.addonSources.map((x) => x.id).sort(), ['ninjatrader', 'quantower']);
+  let c = (await call('GET', `/api/candles?symbol=MNQ&date=${date}`)).body;
+  assert.equal(c.candles[0][1], 20, 'any: the platform with the most bars');
+  assert.equal(h.wanted('ninjatrader', { tz }).length + h.wanted('quantower', { tz }).length, 2);
+  cfg = (await call('POST', '/api/candles/config', { yahoo: false, addonSource: 'ninjatrader' })).body;
+  assert.equal(cfg.addonSource, 'ninjatrader');
+  c = (await call('GET', `/api/candles?symbol=MNQ&date=${date}`)).body;
+  assert.equal(c.candles[0][1], 10, 'the chosen platform');
+  assert.deepEqual(h.wanted('quantower', { tz }), [], 'the other platform stops fetching');
+  assert.equal(h.wanted('ninjatrader', { tz }).length, 1);
+  c = (await call('GET', `/api/candles?symbol=MNQ&date=${date2}`)).body;
+  assert.equal(c.candles.length, 20, 'a day only in the earlier bars still shows');
+});
+
+test('Databento and Polygon can be switched off without removing the key', async () => {
+  const h = createCandleHandler(tmp(), { dropDirs: () => [] });
+  const call = caller(h);
+  const cfg = (await call('GET', '/api/candles/config')).body;
+  assert.equal(cfg.useDatabento, true);
+  assert.equal(cfg.usePolygon, true);
+  const off = (await call('POST', '/api/candles/config', { yahoo: false, useDatabento: false, usePolygon: false })).body;
+  assert.equal(off.useDatabento, false);
+  assert.equal(off.usePolygon, false);
+  assert.equal((await call('POST', '/api/candles/config', { yahoo: true })).body.useDatabento, false, 'kept when other settings change');
 });
