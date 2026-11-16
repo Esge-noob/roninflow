@@ -30,3 +30,13 @@ test('one big day makes the record less consistent', () => {
   assert.ok(r.parts.consistency < 10, `consistency ${r.parts.consistency}`);
   assert.equal(roninScore([], 50000).score, 0);
 });
+
+test('insights put the weakest part first and describe it', async () => {
+  const { roninInsights } = await import('../src/lib/roninScore.js');
+  const t = [tr('2026-10-01', 5000), tr('2026-10-02', 100), tr('2026-10-03', -50), tr('2026-10-04', 100)];
+  const ins = roninInsights(roninScore(t, 50000));
+  assert.equal(ins.parts[0].key, 'consistency');
+  assert.match(ins.parts[0].meaning, /one day/);
+  assert.match(ins.summary, /Consistency is holding it back/);
+  for (const p of ins.parts) assert.ok(p.value && p.meaning && p.tip, p.key);
+});

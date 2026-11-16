@@ -2121,3 +2121,23 @@ a.ruin-chip { cursor: pointer; }
 .ronin.small .ronin-foot { flex: 1 1 50%; grid-template-columns: 1fr; gap: 10px; border-top: 0; padding-top: 0; align-content: center; min-width: 0; }
 .ronin.small .ronin-total { border-right: 0; padding-right: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
 .ronin.small .ronin-total b { font-size: 28px; }
+/* Ronin Score: weakest part + what the score says */
+.ronin-weak { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; padding: 0; background: none; border: 0; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.ronin-weak:hover b { text-decoration: underline; }
+.ronin-weak svg { color: var(--muted); }
+.ronin.small .ronin-weak { margin-top: 2px; font-size: 11.5px; flex-wrap: wrap; }
+.ronin-detail .modal-body p { margin: 0; line-height: 1.55; font-size: 13.5px; }
+.ronin-d-head { display: flex; gap: 18px; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.ronin-d-head > b { font-size: 40px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ronin-d-part { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); background: var(--card-2); }
+.ronin-d-part.weakest { border-color: color-mix(in srgb, var(--neg) 45%, var(--border)); }
+.ronin-d-part .badge { margin-left: 8px; font-size: 11px; }
+.ronin-d-score { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ronin-d-score .muted { font-size: 12px; font-weight: 400; }
+.ronin-d-meter { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.ronin-d-meter i { display: block; height: 100%; }
+.ronin-d-value { font-size: 12.5px; color: var(--muted); }
+.ronin-d-value b { color: var(--fg); font-weight: 500; }
+.ronin-d-tip { padding: 8px 10px; background: color-mix(in srgb, var(--primary) 9%, transparent); border-left: 2px solid var(--primary); font-size: 13px !important; }
+.ronin.small .ronin-weak-n { display: none; }
+@media (max-width: 560px) { .ronin-d-head { flex-direction: column; align-items: stretch; gap: 8px; } .ronin-d-head > b { font-size: 34px; } }

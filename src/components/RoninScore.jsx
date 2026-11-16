@@ -1,9 +1,10 @@
 // Ronin Score widget: a radar of the six parts and the overall score on a 0–100 bar — the same design at every
 // size; at KPI-card size the radar fills the space and its labels show on hover.
 import { useMemo, useState } from 'react';
-import { Info } from 'lucide-react';
-import { Popover, useSize } from './ui';
-import { roninScore, RONIN_PARTS } from '../lib/roninScore';
+import { createPortal } from 'react-dom';
+import { Info, ChevronRight } from 'lucide-react';
+import { Popover, useSize, Modal, ModalHead } from './ui';
+import { roninScore, roninInsights, RONIN_PARTS } from '../lib/roninScore';
 import { pfText } from '../lib/stats';
 
 const SHORT = { win: 'Win %', pf: 'Profit factor', wl: 'Win/loss', recovery: 'Recovery', dd: 'Drawdown', consistency: 'Consistency' };
@@ -21,7 +22,9 @@ export default function RoninScore({ trades, initial }) {
   const r = useMemo(() => { const x = roninScore(trades, initial); x.netUp = trades.reduce((a, t) => a + t.pnl, 0) > 0; return x; }, [trades, initial]);
   const [ref, { w, h }] = useSize();
   const [hover, setHover] = useState(null);
+  const [detail, setDetail] = useState(false);
   const small = h > 0 && h < 330; // KPI-card height
+  const weakest = r.trades ? [...RONIN_PARTS].sort((a, b) => r.parts[a.key] - r.parts[b.key])[0] : null;
   const hp = hover && RONIN_PARTS.find((p) => p.key === hover);
   return (
     <div className={`panel wpanel ronin ${small ? 'small' : ''}`}>
@@ -44,12 +47,51 @@ export default function RoninScore({ trades, initial }) {
               <div className="ronin-bar">
                 <div className="ronin-track"><i style={{ left: `${Math.max(0, Math.min(100, r.score))}%` }} /></div>
                 <div className="ronin-ticks">{[0, 20, 40, 60, 80, 100].map((x) => <span key={x}>{x}</span>)}</div>
+                {weakest && (
+                  <button className="ronin-weak" onClick={() => setDetail(true)} title="What your Ronin Score says about your trading">
+                    Weakest: <b style={{ color: scoreColor(r.parts[weakest.key]) }}>{weakest.label}</b> <span className="muted ronin-weak-n">· {Math.round(r.parts[weakest.key])}/100</span> <ChevronRight size={13} />
+                  </button>
+                )}
               </div>
             </div>
           </>
         )}
       </div>
+      {detail && createPortal(<RoninDetail r={r} onClose={() => setDetail(false)} />, document.body)}
     </div>
+  );
+}
+
+/** What the score says about these trades: a summary, then each part (weakest first) with the number behind it,
+ *  what it means and what to work on. */
+function RoninDetail({ r, onClose }) {
+  const ins = useMemo(() => roninInsights(r), [r]);
+  return (
+    <Modal open onClose={onClose} width={640} className="ronin-detail">
+      <ModalHead title="What your Ronin Score says" sub={`From ${r.trades} trade${r.trades === 1 ? '' : 's'} over ${r.days} trading day${r.days === 1 ? '' : 's'} in this dashboard’s view`} onClose={onClose} />
+      <div className="modal-body col gap16">
+        <div className="ronin-d-head">
+          <b style={{ color: scoreColor(r.score) }}>{r.score.toFixed(1)}</b>
+          <div className="col gap6 grow" style={{ minWidth: 0 }}>
+            <div className="ronin-track"><i style={{ left: `${Math.max(0, Math.min(100, r.score))}%` }} /></div>
+            <p>{ins.summary}</p>
+          </div>
+        </div>
+        {ins.parts.map((p, i) => (
+          <div key={p.key} className={`ronin-d-part ${i === 0 ? 'weakest' : ''}`}>
+            <div className="row between gap8">
+              <b>{p.label} {i === 0 && <span className="badge neg-soft">Weakest</span>}{i === ins.parts.length - 1 && <span className="badge pos-soft">Strongest</span>}</b>
+              <span className="ronin-d-score" style={{ color: scoreColor(p.score) }}>{Math.round(p.score)}<span className="muted">/100</span></span>
+            </div>
+            <div className="ronin-d-meter"><i style={{ width: `${p.score}%`, background: scoreColor(p.score) }} /></div>
+            <div className="ronin-d-value">Your number: <b>{p.value}</b> <span className="muted">· {p.weight}% of the score</span></div>
+            <p>{p.meaning}</p>
+            {p.score < 70 && <p className="ronin-d-tip"><b>What to work on:</b> {p.tip}</p>}
+          </div>
+        ))}
+        <p className="muted" style={{ fontSize: 12 }}>The score follows the account, date range and filters you have on the dashboard. {r.trades < 20 ? 'With under 20 trades it can swing a lot.' : ''}</p>
+      </div>
+    </Modal>
   );
 }
 
