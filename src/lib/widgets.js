@@ -24,7 +24,7 @@ export const WIDGETS = {
   mostTraded: { name: 'Most Traded', cat: 'kpi', w: 4, h: 4, minW: 2, minH: 3, desc: 'Your most traded symbol and its P&L' },
   longShort: { name: 'Long vs Short', cat: 'kpi', w: 4, h: 4, minW: 3, minH: 3, desc: 'P&L, trades and win rate for longs and shorts' },
   hold: { name: 'Average Hold Time', cat: 'kpi', w: 6, h: 4, minW: 4, minH: 3, desc: 'How long you hold winners, losers and break-evens' },
-  ronin: { name: 'Ronin Score', cat: 'kpi', w: 5, h: 9, minW: 4, minH: 7, desc: 'One 0–100 score from win %, profit factor, win/loss, recovery, drawdown and consistency' },
+  ronin: { name: 'Ronin Score', cat: 'kpi', w: 5, h: 9, minW: 2, minH: 3, desc: 'One 0–100 score from win %, profit factor, win/loss, recovery, drawdown and consistency' },
   payouts: { name: 'Total Payouts', cat: 'kpi', w: 4, h: 4, minW: 2, minH: 3, desc: 'Paid out, pending, and return on what accounts cost' },
   progress: { name: 'Account Progress', cat: 'kpi', w: 12, h: 3, minW: 6, minH: 2, desc: 'Profit target and max drawdown for each account' },
 

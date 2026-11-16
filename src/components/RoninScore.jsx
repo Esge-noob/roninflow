@@ -15,8 +15,62 @@ const fmtValue = (key, v, r) => {
 };
 export const scoreColor = (s) => (s >= 70 ? 'var(--pos)' : s >= 45 ? 'var(--warn)' : 'var(--neg)');
 
+/** Picks the layout from the space the widget has: a KPI-sized card, or the full radar. */
 export default function RoninScore({ trades, initial }) {
   const r = useMemo(() => { const x = roninScore(trades, initial); x.netUp = trades.reduce((a, t) => a + t.pnl, 0) > 0; return x; }, [trades, initial]);
+  const [ref, { w, h }] = useSize();
+  const compact = h > 0 && (h < 330 || w < 300);
+  return <div ref={ref} className="ronin-wrap">{h > 0 && (compact ? <RoninCard r={r} /> : <RoninFull r={r} />)}</div>;
+}
+
+function HowItWorks({ r }) {
+  return (
+    <Popover align="right" width={340} trigger={({ toggle }) => <button className="icon-btn" onClick={toggle} title="How it's worked out"><Info size={15} /></button>}>
+      {() => (
+        <div className="ronin-how">
+          <b>How the Ronin Score is worked out</b>
+          <p className="muted">Six parts are each scored 0–100, then weighted into one score.</p>
+          {RONIN_PARTS.map((p) => (
+            <div key={p.key} className="ronin-how-row">
+              <div className="row between"><span>{p.label} <span className="muted">· {p.weight}%</span></span><b style={{ color: scoreColor(r.parts[p.key]) }}>{Math.round(r.parts[p.key])}</b></div>
+              <div className="muted">{p.how}</div>
+            </div>
+          ))}
+          {r.trades < 20 && <p className="muted" style={{ marginTop: 8 }}>Based on {r.trades} trade{r.trades === 1 ? '' : 's'} — it settles down after 20 or more.</p>}
+        </div>
+      )}
+    </Popover>
+  );
+}
+
+/** KPI-card size: the score, a small radar and the bar — fits next to Total P&L, Win Rate … */
+function RoninCard({ r }) {
+  const [ref, { w: mw, h: mh }] = useSize();
+  const size = Math.max(56, Math.min(130, mh || 90, (mw || 200) * 0.45));
+  const c = size / 2, R = c - 4;
+  const ang = (i) => -Math.PI / 2 + (i * 2 * Math.PI) / RONIN_PARTS.length;
+  const poly = (k) => RONIN_PARTS.map((p, i) => `${c + Math.cos(ang(i)) * R * (typeof k === 'function' ? k(p) : k)},${c + Math.sin(ang(i)) * R * (typeof k === 'function' ? k(p) : k)}`).join(' ');
+  const weakest = [...RONIN_PARTS].sort((a, b) => r.parts[a.key] - r.parts[b.key])[0];
+  return (
+    <div className={`kpi wkpi ronin-kpi ${r.score >= 50 ? 'posc' : 'negc'}`}>
+      <div className="kpi-head"><span>Ronin Score</span><HowItWorks r={r} /></div>
+      <div ref={ref} className="ronin-kpi-mid">
+        <div className="col" style={{ minWidth: 0 }}>
+          <div className="kpi-val" style={{ margin: 0, color: scoreColor(r.score) }}>{r.trades ? r.score.toFixed(1) : '—'}</div>
+          <div className="ronin-track ronin-track-sm"><i style={{ left: `${Math.max(0, Math.min(100, r.score))}%` }} /></div>
+        </div>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="ronin-mini" role="img" aria-label={RONIN_PARTS.map((p) => `${p.label} ${Math.round(r.parts[p.key])}`).join(', ')}>
+          {[0.5, 1].map((k) => <polygon key={k} points={poly(k)} className="ronin-ring" />)}
+          <polygon points={poly((p) => r.parts[p.key] / 100)} className="ronin-area" />
+          {RONIN_PARTS.map((p, i) => <circle key={p.key} cx={c + Math.cos(ang(i)) * R * (r.parts[p.key] / 100)} cy={c + Math.sin(ang(i)) * R * (r.parts[p.key] / 100)} r="2.5" className="ronin-dot"><title>{`${p.label}: ${Math.round(r.parts[p.key])}/100`}</title></circle>)}
+        </svg>
+      </div>
+      <div className="kpi-foot">{r.trades ? <>Weakest: <span style={{ color: scoreColor(r.parts[weakest.key]) }}>{weakest.label}</span> · {Math.round(r.parts[weakest.key])}/100</> : 'Out of 100'}</div>
+    </div>
+  );
+}
+
+function RoninFull({ r }) {
   const [ref, { w, h }] = useSize();
   const [hover, setHover] = useState(null);
   const SW = Math.max(160, w || 300), SH = Math.max(140, h || 260);
@@ -32,21 +86,7 @@ export default function RoninScore({ trades, initial }) {
     <div className="panel wpanel ronin">
       <div className="panel-head">
         <div className="card-title truncate">Ronin Score</div>
-        <Popover align="right" width={340} trigger={({ toggle }) => <button className="icon-btn" onClick={toggle} title="How it's worked out"><Info size={15} /></button>}>
-          {() => (
-            <div className="ronin-how">
-              <b>How the Ronin Score is worked out</b>
-              <p className="muted">Six parts are each scored 0–100, then weighted into one score.</p>
-              {RONIN_PARTS.map((p) => (
-                <div key={p.key} className="ronin-how-row">
-                  <div className="row between"><span>{p.label} <span className="muted">· {p.weight}%</span></span><b style={{ color: scoreColor(r.parts[p.key]) }}>{Math.round(r.parts[p.key])}</b></div>
-                  <div className="muted">{p.how}</div>
-                </div>
-              ))}
-              {r.trades < 20 && <p className="muted" style={{ marginTop: 8 }}>Based on {r.trades} trade{r.trades === 1 ? '' : 's'} — it settles down after 20 or more.</p>}
-            </div>
-          )}
-        </Popover>
+        <HowItWorks r={r} />
       </div>
       <div className="wbody ronin-body">
         <div ref={ref} className="ronin-radar">
