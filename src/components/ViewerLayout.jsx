@@ -1,11 +1,11 @@
 // The frame around a shared, view-only journal: who shared it and what it covers, the pages it includes,
 // and nothing that edits, syncs or reaches the owner's computer.
 import { useEffect, useRef, useState } from 'react';
-import { Book, ClipboardCheck, Eye, EyeOff, FileText, LayoutDashboard, Link2Off, ShieldCheck, Target, Users } from 'lucide-react';
+import { Book, ClipboardCheck, ExternalLink, Eye, EyeOff, FileText, LayoutDashboard, Link2Off, Lock, ShieldCheck, Target, Users } from 'lucide-react';
 import { useStore, navigate } from '../store/store';
-import { useToast } from './ui';
+import { Modal, ModalHead, useToast } from './ui';
 import { VIEW_ONLY_EVENT, VIEWER_SECTIONS, SNAPSHOT } from '../lib/shareMode';
-import { REPO_URL } from '../lib/demoMode';
+import { REPO_URL, DOWNLOAD_URL } from '../lib/demoMode';
 import { DayPopupContext, ReviewPopupContext } from '../lib/dayPopup';
 import { DiaryDayModal } from '../views/Diary';
 import { ReviewPopup } from '../views/Review';
@@ -31,6 +31,7 @@ export default function ViewerLayout({ route, children }) {
   const [dayPopup, setDayPopup] = useState(null);
   const [reviewPopup, setReviewPopup] = useState(null);
   const contentRef = useRef(null);
+  const [about, setAbout] = useState(false);
 
   // the first change a viewer tries says why nothing happened
   useEffect(() => {
@@ -76,7 +77,7 @@ export default function ViewerLayout({ route, children }) {
       <main className="main">
         <header className="viewer-top">
           <div className="viewer-id">
-            <span className="wordmark">RoninFlow</span>
+            <button className="wordmark viewer-brand" onClick={() => setAbout(true)} title="What is RoninFlow?">RoninFlow</button>
             <span className="viewer-badge"><Eye size={12} /> View only</span>
             <div className="viewer-title"><b>{title}</b>{by ? <span className="muted"> · shared by {by}</span> : null}{SNAPSHOT ? <span className="muted"> · snapshot from {fmtDate(share.createdAt || new Date().toISOString())}</span> : null}</div>
           </div>
@@ -100,6 +101,41 @@ export default function ViewerLayout({ route, children }) {
       </main>
       {dayPopup && <DiaryDayModal date={dayPopup} onClose={() => setDayPopup(null)} />}
       {reviewPopup && <ReviewPopup period={reviewPopup} onClose={() => setReviewPopup(null)} />}
+      <AboutRoninFlow open={about} onClose={() => setAbout(false)} />
     </div>
+  );
+}
+
+const ABOUT = [
+  { icon: FileText, t: 'Trades in automatically', d: 'Imports from ATAS, NinjaTrader, Tradovate, TopstepX, MetaTrader, Interactive Brokers, crypto exchanges and more.' },
+  { icon: ClipboardCheck, t: 'Journal and review', d: 'A daily diary, trade notes and screenshots, and weekly, monthly and quarterly reviews.' },
+  { icon: ShieldCheck, t: 'Risk rules that adapt', d: 'Risk tiers that follow your drawdown, prop-firm account limits and days to ruin.' },
+  { icon: Lock, t: 'Your data stays yours', d: 'Runs on your own computer, home server or NAS. No account, no subscription.' },
+];
+
+/** What RoninFlow is, for someone who opened a shared journal. */
+function AboutRoninFlow({ open, onClose }) {
+  return (
+    <Modal open={open} onClose={onClose} width={480} className="viewer-about">
+      <ModalHead title={<span className="wordmark" style={{ fontSize: 22 }}>RoninFlow</span>} sub="The free, open-source trading journal you run yourself" onClose={onClose} />
+      <div className="modal-body">
+      <p className="viewer-about-lead">The journal you’re looking at was made with RoninFlow, a self-hosted alternative to TradeZella, Tradervue and Edgewonk for futures, stocks, forex and crypto traders.</p>
+      <div className="viewer-about-list">
+        {ABOUT.map((a) => (
+          <div key={a.t} className="viewer-about-item">
+            <a.icon size={16} />
+            <div><b>{a.t}</b><span className="muted">{a.d}</span></div>
+          </div>
+        ))}
+      </div>
+      </div>
+      <div className="modal-foot viewer-about-foot">
+        <span className="muted">Free for Windows, macOS, Linux and Docker.</span>
+        <div className="row gap8">
+          <a className="btn" href={DOWNLOAD_URL} target="_blank" rel="noreferrer">Download</a>
+          <a className="btn white" href={REPO_URL} target="_blank" rel="noreferrer"><ExternalLink size={14} /> View on GitHub</a>
+        </div>
+      </div>
+    </Modal>
   );
 }

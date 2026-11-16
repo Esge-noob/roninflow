@@ -1901,6 +1901,15 @@ a.ruin-chip { cursor: pointer; }
 .viewer-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 28px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 40; }
 .viewer-id { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 .viewer-id .wordmark { font-size: 18px; }
+.viewer-brand { background: none; border: 0; padding: 0; cursor: pointer; font-size: 18px; }
+.viewer-brand:hover { color: var(--primary); }
+.viewer-about-lead { margin: 0 0 16px; line-height: 1.55; font-size: 13.5px; }
+.viewer-about-list { display: grid; gap: 12px; }
+.viewer-about-item { display: flex; gap: 12px; align-items: flex-start; }
+.viewer-about-item > svg { flex: none; margin-top: 2px; color: var(--primary); }
+.viewer-about-item b { display: block; font-size: 13.5px; margin-bottom: 2px; }
+.viewer-about-item span { font-size: 12.5px; line-height: 1.45; }
+.viewer-about-foot { align-items: center; justify-content: space-between; flex-wrap: wrap; font-size: 12.5px; }
 .viewer-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--primary) 50%, var(--border)); color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); }
 .viewer-title { font-size: 13.5px; min-width: 0; }
 .viewer-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
