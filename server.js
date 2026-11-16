@@ -155,6 +155,12 @@ function replicaApi(req, res, isReplica, loopback) {
   return sendJson(res, 404, { error: 'not found' });
 }
 
+// Shown to anyone reaching this PC over the public internet (Tailscale Funnel) for anything but a share link — most
+// often your own phone with the Tailscale app switched off, since the same address then arrives through Funnel.
+const FUNNEL_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>RoninFlow</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0b0c;color:#e8e8ea;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif;padding:24px;box-sizing:border-box}main{max-width:420px}h1{font-size:20px;margin:0 0 10px}p{color:#a3a3ab;margin:0 0 12px}b{color:#e8e8ea}</style></head>
+<body><main><h1>This journal is private</h1><p>You reached it over the public internet, where only view-only share links open.</p><p>If this is your journal: <b>turn on Tailscale on this device</b> (open the Tailscale app and connect), then reload this page.</p></main></body></html>`;
+
 function handle(req, res) {
   try {
     // Phones reaching us through Tailscale Serve (https://<pc>.ts.net) arrive over loopback, so a forwarded request is
@@ -172,7 +178,7 @@ function handle(req, res) {
       if (/^\/s\/[\w-]+\/?(\?.*)?$/.test(req.url)) { res.setHeader('X-Robots-Tag', 'noindex'); req.url = '/index.html'; return serveStatic(req, res); }
       if (isShareAsset(req.url) && (funnelReq || !isLocalPc(req))) return serveStatic(req, res);
     }
-    if (funnelReq) { res.statusCode = 404; res.setHeader('Content-Type', 'text/plain'); return res.end('Not found'); }
+    if (funnelReq) { res.statusCode = 404; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(FUNNEL_PAGE); }
     const isReplica = !loopback && config.checkReplicaKey(req.headers['x-tj-replica-key']);
     if (req.url.startsWith('/api/replica')) return replicaApi(req, res, isReplica, loopback);
 
