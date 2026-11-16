@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import {
   MousePointer2, Slash, MoveUpRight, Minus, ChevronsRight, SeparatorVertical, Square, AlignVerticalSpaceAround, Ruler,
   CircleArrowUp, CircleArrowDown, Brush, Type, Magnet, Eye, EyeOff, Trash2, Undo2, Camera, Maximize, Maximize2, Minimize, X,
-  Play, Pause, StepForward, StepBack, SkipBack, SkipForward, History, Layers, Check, ChevronDown, RefreshCw, Crosshair,
+  Palette, Play, Pause, StepForward, StepBack, SkipBack, SkipForward, History, Layers, Check, ChevronDown, RefreshCw, Crosshair,
 } from 'lucide-react';
 import { useStore } from '../store/store';
 import { IS_VIEWER } from '../lib/shareMode';
@@ -15,7 +15,7 @@ import { fmtMoney, fmtTime12, fmtDate } from '../lib/stats';
 import { Popover } from './ui';
 import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, barTime, aggregate, sessionStart, fromLocal, toLocal } from '../lib/bars';
 import { sma, ema, vwap, bollinger, rsi, macd } from '../lib/indicators';
-import { loadLib, chartColors, buildExecutions, TICKS, rootOf, decimals, alpha } from './ExecChart';
+import { loadLib, chartColors, buildExecutions, TICKS, rootOf, decimals, alpha, ChartColors } from './ExecChart';
 
 const TOOLS = [
   [{ id: 'cursor', icon: MousePointer2, label: 'Cursor', key: 'Esc' }],
@@ -76,13 +76,32 @@ function rayEnd(x1, y1, x2, y2, w, h) {
   return [x1 + dx * Math.max(k, 1), y1 + dy * Math.max(k, 1)];
 }
 
+// text notes: a size (px) and an angle (radians), drawn rotated around their anchor point
+const TEXT_FONT = (size) => `${size}px ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif`;
+let measureCtx = null;
+function textBox(d) {
+  const size = d.size || 14;
+  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+  measureCtx.font = TEXT_FONT(size);
+  const w = Math.max(size, measureCtx.measureText(d.text || '').width);
+  return { w, size, x0: -4, x1: w + 4, y0: -size * 1.05, y1: size * 0.35 };
+}
+const rot = (x, y, a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
+/** text handles in screen pixels: resize (bottom-right corner) and rotate (above the middle) */
+function textHandles(d, v) {
+  const ax = v.toX(d.p[0].t), ay = v.toY(d.p[0].p), a = d.angle || 0, b = textBox(d);
+  const at = (lx, ly) => { const [rx, ry] = rot(lx, ly, a); return { x: ax + rx, y: ay + ry }; };
+  return { anchor: { x: ax, y: ay }, size: at(b.x1, b.y1), rot: at(b.w / 2, b.y0 - 18), top: at(b.w / 2, b.y0), corners: [at(b.x0, b.y0), at(b.x1, b.y0), at(b.x1, b.y1), at(b.x0, b.y1)] };
+}
+
 /** Pixel positions of a drawing's handles. */
 function handles(d, v) {
   const P = d.p.map((q) => ({ x: v.toX(q.t), y: v.toY(q.p) }));
   switch (d.type) {
     case 'hline': return [{ i: 0, x: 40, y: P[0].y }];
     case 'vline': return [{ i: 0, x: P[0].x, y: v.h / 2 }];
-    case 'hray': case 'text': return [{ i: 0, ...P[0] }];
+    case 'hray': return [{ i: 0, ...P[0] }];
+    case 'text': { const t = textHandles(d, v); return [{ i: 'size', ...t.size }, { i: 'rot', ...t.rot }]; }
     case 'brush': return [];
     case 'long': case 'short': return [{ i: 0, ...P[0] }, { i: 1, x: P[1].x, y: P[1].y }, { i: 2, x: P[1].x, y: P[2].y }];
     default: return P.map((q, i) => ({ i, ...q }));
@@ -104,7 +123,7 @@ function hitDrawing(d, v, x, y) {
     case 'rect': case 'measure': case 'fib': return inBox(P[0], P[1]) ? 'body' : null;
     case 'long': case 'short': return x >= Math.min(P[0].x, P[1].x) && x <= Math.max(P[0].x, P[1].x) && y >= Math.min(P[1].y, P[2].y) && y <= Math.max(P[1].y, P[2].y) ? 'body' : null;
     case 'brush': for (let i = 1; i < P.length; i++) if (segDist(x, y, P[i - 1].x, P[i - 1].y, P[i].x, P[i].y) < near) return 'body'; return null;
-    case 'text': { const w = Math.max(30, (d.text || '').length * 7.2 + 12); return x >= P[0].x - 4 && x <= P[0].x + w && y >= P[0].y - 16 && y <= P[0].y + 6 ? 'body' : null; }
+    case 'text': { const b = textBox(d); const [lx, ly] = rot(x - P[0].x, y - P[0].y, -(d.angle || 0)); return lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1 ? 'body' : null; }
     default: return null;
   }
 }
@@ -193,11 +212,25 @@ function paint(ctx, d, v, selected, fmtP, tick, iv) {
       break;
     }
     case 'text': {
-      ctx.font = '13px ui-sans-serif, system-ui, sans-serif';
+      ctx.save();
+      ctx.translate(P[0].x, P[0].y);
+      ctx.rotate(d.angle || 0);
+      ctx.font = TEXT_FONT(d.size || 14);
       ctx.textBaseline = 'alphabetic';
       ctx.fillStyle = col;
-      ctx.fillText(d.text || '', P[0].x, P[0].y);
-      break;
+      ctx.fillText(d.text || '', 0, 0);
+      ctx.restore();
+      if (selected) {
+        const t = textHandles(d, v);
+        ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.strokeStyle = alpha(col, 0.7);
+        ctx.beginPath(); t.corners.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y))); ctx.closePath(); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(t.top.x, t.top.y); ctx.lineTo(t.rot.x, t.rot.y); ctx.stroke();
+        ctx.fillStyle = '#0a0a0a'; ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(t.rot.x, t.rot.y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillRect(t.size.x - 4.5, t.size.y - 4.5, 9, 9); ctx.strokeRect(t.size.x - 4.5, t.size.y - 4.5, 9, 9);
+      }
+      return;
     }
     default:
   }
@@ -596,7 +629,7 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
         handling = true; block(e);
         const q = pt(v, x, y, e);
         if (draft.current?.placing) { draft.current.p[1] = q; if (draft.current.type === 'long' || draft.current.type === 'short') draft.current.p[2] = { t: q.t, p: draft.current.p[0].p + (draft.current.p[0].p - q.p) * 2 }; finishDraft(); return; }
-        const d = { id: uid(), type: t, color: DEFAULT_COLOR[t], width: t === 'brush' ? 2 : 1.5, p: ONE_POINT.has(t) ? [q] : t === 'brush' ? [q] : [q, { ...q }] };
+        const d = { id: uid(), type: t, color: DEFAULT_COLOR[t], width: t === 'brush' ? 2 : 1.5, ...(t === 'text' ? { size: 16, angle: 0 } : {}), p: ONE_POINT.has(t) ? [q] : t === 'brush' ? [q] : [q, { ...q }] };
         if (t === 'long' || t === 'short') {
           const step = (tick || Math.abs(q.p) * 0.0005) * 20;
           const stop = t === 'long' ? q.p - step : q.p + step;
@@ -646,6 +679,20 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
         if (g.part === 'body') {
           const dt = v.fromX(x) - v.fromX(g.x0), dp = v.fromY(y) - v.fromY(g.y0);
           p = p.map((q) => ({ t: q.t + dt, p: q.p + dp }));
+        } else if (o.type === 'text') {
+          const t = textHandles(o, v);
+          if (g.part === 'size') {
+            const base = Math.hypot(t.size.x - t.anchor.x, t.size.y - t.anchor.y) || 1;
+            const size = Math.round(Math.max(8, Math.min(120, (o.size || 14) * (Math.hypot(x - t.anchor.x, y - t.anchor.y) / base))));
+            drawingsRef.current = drawingsRef.current.map((x2) => (x2.id === o.id ? { ...o, size } : x2));
+          } else {
+            const b0 = textBox(o);
+            const a0 = Math.atan2(b0.y0 - 18, b0.w / 2);
+            let angle = Math.atan2(y - t.anchor.y, x - t.anchor.x) - a0;
+            if (e.shiftKey) angle = Math.round(angle / (Math.PI / 12)) * (Math.PI / 12); // Shift: 15° steps
+            drawingsRef.current = drawingsRef.current.map((x2) => (x2.id === o.id ? { ...o, angle } : x2));
+          }
+          return;
         } else {
           const q = pt(v, x, y, e);
           if (o.type === 'long' || o.type === 'short') {
@@ -661,7 +708,7 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
       if (toolRef.current !== 'cursor') { el.style.cursor = 'crosshair'; return; }
       let over = null;
       if (!hiddenRef.current && x >= 0 && y >= 0 && x <= v.w && y <= v.h) for (const dd of drawingsRef.current) { const part = hitDrawing(dd, v, x, y); if (part !== null) { over = part; break; } }
-      el.style.cursor = over === null ? '' : over === 'body' ? 'move' : 'grab';
+      el.style.cursor = over === null ? '' : over === 'body' ? 'move' : over === 'rot' ? 'alias' : over === 'size' ? 'nwse-resize' : 'grab';
     };
     const up = () => {
       const g = drag.current;
@@ -731,7 +778,7 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
   // ---------------------------------------------------------------- keyboard
   useEffect(() => {
     const key = (e) => {
-      if (/input|textarea|select/i.test(e.target?.tagName)) return;
+      if (/input|textarea|select/i.test(e.target?.tagName) || colorsRef.current) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selRef.current) { e.preventDefault(); commit(drawingsRef.current.filter((d) => d.id !== selRef.current)); setSel(null); return; }
       if (e.altKey && KEYS[e.key.toLowerCase()]) { e.preventDefault(); setTool(KEYS[e.key.toLowerCase()]); return; }
@@ -755,6 +802,9 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
 
   // ---------------------------------------------------------------- full screen, screenshot
   const [isFull, setIsFull] = useState(false);
+  const [colorsOpen, setColorsOpen] = useState(false);
+  const colorsRef = useRef(false);
+  colorsRef.current = colorsOpen;
   useEffect(() => { const h = () => setIsFull(!!document.fullscreenElement); document.addEventListener('fullscreenchange', h); return () => document.removeEventListener('fullscreenchange', h); }, []);
   const toggleFull = () => { if (document.fullscreenElement) document.exitFullscreen?.(); else stage.current?.closest('.studio')?.requestFullscreen?.().catch(() => {}); };
   const screenshot = () => {
@@ -820,6 +870,7 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
             </Popover>
           )
           : <button className="btn sm on" onClick={stopReplay}><History size={14} /> Exit replay</button>}
+        <button className="icon-btn" onClick={() => setColorsOpen(true)} title="Chart colours"><Palette size={15} /></button>
         <button className="icon-btn" onClick={() => api.current.fit?.()} title="Fit your executions"><Maximize2 size={15} /></button>
         <button className="icon-btn" onClick={screenshot} title="Save a picture of the chart"><Camera size={15} /></button>
         <button className="icon-btn" onClick={toggleFull} title={isFull ? 'Exit full screen' : 'Full screen'}>{isFull ? <Minimize size={15} /> : <Maximize size={15} />}</button>
@@ -856,7 +907,18 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
             <div className="studio-edit" onPointerDown={(e) => e.stopPropagation()}>
               {SWATCHES.map((c) => <button key={c} className={`studio-sw ${selected.color === c ? 'on' : ''}`} style={{ background: c }} title="Colour" onClick={() => setSelected({ color: c })} />)}
               <span className="studio-sep" />
-              {[1, 1.5, 2.5].map((w) => <button key={w} className={`studio-w ${(selected.width || 1.5) === w ? 'on' : ''}`} title={`Line ${w}px`} onClick={() => setSelected({ width: w })}><i style={{ height: w + 0.5 }} /></button>)}
+              {selected.type === 'text' ? (
+                <>
+                  {[12, 16, 22, 32, 48].map((z) => <button key={z} className={`studio-w studio-fs ${(selected.size || 14) === z ? 'on' : ''}`} title={`Text ${z}px`} onClick={() => setSelected({ size: z })}>{z}</button>)}
+                  <button className="studio-w studio-fs" title="Bigger" onClick={() => setSelected({ size: Math.min(120, Math.round((selected.size || 14) * 1.15)) })}>A+</button>
+                  <button className="studio-w studio-fs" title="Smaller" onClick={() => setSelected({ size: Math.max(8, Math.round((selected.size || 14) / 1.15)) })}>A−</button>
+                  <span className="studio-sep" />
+                  <button className="studio-w studio-fs" title="Rotate 15° left" onClick={() => setSelected({ angle: (selected.angle || 0) - Math.PI / 12 })}>↺</button>
+                  <button className="studio-w studio-fs" title="Rotate 15° right" onClick={() => setSelected({ angle: (selected.angle || 0) + Math.PI / 12 })}>↻</button>
+                  {Math.abs(selected.angle || 0) > 0.001 && <button className="studio-w studio-fs" title="Straighten" onClick={() => setSelected({ angle: 0 })}>0°</button>}
+                  <button className="icon-btn" title="Edit text (or double-click it)" onClick={() => { const v = view(); setEditing({ id: selected.id, x: v.toX(selected.p[0].t), y: v.toY(selected.p[0].p), text: selected.text || '' }); }}><Type size={14} /></button>
+                </>
+              ) : [1, 1.5, 2.5].map((w) => <button key={w} className={`studio-w ${(selected.width || 1.5) === w ? 'on' : ''}`} title={`Line ${w}px`} onClick={() => setSelected({ width: w })}><i style={{ height: w + 0.5 }} /></button>)}
               <span className="studio-sep" />
               <button className="icon-btn" title="Delete (Del)" onClick={() => { commit(drawings.filter((d) => d.id !== sel)); setSel(null); }}><Trash2 size={14} /></button>
             </div>
@@ -883,6 +945,7 @@ export default function ChartStudio({ date, trades, initialSym, onClose, onOpenT
         </div>
       </div>
 
+      {colorsOpen && <ChartColors onClose={() => setColorsOpen(false)} />}
       {replay.mode === 'on' && (
         <div className="studio-replay">
           <div className="row gap4">

@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process';
 const TOP = ['version', 'trades', 'accounts', 'strategies', 'diary', 'reviews', 'coachReviews', 'tags', 'settings'];
 const TRADE = ['id', 'accountId', 'symbol', 'direction', 'entry', 'exit', 'qty', 'entryPrice', 'exitPrice', 'fees', 'pnl', 'manualPnl', 'tags', 'strategyId', 'notes', 'rating', 'reviewed', 'screenshots', 'blockers', 'fills'];
 const ACCOUNT = ['initial', 'profitTarget', 'maxDrawdown', 'ddType', 'ddLock', 'dailyLossLimit', 'market', 'phase', 'plan', 'status', 'createdAt'];
-const SETTINGS = ['acctLimits', 'currency', 'dashLayouts', 'dashboardWidgets', 'dashView', 'diaryChart', 'ecView', 'execTf', 'hideBreached', 'playbook', 'privacy', 'reviewChart', 'risk', 'riskProfiles', 'theme', 'migrations', 'timeZone', 'homeTimeZone'];
+const SETTINGS = ['acctLimits', 'chartColors', 'currency', 'dashLayouts', 'dashboards', 'dashboardWidgets', 'dashView', 'diaryChart', 'ecView', 'execTf', 'hideBreached', 'playbook', 'privacy', 'reviewChart', 'risk', 'riskProfiles', 'theme', 'migrations', 'timeZone', 'homeTimeZone'];
 const FILL = ['time', 'price', 'qty', 'side', 'type'];
 
 const pick = (o, keys) => { const out = {}; for (const k of keys) if (o && o[k] !== undefined) out[k] = o[k]; return out; };

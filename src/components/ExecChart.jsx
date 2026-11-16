@@ -393,7 +393,7 @@ function TimeframePicker({ tf, native, source, onPick }) {
 }
 
 /** Chart colours: presets + every colour editable. Saved in settings, used by every execution chart. */
-function ChartColors({ onClose }) {
+export function ChartColors({ onClose }) {
   const { state, setSetting } = useStore();
   const saved = state.settings.chartColors || { preset: 'theme' };
   const [draft, setDraft] = useState(saved);

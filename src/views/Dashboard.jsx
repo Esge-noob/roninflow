@@ -1,8 +1,8 @@
 import { StatLabel } from '../components/StatInfo';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChartArea, ChartLine, ChartColumn, Trophy, Minus, TrendingDown, TrendingUp, Check, LayoutGrid, Plus, RotateCcw, Search, Undo2, X, ArrowUpRight } from 'lucide-react';
+import { ChevronDown, ChartArea, ChartLine, ChartColumn, Trophy, Minus, TrendingDown, TrendingUp, Check, LayoutGrid, Plus, RotateCcw, Search, Undo2, X, ArrowUpRight, Pencil, Trash2, Copy } from 'lucide-react';
 import { useStore, useAccountTrades, navigate } from '../store/store';
-import { AccountPicker, DateRange, Fit, Popover, Seg, TrendBadge, Private, useSize } from '../components/ui';
+import { AccountPicker, DateRange, Fit, Popover, Seg, TrendBadge, Private, useSize, Modal, ModalHead, Confirm } from '../components/ui';
 import { PnlChart, Sparkline, Gauge, RateBar, HBars, MarkerScale } from '../components/Charts';
 import { FilterButton, applyFilters, EMPTY_FILTERS } from '../components/Filters';
 import { PnlCalendar } from '../components/Calendar';
@@ -12,9 +12,11 @@ import { BlockerStrip, TierCards, useRisk } from '../components/Playbook';
 import { balanceGap } from '../lib/balance';
 import { portfolioStats } from '../lib/accountStats';
 import AccountProgress from '../components/AccountProgress';
+import RoninScore from '../components/RoninScore';
+import CustomChart from '../components/CustomChart';
 import DashGrid from '../components/DashGrid';
 import { addItem, removeItem } from '../lib/grid';
-import { CATEGORIES, DASHBOARDS, WIDGETS, layoutFor, optionOf, presetLayout, searchWidgets } from '../lib/widgets';
+import { CATEGORIES, WIDGETS, dashboardList, freeName, layoutFor, optionOf, presetLayout, searchWidgets } from '../lib/widgets';
 import {
   summarize, equityCurve, inRange, mostTraded, fmtShortDate, fmtDate, fmtTime12, fmtTime24, fmtHold, pfText, groupByDay, sortByEntry, pctChange,
   WEEKDAYS, toDate, fmtMoney, keyOf, HOLD_CAP_SECONDS, money0, perfRatio, maxDrawdown, romad, ratioText, holdSeconds,
@@ -43,7 +45,9 @@ export default function Dashboard() {
   const all = useAccountTrades();
   const [range, setRange] = useState({ from: null, to: null });
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const name = DASHBOARDS.includes(state.settings.dashView) ? state.settings.dashView : 'My Dashboard';
+  const boards = dashboardList(state.settings);
+  const name = boards.includes(state.settings.dashView) ? state.settings.dashView : boards[0];
+  const [manage, setManage] = useState(null); // { mode: 'new' | 'rename', name } | { mode: 'delete', name }
   const [editing, setEditing] = useState(false);
   const [libOpen, setLibOpen] = useState(false);
   const [openTrade, setOpenTrade] = useState(null);
@@ -130,11 +134,22 @@ export default function Dashboard() {
             <button className="btn" onClick={toggle} style={{ fontWeight: 600, color: 'var(--fg)', minWidth: 140 }}>{name} <ChevronDown size={15} className="muted" /></button>
           )}
         >
-          {(close) => DASHBOARDS.map((l) => (
-            <button key={l} className={`pop-item ${l === name ? 'on' : ''}`} onClick={() => { switchTo(l); close(); }}>
-              <LayoutGrid size={14} /> <span className="grow">{l}</span> {l === name && <Check size={14} />}
-            </button>
-          ))}
+          {(close) => (
+            <>
+              {boards.map((l) => (
+                <div key={l} className={`pop-item dash-item ${l === name ? 'on' : ''}`} role="button" tabIndex={0} onClick={() => { switchTo(l); close(); }} onKeyDown={(e) => e.key === 'Enter' && (switchTo(l), close())}>
+                  <LayoutGrid size={14} /> <span className="grow truncate">{l}</span>
+                  <span className="dash-acts" data-edit>
+                    <button className="icon-btn" title="Rename" onClick={(e) => { e.stopPropagation(); close(); setManage({ mode: 'rename', name: l }); }}><Pencil size={13} /></button>
+                    {boards.length > 1 && <button className="icon-btn" title="Delete" onClick={(e) => { e.stopPropagation(); close(); setManage({ mode: 'delete', name: l }); }}><Trash2 size={13} /></button>}
+                  </span>
+                  {l === name && <Check size={14} className="dash-check" />}
+                </div>
+              ))}
+              <div className="pop-sep" data-edit />
+              <button className="pop-item" data-edit onClick={() => { close(); setManage({ mode: 'new', name: freeName(boards) }); }}><Plus size={14} /> New dashboard</button>
+            </>
+          )}
         </Popover>
         <div className="sep-v" style={{ margin: '4px 6px' }} />
         <FilterButton value={filters} onChange={setFilters} trades={all} />
@@ -176,8 +191,74 @@ export default function Dashboard() {
       <DashGrid layout={layout} editing={editing} onChange={save} renderItem={renderItem} renderSettings={renderSettings} onRemove={remove} />
 
       {libOpen && <WidgetLibrary layout={layout} onAdd={add} onRemove={remove} onClose={() => setLibOpen(false)} />}
+      {manage && manage.mode !== 'delete' && <DashboardName {...manage} boards={boards} current={name} onClose={() => setManage(null)} />}
+      <Confirm
+        open={manage?.mode === 'delete'}
+        title={`Delete “${manage?.name}”?`}
+        body="Its layout is removed. Your trades and other dashboards aren't touched."
+        confirmText="Delete dashboard"
+        onConfirm={() => {
+          const gone = manage.name;
+          const rest = boards.filter((b) => b !== gone);
+          const layouts = { ...(state.settings.dashLayouts || {}) };
+          delete layouts[gone];
+          setSetting('dashboards', rest);
+          setSetting('dashLayouts', layouts);
+          if (gone === name) switchTo(rest[0]);
+          setManage(null);
+        }}
+        onCancel={() => setManage(null)}
+      />
       {openTrade && <TradeDrawer trade={openTrade} onClose={() => setOpenTrade(null)} />}
     </div>
+  );
+}
+
+/** New dashboard (blank, the default widgets, or a copy of this one) or a new name for one. */
+function DashboardName({ mode, name: initial, boards, current, onClose }) {
+  const { state, setSetting } = useStore();
+  const [name, setName] = useState(initial);
+  const [start, setStart] = useState('copy');
+  const clean = name.trim().slice(0, 40);
+  const taken = boards.some((b) => b.toLowerCase() === clean.toLowerCase() && b !== initial);
+  const ok = clean && !taken;
+  const submit = () => {
+    if (!ok) return;
+    const layouts = { ...(state.settings.dashLayouts || {}) };
+    if (mode === 'new') {
+      layouts[clean] = start === 'blank' ? [] : start === 'copy' ? layoutFor(state.settings, current) : presetLayout('My Dashboard');
+      setSetting('dashboards', [...boards, clean]);
+    } else {
+      // keep the layout it has (built-in dashboards start from a preset that's tied to their name)
+      layouts[clean] = layoutFor(state.settings, initial);
+      if (clean !== initial) delete layouts[initial];
+      setSetting('dashboards', boards.map((b) => (b === initial ? clean : b)));
+    }
+    setSetting('dashLayouts', layouts);
+    if (mode === 'new' || state.settings.dashView === initial || current === initial) setSetting('dashView', clean);
+    onClose();
+  };
+  return (
+    <Modal open onClose={onClose} width={440}>
+      <ModalHead title={mode === 'new' ? 'New dashboard' : 'Rename dashboard'} onClose={onClose} />
+      <div className="modal-body col gap12">
+        <label className="field">
+          <span className="label">Name</span>
+          <input className="input" autoFocus value={name} maxLength={40} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()} />
+        </label>
+        {taken && <div className="neg" style={{ fontSize: 12.5 }}>You already have a dashboard with that name.</div>}
+        {mode === 'new' && (
+          <div className="col gap6">
+            <span className="label">Start with</span>
+            <Seg value={start} onChange={setStart} options={[{ value: 'copy', label: <><Copy size={13} /> Copy of {current}</> }, { value: 'default', label: 'Default widgets' }, { value: 'blank', label: 'Empty' }]} />
+          </div>
+        )}
+      </div>
+      <div className="modal-foot">
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn white" disabled={!ok} onClick={submit}>{mode === 'new' ? 'Create dashboard' : 'Save'}</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -327,6 +408,8 @@ function WidgetView({ item, c }) {
     case 'drawdown': return <DrawdownW curve={curve} dd={dd} ctx={sctx} />;
     case 'weekday': case 'hour': case 'holdDur': case 'symbols': case 'strategy': case 'tags': return <Breakdown item={item} c={c} />;
     case 'cross': return <CrossAnalysis item={item} c={c} />;
+    case 'custom': case 'custom2': case 'custom3': return <CustomChart item={item} c={c} title={WIDGETS[item.id].name} />;
+    case 'ronin': return <RoninScore trades={trades} initial={initial} />;
     case 'recent': return <Recent trades={trades} onOpen={c.setOpenTrade} priv={c.state.settings.privacy} />;
     case 'avgtrade': return <AvgWinLoss title="Average Trade" unit="trade" win={s.avgWin} loss={Math.abs(s.avgLoss)} wins={s.wins} losses={s.losses} total={s.count} winRate={s.winRate} avg={s.avgTrade} rateLabel="Your win rate" />;
     case 'avgday': return <AvgDayPanel days={days} />;

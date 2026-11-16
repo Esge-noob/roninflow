@@ -24,6 +24,7 @@ export const WIDGETS = {
   mostTraded: { name: 'Most Traded', cat: 'kpi', w: 4, h: 4, minW: 2, minH: 3, desc: 'Your most traded symbol and its P&L' },
   longShort: { name: 'Long vs Short', cat: 'kpi', w: 4, h: 4, minW: 3, minH: 3, desc: 'P&L, trades and win rate for longs and shorts' },
   hold: { name: 'Average Hold Time', cat: 'kpi', w: 6, h: 4, minW: 4, minH: 3, desc: 'How long you hold winners, losers and break-evens' },
+  ronin: { name: 'Ronin Score', cat: 'kpi', w: 5, h: 9, minW: 4, minH: 7, desc: 'One 0–100 score from win %, profit factor, win/loss, recovery, drawdown and consistency' },
   payouts: { name: 'Total Payouts', cat: 'kpi', w: 4, h: 4, minW: 2, minH: 3, desc: 'Paid out, pending, and return on what accounts cost' },
   progress: { name: 'Account Progress', cat: 'kpi', w: 12, h: 3, minW: 6, minH: 2, desc: 'Profit target and max drawdown for each account' },
 
@@ -39,6 +40,9 @@ export const WIDGETS = {
   strategy: { name: 'Strategy Performance', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per strategy from your playbook', options: [PNL_OR_RATE] },
   cross: { name: 'Cross Analysis', cat: 'chart', w: 8, h: 6, minW: 4, minH: 4, desc: 'Each symbol by weekday, week of the month, month or quarter',
     options: [{ key: 'period', label: 'Columns', choices: [['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['quarterly', 'Quarterly']], def: 'daily' }, { key: 'metric', label: 'Show', choices: [['pnl', '$ P&L'], ['winRate', '% Win rate']], def: 'pnl' }] },
+  custom: { name: 'Custom Chart', cat: 'chart', w: 6, h: 8, minW: 4, minH: 5, desc: 'Pick what to group by and up to three metrics, as columns or lines' },
+  custom2: { name: 'Custom Chart 2', cat: 'chart', w: 6, h: 8, minW: 4, minH: 5, desc: 'Another custom chart with its own grouping and metrics' },
+  custom3: { name: 'Custom Chart 3', cat: 'chart', w: 6, h: 8, minW: 4, minH: 5, desc: 'Another custom chart with its own grouping and metrics' },
   tags: { name: 'Performance by Tag', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per trade tag', options: [PNL_OR_RATE] },
 
   recent: { name: 'Recent Trades', cat: 'table', w: 6, h: 6, minW: 3, minH: 3, desc: 'Your latest trades; click one to open it' },
@@ -73,6 +77,19 @@ export const DEFAULT_LAYOUT = [
 ];
 
 export const DASHBOARDS = ['My Dashboard', 'Performance', 'Risk', 'Psychology'];
+
+/** Your dashboards, in order (the four built-in ones until you add, rename or remove any). */
+export function dashboardList(settings) {
+  const l = Array.isArray(settings?.dashboards) ? settings.dashboards.filter((n) => typeof n === 'string' && n.trim()) : [];
+  return l.length ? l : DASHBOARDS;
+}
+/** A name not yet taken ("New dashboard", "New dashboard 2" …). */
+export function freeName(list, base = 'New dashboard') {
+  if (!list.includes(base)) return base;
+  let i = 2;
+  while (list.includes(`${base} ${i}`)) i++;
+  return `${base} ${i}`;
+}
 
 const PRESETS = {
   Performance: ['net', 'winRate', 'profitFactor', 'netpnl', 'equity', 'daily', 'calendar'],
