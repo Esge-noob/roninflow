@@ -90,13 +90,18 @@ const pcJson = async (p, opts) => {
 };
 
 async function findUpstream() {
+  let viaFunnel = null;
   for (const u of UPSTREAMS) {
     try {
       const r = await request(u, '/healthz', { timeout: 4000 });
-      if (r.status === 200 && JSON.parse(r.body.toString()).app === 'trade-journal') return u;
+      const h = JSON.parse(r.body.toString());
+      // Answered through Tailscale Funnel (the public internet) — this server looked the PC's name up on public DNS.
+      // Prefer a private address further down the list; use this one only if nothing else answers.
+      if (r.status === 200 && h.app === 'trade-journal' && h.funnel) { viaFunnel = viaFunnel || u; continue; }
+      if (r.status === 200 && h.app === 'trade-journal') return u;
     } catch { /* try the next address */ }
   }
-  return null;
+  return viaFunnel;
 }
 
 // ---------- three-way merge ----------

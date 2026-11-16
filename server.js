@@ -167,7 +167,7 @@ function handle(req, res) {
     // treated as another device: it needs network access on and the PIN, exactly like a phone on Wi-Fi.
     const loopback = isLocalPc(req);
     const ctx = { loopback };
-    if (req.url === '/healthz') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ ok: true, app: 'trade-journal', pid: process.pid })); }
+    if (req.url === '/healthz') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ ok: true, app: 'trade-journal', pid: process.pid, funnel: !!req.headers['tailscale-funnel-request'] })); }
 
     // View-only share links are public: the token is the key. Anyone (a teammate, a mentor) may open /s/<token>,
     // fetch that link's view-only data and load the app's code and styles — nothing else without signing in.
@@ -178,7 +178,10 @@ function handle(req, res) {
       if (/^\/s\/[\w-]+\/?(\?.*)?$/.test(req.url)) { res.setHeader('X-Robots-Tag', 'noindex'); req.url = '/index.html'; return serveStatic(req, res); }
       if (isShareAsset(req.url) && (funnelReq || !isLocalPc(req))) return serveStatic(req, res);
     }
-    if (funnelReq) { res.statusCode = 404; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(FUNNEL_PAGE); }
+    // The home-server copy proves itself with its key. It should reach this PC privately, but an older copy, or a server
+    // that looks up this PC's name on public DNS, arrives through Funnel once public sharing is on — let it in.
+    if (funnelReq && config.checkReplicaKey(req.headers['x-tj-replica-key'])) { /* the home server */ }
+    else if (funnelReq) { log(`[funnel] refused ${req.method} ${req.url.split('?')[0].slice(0, 60)} host=${req.headers.host} xff=${req.headers['x-forwarded-for'] || '-'} ua=${String(req.headers['user-agent'] || '').slice(0, 60)} hdrs=${Object.keys(req.headers).filter((k) => k.startsWith('tailscale')).join(',')} remote=${req.socket.remoteAddress}`); res.statusCode = 404; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(FUNNEL_PAGE); }
     const isReplica = !loopback && config.checkReplicaKey(req.headers['x-tj-replica-key']);
     if (req.url.startsWith('/api/replica')) return replicaApi(req, res, isReplica, loopback);
 
