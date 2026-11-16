@@ -1895,8 +1895,9 @@ a.ruin-chip { cursor: pointer; }
 @media (max-width: 760px) { .rshare-pop .pop { left: auto !important; right: 0 !important; max-width: calc(100vw - 32px); } }
 .rshare-what { font-size: 12px; color: var(--fg-2); }
 /* ---------------- shared, view-only journal ---------------- */
-.app.viewer { display: block; }
-.app.viewer .main { margin: 0; width: 100%; min-height: 100vh; display: flex; flex-direction: column; }
+/* the shared page scrolls as a normal web page (the app itself scrolls only its content area) */
+.app.viewer { display: block; height: auto; min-height: 100vh; overflow: visible; }
+.app.viewer .main { margin: 0; width: 100%; min-height: 100vh; display: flex; flex-direction: column; overflow: visible; }
 .viewer-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 28px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 40; }
 .viewer-id { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
 .viewer-id .wordmark { font-size: 18px; }
