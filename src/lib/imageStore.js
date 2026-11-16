@@ -1,3 +1,4 @@
+import { IS_VIEWER, shareImageUrl } from './shareMode';
 // Chart screenshots: stored on the journal server (data/images, shared with your phone) when it's running,
 // otherwise in this browser's IndexedDB. Images saved in IndexedDB earlier are uploaded automatically the first
 // time they're shown while the server is available.
@@ -67,6 +68,7 @@ export async function saveImage(file) {
 }
 
 export async function imageUrl(id) {
+  if (IS_VIEWER) return shareImageUrl(id); // a shared journal: only that link's screenshots
   if (urlCache.has(id)) return urlCache.get(id);
   const server = await hasServer();
   if (server) {

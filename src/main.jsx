@@ -3,8 +3,10 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 import { installDemoFetch, IS_DEMO } from './lib/demoMode';
+import { installViewerFetch, IS_VIEWER } from './lib/shareMode';
 
 installDemoFetch();
+installViewerFetch();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -13,6 +15,6 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 );
 
 // Installable app (Add to Home Screen / Install): only on HTTPS or localhost, and not in the Vite dev server.
-if ('serviceWorker' in navigator && window.isSecureContext && !import.meta.env.DEV && !IS_DEMO) {
+if ('serviceWorker' in navigator && window.isSecureContext && !import.meta.env.DEV && !IS_DEMO && !IS_VIEWER) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }

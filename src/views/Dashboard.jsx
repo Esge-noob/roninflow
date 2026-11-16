@@ -139,7 +139,7 @@ export default function Dashboard() {
         <div className="sep-v" style={{ margin: '4px 6px' }} />
         <FilterButton value={filters} onChange={setFilters} trades={all} />
         <div className="sep-v" style={{ margin: '4px 6px' }} />
-        {!editing && <button className="btn" onClick={() => setEditing(true)}>Edit layout</button>}
+        {!editing && <button className="btn" data-edit onClick={() => setEditing(true)}>Edit layout</button>}
       </div>
 
       {editing && (

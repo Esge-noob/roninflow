@@ -145,7 +145,7 @@ function AccountMenu({ a, onEdit, onDelete }) {
   const [costOpen, setCostOpen] = useState(false);
   return (
     <>
-    <Popover align="right" trigger={({ toggle }) => <button className="icon-btn" style={{ border: '1px solid var(--border-2)', width: 26, height: 26 }} onClick={(e) => { e.stopPropagation(); toggle(); }}><EllipsisVertical size={15} /></button>}>
+    <Popover align="right" trigger={({ toggle }) => <button className="icon-btn" data-edit style={{ border: '1px solid var(--border-2)', width: 26, height: 26 }} onClick={(e) => { e.stopPropagation(); toggle(); }}><EllipsisVertical size={15} /></button>}>
       {(close) => (
         <div onClick={(e) => e.stopPropagation()}>
           <button className="pop-item" onClick={() => { setSetting('account', a.id); close(); navigate('dashboard'); }}>Open dashboard</button>
@@ -417,8 +417,8 @@ export default function Accounts() {
         <Seg value={view} onChange={setView} options={[{ value: 'grid', label: 'Grid', icon: LayoutGrid }, { value: 'list', label: 'List', icon: List }]} />
         <div className="sep-v" style={{ margin: '4px 6px' }} />
         <button className="btn" onClick={sync.open}><RefreshCw size={15} /> Auto sync</button>
-        <button className="btn" onClick={() => setImporting(true)}><Upload size={15} /> Import from ATAS</button>
-        <button className="btn white" onClick={() => setAdding(true)}>Add account <Plus size={17} /></button>
+        <button className="btn" data-edit onClick={() => setImporting(true)}><Upload size={15} /> Import from ATAS</button>
+        <button className="btn white" data-edit onClick={() => setAdding(true)}>Add account <Plus size={17} /></button>
       </div>
       {list.length === 0 && <div className="panel empty">No accounts match this filter.</div>}
       {view === 'grid' ? (

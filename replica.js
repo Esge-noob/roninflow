@@ -21,6 +21,7 @@ import { Readable } from 'node:stream';
 import { createAiProxy } from './ai-proxy.js';
 import { createCandleHandler } from './candles.js';
 import { createMacroHandler } from './macro.js';
+import { sanitizeState, isLive, tokenOk, isShareAsset, sendShareImage } from './share.js';
 import { createDataHandler, createConfig, cookieToken, loginPage } from './local-api.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -218,6 +219,22 @@ async function pullImages() {
   }
 }
 
+/** The PC's share links, so they keep working here while the PC is off. */
+const SHARES_FILE = path.join(DATA, 'replica-shares.json');
+async function pullShares() {
+  const { json } = await pcJson('/api/replica/shares');
+  if (Array.isArray(json?.links)) writeAtomic(SHARES_FILE, JSON.stringify(json));
+}
+/** Public: a share link's view-only data from this copy (PC offline). */
+function localShare(req, res, p) {
+  const token = p.split('/')[3];
+  const link = tokenOk(token) ? (readJsonFile(SHARES_FILE, { links: [] }).links || []).find((l) => l.token === token) : null;
+  if (!isLive(link) || !base?.json) return sendJson(res, 404, { error: link?.revoked ? 'revoked' : link ? 'expired' : 'not_found' });
+  const state = JSON.parse(base.json);
+  if (p.split('/')[4] === 'image') return sendShareImage(res, path.join(DATA, 'images'), sanitizeState(state, link.scope, { hideMoney: link.hideMoney }), p.split('/')[5]);
+  return sendJson(res, 200, { meta: { token, scope: link.scope, label: link.label, hideMoney: !!link.hideMoney, createdAt: link.createdAt, sharedBy: state.user?.name ? String(state.user.name).split(/\s+/)[0] : '' }, state: sanitizeState(state, link.scope, { hideMoney: link.hideMoney }) }, { 'X-Robots-Tag': 'noindex' });
+}
+
 async function pullAuth() {
   const { json } = await pcJson('/api/replica/auth');
   if (json?.pinHash || json?.pwHash) config.adoptPin(json.pinHash, json.pinSalt, json.pwHash, json.pwSalt);
@@ -259,6 +276,7 @@ async function tick() {
       if (meta.dirty || meta.images.length || meta.deletedImages.length) await pushPending();
       if (meta.dirty) return; // a device saved during the merge; stay on this copy and merge again next time
       await pullAuth();
+      await pullShares().catch(() => {}); // an older PC version has no share links
       await pullJournal();
       if (!online) log(`[sync] PC is online at ${upstream} — forwarding to it`);
       online = true;
@@ -350,6 +368,18 @@ async function handle(req, res) {
     const p = req.url.split('?')[0];
     if (p === '/healthz') return sendJson(res, 200, { ok: true, app: 'trade-journal-replica', pcOnline: online });
     if (req.method === 'GET' && /^\/(manifest\.webmanifest|favicon\.svg|sw\.js|offline\.html|icons\/[\w.-]+\.png)$/.test(p)) return serveStatic(req, res);
+
+    // view-only share links are public (the token is the key); Funnel visitors may only reach these
+    const funnelReq = !!req.headers['tailscale-funnel-request'];
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (/^\/api\/share\/[\w-]+\/(state|image\/[\w-]+)$/.test(p)) {
+        if (online && upstream && await forward(req, res, null)) return;
+        return localShare(req, res, p);
+      }
+      if (/^\/s\/[\w-]+\/?$/.test(p)) { req.url = '/index.html'; res.setHeader('X-Robots-Tag', 'noindex'); return serveStatic(req, res); }
+      if (isShareAsset(req.url)) return serveStatic(req, res);
+    }
+    if (funnelReq) { res.statusCode = 404; return res.end('Not found'); }
 
     // sign in with the PC's PIN (sessions are this server's own)
     if (p === '/api/net/login' && req.method === 'POST') {

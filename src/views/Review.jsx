@@ -367,7 +367,7 @@ function ReviewForm({ period }) {
           </div>
         </div>
         <div className="row gap8">
-          <button className="btn xs" onClick={() => setEditQs(true)} title="Change, add or remove the questions for this review type"><Pencil size={12} /> Edit questions</button>
+          <button className="btn xs" data-edit onClick={() => setEditQs(true)} title="Change, add or remove the questions for this review type"><Pencil size={12} /> Edit questions</button>
           <StatusBadge status={status} />
         </div>
       </div>
@@ -385,9 +385,9 @@ function ReviewForm({ period }) {
         <span className="muted" style={{ fontSize: 12.5 }}>Saved automatically{review?.updatedAt ? ` · ${fmtTime12(review.updatedAt)}` : ''}</span>
         <div className="grow" />
         {review?.completedAt ? (
-          <button className="btn" onClick={() => saveReview(key, { completedAt: null })}><RotateCcw size={14} /> Reopen review</button>
+          <button className="btn" data-edit onClick={() => saveReview(key, { completedAt: null })}><RotateCcw size={14} /> Reopen review</button>
         ) : (
-          <button className="btn primary" disabled={!filled} onClick={() => saveReview(key, { completedAt: new Date().toISOString() })}><CircleCheck size={15} /> Mark {noun} reviewed</button>
+          <button className="btn primary" data-edit disabled={!filled} onClick={() => saveReview(key, { completedAt: new Date().toISOString() })}><CircleCheck size={15} /> Mark {noun} reviewed</button>
         )}
       </div>
     </div>

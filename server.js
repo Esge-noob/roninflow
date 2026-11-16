@@ -24,6 +24,7 @@ import { createConnectHandler } from './connect.js';
 import { createVault } from './secrets.js';
 import { createSystemHandler } from './system.js';
 import { createMacroHandler } from './macro.js';
+import { createShareHandler, isShareAsset } from './share.js';
 import { createDataHandler, createNetHandler, createConfig, isLocalPc, cookieToken, lanUrls, loginPage } from './local-api.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -113,6 +114,9 @@ const vaultApi = async (req, res) => {
   } catch (e) { return sendJson(res, 400, { error: e.message }); }
 };
 const macroApi = createMacroHandler(DATA_DIR, { log }); // economic calendar + COT report (Macro pages)
+// view-only share links (/s/<token>) and snapshot files
+const readState = () => { const j = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'journal.json'), 'utf8')); return j.state || j; };
+const shareApi = createShareHandler({ dataDir: DATA_DIR, distDir: DIST, port: PORT, readState });
 const connectApi = createConnectHandler(DATA_DIR, { log, vault });
 const candleApi = createCandleHandler(DATA_DIR, { readTrades, log, vault, tokenOk: (req) => connectApi.tokenOk(req, isLocalPc(req)) });
 const netApi = createNetHandler({ config, port: PORT, mode: 'server', onLanChange: (on) => setImmediate(() => bind(on)) });
@@ -140,6 +144,7 @@ function replicaApi(req, res, isReplica, loopback) {
   if (!isReplica) return sendJson(res, 403, { error: 'forbidden' });
   if (route === '/auth') { const c = config.get(); return sendJson(res, 200, { pinHash: c.pinHash, pinSalt: c.pinSalt, pwHash: c.pwHash, pwSalt: c.pwSalt }); }
   if (route === '/app') return sendJson(res, 200, appManifest());
+  if (route === '/shares') return sendJson(res, 200, { links: shareApi.store.list() }); // so share links work while the PC is off
   if (route.startsWith('/app/')) {
     const file = path.normalize(path.join(DIST, decodeURIComponent(route.slice(5))));
     if (!file.startsWith(DIST + path.sep) || !fs.existsSync(file)) return sendJson(res, 404, { error: 'not found' });
@@ -156,6 +161,17 @@ function handle(req, res) {
     const loopback = isLocalPc(req);
     const ctx = { loopback };
     if (req.url === '/healthz') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ ok: true, app: 'trade-journal', pid: process.pid })); }
+
+    // View-only share links are public: the token is the key. Anyone (a teammate, a mentor) may open /s/<token>,
+    // fetch that link's view-only data and load the app's code and styles — nothing else without signing in.
+    // Visitors through Tailscale Funnel (public internet) may only ever reach these routes.
+    const funnelReq = !!req.headers['tailscale-funnel-request'];
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (/^\/api\/share\/[\w-]+\/(state|image\/[\w-]+)(\?|$)/.test(req.url)) return shareApi.publicApi(req, res);
+      if (/^\/s\/[\w-]+\/?(\?.*)?$/.test(req.url)) { res.setHeader('X-Robots-Tag', 'noindex'); req.url = '/index.html'; return serveStatic(req, res); }
+      if (isShareAsset(req.url) && (funnelReq || !isLocalPc(req))) return serveStatic(req, res);
+    }
+    if (funnelReq) { res.statusCode = 404; res.setHeader('Content-Type', 'text/plain'); return res.end('Not found'); }
     const isReplica = !loopback && config.checkReplicaKey(req.headers['x-tj-replica-key']);
     if (req.url.startsWith('/api/replica')) return replicaApi(req, res, isReplica, loopback);
 
@@ -196,6 +212,7 @@ function handle(req, res) {
     if (req.url.startsWith('/api/connect')) return connectApi(req, res, { trusted: true, loopback });
     if (req.url.startsWith('/api/system')) return isReplica ? sendJson(res, 403, { error: 'forbidden' }) : systemApi(req, res);
     if (req.url.startsWith('/api/macro')) return macroApi(req, res);
+    if (req.url.startsWith('/api/shares')) return isReplica ? sendJson(res, 403, { error: 'forbidden' }) : shareApi.api(req, res);
     if (req.url.startsWith('/api/vault')) return isReplica ? sendJson(res, 403, { error: 'forbidden' }) : vaultApi(req, res);
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.statusCode = 405; return res.end(); }
     return serveStatic(req, res);

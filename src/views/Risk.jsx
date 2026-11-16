@@ -115,7 +115,7 @@ export default function Risk() {
         <span className="risk-plan-tag" title={src.kind === 'profile' ? `This account follows the risk profile “${src.profile.name}” — the Start/Peak switch changes the profile` : own ? 'This account has its own risk rules' : 'This account follows the default risk plan — open Risk rules to give it a profile or its own rules'}>
           <ShieldCheck size={13} /> {src.kind === 'profile' ? <>Profile: <b>{src.profile.name}</b></> : own ? <b>Own rules for this account</b> : 'Default rules'}
         </span>
-        <button className="btn" onClick={() => setSettings(true)}><Settings size={15} /> Risk rules</button>
+        <button className="btn" data-edit onClick={() => setSettings(true)}><Settings size={15} /> Risk rules</button>
       </div>
       {state.settings.account === 'all' && (
         <div className="badge neutral" style={{ padding: '8px 12px', marginBottom: 16, whiteSpace: 'normal' }}><TriangleAlert size={14} /> All accounts are combined. Pick one account for an accurate drawdown.</div>

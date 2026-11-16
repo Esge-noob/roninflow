@@ -4,6 +4,8 @@ import { ToastProvider } from './components/ui';
 import { AtasSyncProvider } from './components/AtasSync';
 import { ConnectSyncProvider } from './components/ConnectSync';
 import Layout from './components/Layout';
+import ViewerLayout from './components/ViewerLayout';
+import { IS_VIEWER } from './lib/shareMode';
 import Dashboard from './views/Dashboard';
 import Journal from './views/Journal';
 import Coach from './views/Coach';
@@ -75,6 +77,8 @@ function Router() {
     default:
       break;
   }
+  // a shared, view-only journal has its own frame (no editing, settings or connections)
+  if (IS_VIEWER) return <ViewerLayout route={route}>{view}</ViewerLayout>;
   // first-run setup (only for a new, empty journal — waits until the server's copy has loaded)
   if (storage.mode !== 'checking' && state.settings.setupDone === false) return <Setup />;
   return (

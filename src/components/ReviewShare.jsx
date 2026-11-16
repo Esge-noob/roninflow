@@ -1,7 +1,7 @@
-// "Share reviews" toggle: copy trade reviews (notes, tags, strategy, blockers, rating, screenshots, reviewed)
+// "Sync" toggle (Review page): copy trade reviews (notes, tags, strategy, blockers, rating, screenshots, reviewed)
 // onto the same trade on other accounts — so a breached account's journal isn't lost.
 import { useMemo } from 'react';
-import { Check, ChevronDown, Link2 } from 'lucide-react';
+import { Check, ChevronDown, RefreshCw } from 'lucide-react';
 import { useStore } from '../store/store';
 import { Popover, Seg, useToast } from './ui';
 import { backfillReviews, LINK_TOLERANCE } from '../lib/linkedTrades';
@@ -30,15 +30,15 @@ export default function ReviewShare() {
       width={380}
       className="rshare-pop"
       trigger={({ toggle }) => (
-        <button className={`btn rshare-btn ${sync.mode !== 'off' ? 'on' : ''}`} onClick={toggle} title="Share trade reviews with the same trade on other accounts">
-          <Link2 size={14} /> <span className="hide-m">Share reviews:</span> <b>{label}</b> <ChevronDown size={13} className="muted" />
+        <button className={`btn rshare-btn ${sync.mode !== 'off' ? 'on' : ''}`} onClick={toggle} title="Sync trade reviews with the same trade on your other accounts">
+          <RefreshCw size={14} /> <span className="hide-m">Sync:</span> <b>{label}</b> <ChevronDown size={13} className="muted" />
         </button>
       )}
     >
       {() => (
         <div className="rshare">
-          <div className="rshare-h"><b>Share trade reviews across accounts</b></div>
-          <p className="muted">When you copy-trade, each trade exists on several accounts. With sharing on, the notes, tags, strategy, edge blockers, rating, screenshots and “reviewed” you add to one copy are saved on the others too — so if the account you journal on is breached, your reviews live on.</p>
+          <div className="rshare-h"><b>Sync trade reviews across your accounts</b></div>
+          <p className="muted">When you copy-trade, each trade exists on several accounts. With sync on, the notes, tags, strategy, edge blockers, rating, screenshots and “reviewed” you add to one copy are saved on the others too — so if the account you journal on is breached, your reviews live on.</p>
           <Seg value={sync.mode} onChange={(mode) => set({ mode })} options={[{ value: 'off', label: 'This account only' }, { value: 'all', label: 'All accounts' }, { value: 'selected', label: 'Selected' }]} />
           {sync.mode === 'selected' && (
             <div className="rshare-accts">
@@ -50,13 +50,13 @@ export default function ReviewShare() {
                 </label>
               ))}
               {!state.accounts.length && <div className="muted" style={{ fontSize: 12.5 }}>No accounts yet.</div>}
-              <div className="muted" style={{ fontSize: 12 }}>Reviews are shared between the accounts ticked here.</div>
+              <div className="muted" style={{ fontSize: 12 }}>Reviews are synced between the accounts ticked here.</div>
             </div>
           )}
           {sync.mode !== 'off' && (
             <div className="rshare-back">
               <div>
-                <b>{pending ? `${pending} trade${pending === 1 ? '' : 's'}` : 'Nothing'}</b> <span className="muted">{pending ? 'on other accounts can get the reviews you’ve already written.' : 'to copy — your existing reviews are already shared.'}</span>
+                <b>{pending ? `${pending} trade${pending === 1 ? '' : 's'}` : 'Nothing'}</b> <span className="muted">{pending ? 'on other accounts can get the reviews you’ve already written.' : 'to copy — your existing reviews are already synced.'}</span>
               </div>
               {pending > 0 && <div className="rshare-what">{what}</div>}
               <button className="btn sm white" disabled={!pending} onClick={() => { runBackfill(); toast(`Copied reviews to ${pending} linked trade${pending === 1 ? '' : 's'}`); }}><Check size={13} /> Copy existing reviews now</button>

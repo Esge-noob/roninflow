@@ -87,8 +87,8 @@ export default function Journal({ sub }) {
         <div className="sep-v" style={{ margin: '4px 6px' }} />
         <Seg value={view} onChange={setView} options={[{ value: 'list', label: 'List', icon: List }, { value: 'grid', label: 'Grid', icon: LayoutGrid }, { value: 'calendar', label: 'Calendar', icon: Calendar }]} />
         <div className="sep-v" style={{ margin: '4px 6px' }} />
-        <button className="btn" onClick={() => setImporting(true)}><Upload size={15} /> Import</button>
-        <button className="btn white" onClick={() => setAdding(true)}>Add trade <Plus size={17} /></button>
+        <button className="btn" data-edit onClick={() => setImporting(true)}><Upload size={15} /> Import</button>
+        <button className="btn white" data-edit onClick={() => setAdding(true)}>Add trade <Plus size={17} /></button>
       </div>
 
       {isInbox && (
@@ -98,7 +98,7 @@ export default function Journal({ sub }) {
             <div style={{ fontWeight: 500 }}>{trades.length ? `${trades.length} trade${trades.length > 1 ? 's' : ''} waiting for review` : 'Inbox zero'}</div>
             <div className="muted" style={{ fontSize: 13 }}>New and synced trades land here. Add tags, a strategy and notes, then mark them reviewed.</div>
           </div>
-          {trades.length > 0 && <button className="btn sm" onClick={() => { trades.forEach((t) => updateTrade(t.id, { reviewed: true })); toast('All trades marked reviewed'); }}><Check size={14} /> Mark all reviewed</button>}
+          {trades.length > 0 && <button className="btn sm" data-edit onClick={() => { trades.forEach((t) => updateTrade(t.id, { reviewed: true })); toast('All trades marked reviewed'); }}><Check size={14} /> Mark all reviewed</button>}
         </div>
       )}
 

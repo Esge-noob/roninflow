@@ -216,7 +216,7 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
   const t = live;
   const up = (patch) => updateTrade(t.id, patch);
   const acct = state.accounts.find((a) => a.id === t.accountId);
-  // the same trade on other accounts that this review is shared with (Review page → Share reviews)
+  // the same trade on other accounts that this review is synced with (Review page → Sync)
   const copies = linkedTrades(t, state.trades, shareTargets(state.settings.reviewSync, state.accounts, t.accountId));
   // stepping through the day's trades
   const list = siblings ? siblings.map((x) => state.trades.find((y) => y.id === x.id) || x) : null;
@@ -274,11 +274,11 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
               {!t.reviewed && <span className="badge neutral">Inbox</span>}
             </div>
             <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>{fmtDate(t.entry)} · {fmtTime12(t.entry)} → {fmtTime12(t.exit)}</div>
-            {copies.length > 0 && <div className="shared-line" title={`Your notes, tags, rating and other review fields on this trade are also saved on: ${copies.map((c) => c.accountId).join(', ')}`}><Link2 size={12} /> Review shared with {copies.length === 1 ? copies[0].accountId : `${copies.length} copies (${copies.map((c) => c.accountId).join(', ')})`}</div>}
+            {copies.length > 0 && <div className="shared-line" title={`Your notes, tags, rating and other review fields on this trade are also saved on: ${copies.map((c) => c.accountId).join(', ')}`}><Link2 size={12} /> Review synced with {copies.length === 1 ? copies[0].accountId : `${copies.length} copies (${copies.map((c) => c.accountId).join(', ')})`}</div>}
           </div>
           <div className="row gap8">
-            <button className="icon-btn" title="Edit" onClick={() => setEdit(true)}><Pencil size={16} /></button>
-            <button className="icon-btn" title="Delete" onClick={() => setDel(true)}><Trash size={16} /></button>
+            <button className="icon-btn" data-edit title="Edit" onClick={() => setEdit(true)}><Pencil size={16} /></button>
+            <button className="icon-btn" data-edit title="Delete" onClick={() => setDel(true)}><Trash size={16} /></button>
             <button className="icon-btn" onClick={onClose}><X size={18} /></button>
           </div>
         </div>
@@ -343,7 +343,7 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
           </div>
           <div className="field">
             <label className="label row between"><span>Screenshots</span>
-              <button className="btn xs" onClick={() => fileRef.current?.click()}><ImagePlus size={13} /> Add</button>
+              <button className="btn xs" data-edit onClick={() => fileRef.current?.click()}><ImagePlus size={13} /> Add</button>
             </label>
             <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={addShots} />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
@@ -351,7 +351,7 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
                 <div key={i} style={{ position: 'relative' }}>
                   <a href={src} target="_blank" rel="noreferrer"><img src={src} alt="" style={{ width: '100%', display: 'block', border: '1px solid var(--border)' }} /></a>
                   <button className="close-x" style={{ position: 'absolute', top: 6, right: 6 }} onClick={() => up({ screenshots: t.screenshots.filter((_, j) => j !== i) })}><X size={12} /></button>
-                  <button className="btn xs shot-ask" onClick={() => askAboutShot(src)} title="Ask coach about this chart"><MessageCircle size={12} /> Ask coach</button>
+                  <button className="btn xs shot-ask" data-edit onClick={() => askAboutShot(src)} title="Ask coach about this chart"><MessageCircle size={12} /> Ask coach</button>
                 </div>
               ))}
               {!t.screenshots?.length && <div className="muted2" style={{ fontSize: 13 }}>No screenshots yet</div>}

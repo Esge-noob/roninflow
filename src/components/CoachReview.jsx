@@ -6,6 +6,7 @@ import { Markdown } from '../views/Coach';
 import { buildReviewContext, askReview, localReview } from '../lib/coach';
 import { PROVIDERS, providerConfig } from '../lib/ai';
 import { uid, fmtDate, fmtTime12 } from '../lib/stats';
+import { IS_VIEWER } from '../lib/shareMode';
 
 /**
  * "Coach Review" panel at the bottom of a diary day or a review page: asks the Trading Coach for a structured
@@ -56,6 +57,7 @@ export default function CoachReview({ reviewKey, kind, label, date, period, trad
     navigate(`coach?chat=${id}`);
   };
 
+  if (IS_VIEWER && !saved) return null; // a shared journal shows coach reviews that exist, and can't make new ones
   return (
     <div className="panel coach-review">
       <div className="panel-head wrap">
@@ -66,7 +68,7 @@ export default function CoachReview({ reviewKey, kind, label, date, period, trad
             <div className="muted" style={{ fontSize: 12.5, marginTop: 2 }}>{label}</div>
           </div>
         </div>
-        {saved && !busy && <button className="btn xs" onClick={generate}><RefreshCw size={12} /> Regenerate</button>}
+        {saved && !busy && <button className="btn xs" data-edit onClick={generate}><RefreshCw size={12} /> Regenerate</button>}
       </div>
 
       {busy ? (
@@ -79,13 +81,13 @@ export default function CoachReview({ reviewKey, kind, label, date, period, trad
             <span className="muted" style={{ fontSize: 12 }}>
               {fmtDate(saved.createdAt)} {fmtTime12(saved.createdAt)} · {saved.provider === 'local' ? 'built from your data' : PROVIDERS[saved.provider]?.label || saved.provider}
             </span>
-            <button className="btn white" onClick={chatMore}><MessageCircle size={14} /> Chat more with the coach</button>
+            <button className="btn white" data-edit onClick={chatMore}><MessageCircle size={14} /> Chat more with the coach</button>
           </div>
         </>
       ) : (
         <div className="cr-empty">
           <div className="muted">{intro || `Get a review of this ${noun} from your Trading Coach — what went well, what needs work, and action items for next time.`}</div>
-          <button className="btn white" onClick={generate} disabled={!trades.length}><Sparkles size={14} /> Generate coach review</button>
+          <button className="btn white" data-edit onClick={generate} disabled={!trades.length}><Sparkles size={14} /> Generate coach review</button>
           {provider === 'local' && <div className="muted2" style={{ fontSize: 12 }}>No AI provider is set up, so this will be a data-only review. Add one in the Trading Coach settings for a full review.</div>}
         </div>
       )}

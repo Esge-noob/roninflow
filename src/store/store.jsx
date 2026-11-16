@@ -8,6 +8,7 @@ import { applyAtasBatch, groupAtasTrades } from '../lib/atasSync';
 import { applyTheme, findTheme } from '../lib/themes';
 import { applyConnectBatch } from '../lib/connectSync';
 import { IS_DEMO } from '../lib/demoMode';
+import { IS_VIEWER, SNAPSHOT, VIEW_PREFS, shareStateUrl, notifyViewOnly } from '../lib/shareMode';
 import { buildShowcase } from '../data/showcase';
 
 const KEY = IS_DEMO ? 'roninflow-demo-v1' : 'trade-journal-state-v1';
@@ -67,6 +68,8 @@ function normalize(saved) {
 }
 
 function load() {
+  // a shared journal never reads (or writes) this browser's copy — that's the owner's own journal on their device
+  if (IS_VIEWER) return SNAPSHOT?.state ? normalize(SNAPSHOT.state) : { ...initialState(), trades: [], accounts: [], settings: { ...initialState().settings, setupDone: true } };
   try {
     const raw = localStorage.getItem(KEY) ?? (IS_DEMO ? null : localStorage.getItem(OLD_KEY));
     if (raw) return normalize(JSON.parse(raw));
@@ -105,6 +108,23 @@ export function StoreProvider({ children }) {
 
   useEffect(() => {
     let dead = false;
+    if (IS_VIEWER) { // a shared journal: load the view-only copy, save nothing
+      srv.current.mode = 'viewer';
+      if (SNAPSHOT) { setStorage((x) => ({ ...x, mode: 'viewer', share: SNAPSHOT.meta || {} })); return () => { dead = true; }; }
+      (async () => {
+        try {
+          const r = await fetch(shareStateUrl(), { cache: 'no-store' });
+          const j = await jsonOf(r);
+          if (dead) return;
+          if (!r.ok || !j?.state) { setStorage((x) => ({ ...x, mode: 'viewer', shareError: j?.error || 'not_found' })); return; }
+          const next = normalize(j.state);
+          stateRef.current = next;
+          setState(next);
+          setStorage((x) => ({ ...x, mode: 'viewer', share: j.meta || {} }));
+        } catch { if (!dead) setStorage((x) => ({ ...x, mode: 'viewer', shareError: 'offline' })); }
+      })();
+      return () => { dead = true; };
+    }
     if (IS_DEMO) { // the demo has no server: everything stays in this browser
       srv.current.mode = 'local';
       setStorage((x) => ({ ...x, mode: 'local' }));
@@ -148,6 +168,7 @@ export function StoreProvider({ children }) {
 
   // save: browser cache always; server (debounced) when connected
   useEffect(() => {
+    if (IS_VIEWER) return undefined; // a shared journal is never stored anywhere
     const id = setTimeout(() => {
       try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* quota */ }
     }, 150);
@@ -227,7 +248,8 @@ export function StoreProvider({ children }) {
     applyTheme(findTheme(state.settings));
   }, [state.settings.theme, state.settings.themeId, state.settings.customThemes]);
 
-  const update = useCallback((fn) => setState((s) => fn(s)), []);
+  // a shared journal is read-only: every change is refused (and the page says so once)
+  const update = useCallback((fn) => { if (IS_VIEWER) { notifyViewOnly(); return; } setState((s) => fn(s)); }, []);
 
   const actions = useMemo(() => {
     const patchList = (key, id, patch) =>
@@ -236,6 +258,7 @@ export function StoreProvider({ children }) {
       update,
       /** Merge trades pushed by the ATAS add-on; returns counts. */
       syncAtas: (dtos) => {
+        if (IS_VIEWER) return applyAtasBatch(stateRef.current, []); // never in a shared journal
         const res = applyAtasBatch(stateRef.current, dtos);
         stateRef.current = res.next;
         setState(res.next);
@@ -243,6 +266,7 @@ export function StoreProvider({ children }) {
       },
       /** Merge trades from the connector inbox (add-ons / webhooks); returns counts. */
       syncConnect: (records, cursor, balances) => {
+        if (IS_VIEWER) return applyConnectBatch(stateRef.current, [], cursor, balances);
         const res = applyConnectBatch(stateRef.current, records, cursor, balances);
         const base = stateRef.current;
         stateRef.current = res.next;
@@ -253,7 +277,8 @@ export function StoreProvider({ children }) {
       /** Combine (or split back) ATAS executions into one trade per position. */
       setPositionGrouping: (on) => update((s) => ({ ...s, trades: groupAtasTrades(s.trades, on), settings: { ...s.settings, sync: { ...s.settings.sync, groupPositions: on } } })),
       setSync: (patch) => update((s) => ({ ...s, settings: { ...s.settings, sync: { ...s.settings.sync, ...(typeof patch === 'function' ? patch(s.settings.sync) : patch) } } })),
-      setSetting: (k, v) => update((s) => ({ ...s, settings: { ...s.settings, [k]: typeof v === 'function' ? v(s.settings[k]) : v } })),
+      // in a shared journal, how things are shown (account picked, chart style…) can change for the viewer, unsaved
+      setSetting: (k, v) => (IS_VIEWER && VIEW_PREFS.has(k) ? setState : update)((s) => ({ ...s, settings: { ...s.settings, [k]: typeof v === 'function' ? v(s.settings[k]) : v } })),
       // trades
       addTrade: (t) => {
         const trade = { id: uid('t'), tags: [], notes: '', rating: 0, reviewed: false, screenshots: [], strategyId: null, ...t };
@@ -320,8 +345,8 @@ export function StoreProvider({ children }) {
       markAllRead: () => update((s) => ({ ...s, notifications: s.notifications.map((n) => ({ ...n, read: true })) })),
       markRead: (id) => patchList('notifications', id, { read: true }),
       clearNotifications: () => update((s) => ({ ...s, notifications: [] })),
-      resetAll: () => setState(initialState()),
-      resetDemo: () => setState(buildShowcase()),
+      resetAll: () => (IS_VIEWER ? notifyViewOnly() : setState(initialState())),
+      resetDemo: () => (IS_VIEWER ? notifyViewOnly() : setState(buildShowcase())),
       loadDemo: () => update((s) => ({
         ...s,
         accounts: [...s.accounts.filter((a) => a.id !== DEMO_ACCOUNT.id), { ...DEMO_ACCOUNT, createdAt: new Date(Date.now() - 70 * 86400e3).toISOString().slice(0, 10) }],
@@ -333,7 +358,7 @@ export function StoreProvider({ children }) {
         trades: s.trades.filter((t) => !t.demo),
         settings: { ...s.settings, account: s.settings.account === DEMO_ACCOUNT.id ? 'all' : s.settings.account },
       })),
-      importState: (obj) => setState({ ...initialState(), ...obj }),
+      importState: (obj) => (IS_VIEWER ? notifyViewOnly() : setState({ ...initialState(), ...obj })),
     };
   }, [update]);
 
