@@ -2113,3 +2113,11 @@ a.ruin-chip { cursor: pointer; }
 .ronin.small .ronin-ticks { font-size: 10px; margin-top: 3px; }
 .ronin.small .ronin-tip { bottom: auto; top: 0; font-size: 11px; }
 .ronin.small > .panel-head { margin-bottom: 4px; }
+.ronin-spoke.on { stroke: var(--primary); stroke-width: 1.5; }
+.ronin.small .ronin-tip { top: 0; left: 0; bottom: auto; transform: none; font-size: 11.5px; }
+/* KPI-card size: radar on the left at full height, the score beside it */
+.ronin.small .ronin-body { flex-direction: row; align-items: stretch; gap: 16px; overflow: hidden; }
+.ronin.small .ronin-radar { flex: 1 1 50%; min-width: 0; }
+.ronin.small .ronin-foot { flex: 1 1 50%; grid-template-columns: 1fr; gap: 10px; border-top: 0; padding-top: 0; align-content: center; min-width: 0; }
+.ronin.small .ronin-total { border-right: 0; padding-right: 0; flex-direction: column; align-items: flex-start; gap: 2px; }
+.ronin.small .ronin-total b { font-size: 28px; }

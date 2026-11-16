@@ -1,5 +1,5 @@
 // Ronin Score widget: a radar of the six parts and the overall score on a 0–100 bar — the same design at every
-// size; at KPI-card size the labels and the score row are smaller.
+// size; at KPI-card size the radar fills the space and its labels show on hover.
 import { useMemo, useState } from 'react';
 import { Info } from 'lucide-react';
 import { Popover, useSize } from './ui';
@@ -33,7 +33,7 @@ export default function RoninScore({ trades, initial }) {
         {h > 0 && (
           <>
             <div className="ronin-radar">
-              <Radar r={r} hover={hover} setHover={setHover} small={small || w < 360} />
+              <Radar r={r} hover={hover} setHover={setHover} small={small || w < 360} bare={small} />
               {hp && <div className="ronin-tip"><b>{hp.label}</b> {fmtValue(hp.key, r.values[hp.key], r)} <span style={{ color: scoreColor(r.parts[hp.key]) }}>· {Math.round(r.parts[hp.key])}/100</span></div>}
             </div>
             <div className="ronin-foot">
@@ -53,8 +53,8 @@ export default function RoninScore({ trades, initial }) {
   );
 }
 
-/** The six-sided radar, sized to its box; labels shorten when it's small. */
-function Radar({ r, hover, setHover, small }) {
+/** The six-sided radar, sized to its box; labels shorten when it's small, and `bare` leaves them to the hover tip. */
+function Radar({ r, hover, setHover, small, bare }) {
   const [ref, { w, h }] = useSize();
   const fs = small ? 10.5 : 12;
   const ang = (i) => -Math.PI / 2 + (i * 2 * Math.PI) / RONIN_PARTS.length;
@@ -66,8 +66,8 @@ function Radar({ r, hover, setHover, small }) {
     return (t) => c.measureText(t).width;
   }, [fs]);
   const sideW = (sign) => Math.max(0, ...RONIN_PARTS.map((p, i) => (Math.cos(ang(i)) * sign > 0.2 ? widthOf(text(p)) : 0))) + 14;
-  const lw = sideW(-1), rw = sideW(1);
-  const R = Math.max(16, Math.min((w - lw - rw) / 2, h / 2 - fs - 10));
+  const lw = bare ? 6 : sideW(-1), rw = bare ? 6 : sideW(1);
+  const R = Math.max(16, Math.min((w - lw - rw) / 2, h / 2 - (bare ? 6 : fs + 10)));
   const cx = lw + (w - lw - rw) / 2, cy = h / 2;
   const pts = RONIN_PARTS.map((p, i) => {
     const a = ang(i), k = r.parts[p.key] / 100;
@@ -79,16 +79,17 @@ function Radar({ r, hover, setHover, small }) {
       {w > 0 && h > 0 && (
         <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label={`Ronin Score radar: ${pts.map((p) => `${p.label} ${Math.round(r.parts[p.key])}`).join(', ')}`}>
           {[0.2, 0.4, 0.6, 0.8, 1].map((k) => <polygon key={k} points={ring(k)} className="ronin-ring" />)}
-          {pts.map((p) => <line key={p.key} x1={cx} y1={cy} x2={cx + Math.cos(p.a) * R} y2={cy + Math.sin(p.a) * R} className="ronin-spoke" />)}
+          {pts.map((p) => <line key={p.key} x1={cx} y1={cy} x2={cx + Math.cos(p.a) * R} y2={cy + Math.sin(p.a) * R} className={`ronin-spoke ${hover === p.key ? 'on' : ''}`} />)}
           <polygon points={pts.map((p) => `${p.x},${p.y}`).join(' ')} className="ronin-area" />
           {pts.map((p) => (
             <g key={p.key} onMouseEnter={() => setHover(p.key)} onMouseLeave={() => setHover(null)}>
               <circle cx={p.x} cy={p.y} r={hover === p.key ? (small ? 4.5 : 5.5) : small ? 3 : 4} className="ronin-dot" />
               <circle cx={p.x} cy={p.y} r={12} fill="transparent" />
-              <text x={p.lx} y={p.ly} style={{ fontSize: fs }} className={`ronin-label ${hover === p.key ? 'on' : ''}`} textAnchor={Math.abs(Math.cos(p.a)) < 0.2 ? 'middle' : Math.cos(p.a) > 0 ? 'start' : 'end'} dominantBaseline={Math.sin(p.a) < -0.5 ? 'auto' : Math.sin(p.a) > 0.5 ? 'hanging' : 'middle'}>
+              {bare && <line x1={cx} y1={cy} x2={cx + Math.cos(p.a) * R} y2={cy + Math.sin(p.a) * R} stroke="transparent" strokeWidth={Math.max(16, R * 0.5)} />}
+              {!bare && <text x={p.lx} y={p.ly} style={{ fontSize: fs }} className={`ronin-label ${hover === p.key ? 'on' : ''}`} textAnchor={Math.abs(Math.cos(p.a)) < 0.2 ? 'middle' : Math.cos(p.a) > 0 ? 'start' : 'end'} dominantBaseline={Math.sin(p.a) < -0.5 ? 'auto' : Math.sin(p.a) > 0.5 ? 'hanging' : 'middle'}>
                 {text(p)}
-              </text>
-              <title>{`${p.label}: ${Math.round(r.parts[p.key])}/100`}</title>
+              </text>}
+              {!bare && <title>{`${p.label}: ${Math.round(r.parts[p.key])}/100`}</title>}
             </g>
           ))}
         </svg>
