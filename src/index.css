@@ -2141,3 +2141,8 @@ a.ruin-chip { cursor: pointer; }
 .ronin-d-tip { padding: 8px 10px; background: color-mix(in srgb, var(--primary) 9%, transparent); border-left: 2px solid var(--primary); font-size: 13px !important; }
 .ronin.small .ronin-weak-n { display: none; }
 @media (max-width: 560px) { .ronin-d-head { flex-direction: column; align-items: stretch; gap: 8px; } .ronin-d-head > b { font-size: 34px; } }
+/* compact Ronin Score: the same green / red card as the other KPI cards */
+.ronin.small { border-bottom-width: 2px; }
+.ronin.small.posc { background: var(--pos-card); border-bottom-color: color-mix(in srgb, var(--pos-strong) 35%, transparent); }
+.ronin.small.negc { background: var(--neg-card); border-bottom-color: color-mix(in srgb, var(--neg) 35%, transparent); }
+.ronin .card-title .stat-q { font: inherit; }

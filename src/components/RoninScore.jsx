@@ -2,7 +2,7 @@
 // size; at KPI-card size the radar fills the space and its labels show on hover.
 import { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Info, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { Popover, useSize, Modal, ModalHead } from './ui';
 import { roninScore, roninInsights, RONIN_PARTS } from '../lib/roninScore';
 import { pfText } from '../lib/stats';
@@ -27,10 +27,9 @@ export default function RoninScore({ trades, initial }) {
   const weakest = r.trades ? [...RONIN_PARTS].sort((a, b) => r.parts[a.key] - r.parts[b.key])[0] : null;
   const hp = hover && RONIN_PARTS.find((p) => p.key === hover);
   return (
-    <div className={`panel wpanel ronin ${small ? 'small' : ''}`}>
+    <div className={`panel wpanel ronin ${small ? `small ${r.score >= 50 ? 'posc' : 'negc'}` : ''}`}>
       <div className="panel-head">
-        <div className="card-title truncate">Ronin Score</div>
-        <HowItWorks r={r} />
+        <div className="card-title"><HowItWorks r={r} /></div>
       </div>
       <div ref={ref} className="wbody ronin-body">
         {h > 0 && (
@@ -142,7 +141,9 @@ function Radar({ r, hover, setHover, small, bare }) {
 
 function HowItWorks({ r }) {
   return (
-    <Popover portal align="right" width={340} trigger={({ toggle }) => <button className="icon-btn" onClick={toggle} title="How it's worked out"><Info size={15} /></button>}>
+    <Popover portal align="left" width={340} trigger={({ toggle, open }) => (
+      <span role="button" tabIndex={0} className={`stat-q ${open ? 'on' : ''}`} title="How it's worked out" onClick={toggle} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}>Ronin Score</span>
+    )}>
       {() => (
         <div className="ronin-how">
           <b>How the Ronin Score is worked out</b>
