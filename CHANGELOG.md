@@ -2,6 +2,20 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.7.0
+
+- **Full-screen charts:** the expand button on any execution chart opens it full screen with TradingView-style tools.
+  - **Drawing tools:** trend line, ray, horizontal line and ray, vertical line, rectangle, Fibonacci retracement, measure, long / short position (target, stop, R:R), brush and text — text can be resized and rotated. A magnet that snaps to the candles, hide, undo and delete; drawings are saved per instrument.
+  - **Indicators:** EMA, SMA, VWAP, Bollinger Bands, RSI and MACD, plus volume. Timeframes from 1m to 1d, your executions on or off, chart colours (the palette button) and a screenshot button.
+- **Market replay:** press Replay in the full-screen chart to step through the session bar by bar — play at 1× to 60×, step forward or back, jump to your next execution — with your fills, position and P&L appearing as they happened. Start from the first bar, 30 minutes before your first trade, or a bar you pick on the chart.
+- **Your own dashboards:** add, rename and delete dashboards from the dashboard picker; each one keeps its own layout.
+- **Ronin Score widget:** one 0–100 score from six parts (win %, profit factor, avg win/loss, recovery factor, max drawdown, consistency) on a radar. Click the title for how it's worked out, or **Weakest:** for what your score says about your trading — each part with your number, what it means and what to work on. Shrink it to KPI-card size and it keeps the radar (labels on hover) and the score.
+- **Custom Chart widgets** (three of them): pick what goes along the bottom (day of week, hour, symbol, strategy, tag, market condition, account, each day / week / month…) and up to three metrics (net P&L, win %, trade count, profit factor, average win / loss, hold time…) as bars or lines.
+- **Cross Analysis widget:** P&L (or win %) by symbol across weekdays, weeks, months or quarters as a heat map.
+- **New default dashboard** for new installs and the live demo: six KPI cards (with the Ronin Score), account progress, Net P&L, hold time, edge blockers, weekday / hour / symbols, average day / trade, streaks, risk, drawdown and the calendar.
+- **Live demo:** execution charts, the full-screen chart and replay now work with made-up prices that pass through the demo trades.
+- Pop-ups on dashboard cards are no longer cut off by the card edge.
+
 ## 1.6.2
 
 - **Market conditions and strategy performance on monthly, quarterly and yearly reviews:** a card per market condition and per strategy with a small P&L curve, P&L, win rate and profit factor for that period (plus "No condition logged" / "No strategy" cards). Click one for its full stats — EV, Performance Ratio, ROMAD, the metric grid and the equity curve — with a condition's "How to spot it" or a strategy's rules on top.

@@ -132,7 +132,7 @@ test('dashboards start from presets, and old dashboards keep their widgets', () 
   assert.deepEqual(layoutFor({}, 'My Dashboard'), DEFAULT_LAYOUT);
   // someone who had hidden the calendar and the hold-time widget on the old fixed dashboard
   const old = presetLayout('My Dashboard', ['kpis', 'netpnl', 'daily', 'streaks']);
-  assert.deepEqual(old.map((i) => i.id).sort(), ['daily', 'mostTraded', 'net', 'netpnl', 'perfRatio', 'profitFactor', 'romad', 'streaks', 'winRate'].sort());
+  assert.deepEqual(old.map((i) => i.id).sort(), ['net', 'netpnl', 'perfRatio', 'profitFactor', 'romad', 'ronin', 'streaks', 'winRate'].sort());
   assert.ok(noOverlap(old));
   // a saved layout wins
   const saved = [{ id: 'calendar', x: 0, y: 0, w: 12, h: 16 }];

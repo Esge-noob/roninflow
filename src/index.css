@@ -2146,3 +2146,6 @@ a.ruin-chip { cursor: pointer; }
 .ronin.small.posc { background: var(--pos-card); border-bottom-color: color-mix(in srgb, var(--pos-strong) 35%, transparent); }
 .ronin.small.negc { background: var(--neg-card); border-bottom-color: color-mix(in srgb, var(--neg) 35%, transparent); }
 .ronin .card-title .stat-q { font: inherit; }
+.ronin.small .ronin-weak { flex-wrap: nowrap; white-space: nowrap; max-width: 100%; overflow: hidden; }
+.ronin.small .ronin-weak b { overflow: hidden; text-overflow: ellipsis; }
+.ronin.small .ronin-weak b { min-width: 0; white-space: nowrap; }

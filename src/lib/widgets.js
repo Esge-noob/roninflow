@@ -55,25 +55,20 @@ export const WIDGETS = {
   calendar: { name: 'P&L Calendar', cat: 'calendar', w: 12, h: 16, minW: 6, minH: 10, desc: 'Each day and week of the month, colour coded' },
 };
 
-const KPIS = ['net', 'winRate', 'profitFactor', 'perfRatio', 'romad', 'mostTraded'];
+const KPIS = ['net', 'winRate', 'profitFactor', 'perfRatio', 'romad', 'ronin'];
 
-/** The layout every dashboard starts with (matches the fixed dashboard from before). */
+/** The layout new installs (and the demo) start with on My Dashboard. */
 export const DEFAULT_LAYOUT = [
-  ...KPIS.map((id, i) => ({ id, x: (i % 3) * 4, y: Math.floor(i / 3) * 4, w: 4, h: 4 })),
+  { id: 'net', x: 0, y: 0, w: 4, h: 4 }, { id: 'winRate', x: 4, y: 0, w: 4, h: 4 }, { id: 'profitFactor', x: 8, y: 0, w: 4, h: 4 },
+  { id: 'perfRatio', x: 0, y: 4, w: 4, h: 4 }, { id: 'romad', x: 4, y: 4, w: 4, h: 4 }, { id: 'ronin', x: 8, y: 4, w: 4, h: 4 },
   { id: 'progress', x: 0, y: 8, w: 12, h: 3 },
   { id: 'netpnl', x: 0, y: 11, w: 6, h: 8 },
   { id: 'hold', x: 6, y: 11, w: 6, h: 4 },
-  { id: 'recent', x: 6, y: 15, w: 6, h: 4 },
-  { id: 'weekday', x: 0, y: 19, w: 4, h: 6 },
-  { id: 'hour', x: 4, y: 19, w: 4, h: 6 },
-  { id: 'symbols', x: 8, y: 19, w: 4, h: 6 },
-  { id: 'avgday', x: 0, y: 25, w: 4, h: 8 },
-  { id: 'avgtrade', x: 4, y: 25, w: 4, h: 8 },
-  { id: 'streaks', x: 8, y: 25, w: 4, h: 8 },
-  { id: 'risk', x: 0, y: 33, w: 6, h: 5 },
-  { id: 'blockers', x: 6, y: 33, w: 6, h: 5 },
-  { id: 'daily', x: 0, y: 38, w: 12, h: 6 },
-  { id: 'calendar', x: 0, y: 44, w: 12, h: 16 },
+  { id: 'blockers', x: 6, y: 15, w: 6, h: 4 },
+  { id: 'weekday', x: 0, y: 19, w: 4, h: 5 }, { id: 'hour', x: 4, y: 19, w: 4, h: 5 }, { id: 'symbols', x: 8, y: 19, w: 4, h: 5 },
+  { id: 'avgday', x: 0, y: 24, w: 4, h: 7 }, { id: 'avgtrade', x: 4, y: 24, w: 4, h: 7 }, { id: 'streaks', x: 8, y: 24, w: 4, h: 7 },
+  { id: 'risk', x: 0, y: 31, w: 6, h: 5 }, { id: 'drawdown', x: 6, y: 31, w: 6, h: 5 },
+  { id: 'calendar', x: 0, y: 36, w: 12, h: 18 },
 ];
 
 export const DASHBOARDS = ['My Dashboard', 'Performance', 'Risk', 'Psychology'];

@@ -5,6 +5,7 @@ import { useStore } from '../store/store';
 import { todayKey, fmtMoney, fmtTime12 } from '../lib/stats';
 import { Modal, ModalHead, Popover } from './ui';
 import { ColorRow } from './ThemeStudio';
+import { IS_DEMO, DEMO_CHART_LIB } from '../lib/demoMode';
 import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, toLocal, barTime, aggregate } from '../lib/bars';
 
 // Candlestick chart of the day with your executions, drawn with TradingView Lightweight Charts™.
@@ -18,7 +19,7 @@ export function loadLib() {
   if (!libPromise) {
     libPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = '/api/candles/lib';
+      s.src = IS_DEMO ? DEMO_CHART_LIB : '/api/candles/lib';
       s.async = true;
       s.onload = () => (window.LightweightCharts ? resolve(window.LightweightCharts) : reject(new Error('Chart library didn’t load')));
       s.onerror = () => { libPromise = null; reject(new Error('Couldn’t load the chart library')); };

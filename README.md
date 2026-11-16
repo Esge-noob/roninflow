@@ -9,7 +9,7 @@ reviews and screenshots stay on your own machine.
 [![Live demo](https://img.shields.io/badge/live%20demo-try%20it-7452ff)](https://coreyheyman.github.io/roninflow/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-7452ff)](https://github.com/coreyheyman/roninflow/pkgs/container/roninflow)
 
-**[▶ Try the live demo](https://coreyheyman.github.io/roninflow/)** (made-up data, runs in your browser) ·
+**[▶ Try the live demo](https://coreyheyman.github.io/roninflow/)** (made-up data and prices — charts and replay included — runs in your browser) ·
 **[⬇ Download for Windows](https://github.com/coreyheyman/roninflow/releases/latest)** ·
 **[🍎🐧 macOS & Linux](docs/install.md#macos-and-linux)** ·
 **[🐳 Docker](docs/install.md#docker-home-server-nas-raspberry-pi-45)**
@@ -21,22 +21,39 @@ reviews and screenshots stay on your own machine.
 - **Automatic trade import** from ATAS, NinjaTrader, MetaTrader 4/5, cTrader, Sierra Chart, Quantower, TopstepX/ProjectX,
   Tradovate, Interactive Brokers, Schwab, TradeStation, Alpaca, OANDA, tastytrade, Bybit, Binance, OKX, Bitget,
   Hyperliquid, Coinbase and Kraken — plus file import from most platforms and a webhook for anything else.
+- **Build your own dashboards:** drag, resize and add from 30+ widgets; add, rename and delete as many dashboards as you like,
+  each with its own layout. Includes the **Ronin Score** (one 0–100 health score from six parts, with a "weakest part"
+  breakdown of what it says about your trading), **Custom Chart** widgets (any metric by weekday, hour, symbol, strategy,
+  tag… with up to three metrics) and **Cross Analysis** (symbol × weekday / week / month / quarter heat map).
+- **Full-screen charts with a market replay:** every execution chart in the diary opens full screen with drawing tools
+  (trend lines, Fibonacci, rectangles, long / short positions, text you can resize and rotate…), indicators (EMA, SMA, VWAP,
+  Bollinger, RSI, MACD), timeframes from 1m to 1d, your colours and a screenshot button — then **replay the session bar by
+  bar** with your fills appearing as they happened. Price bars come from your platform add-on (every add-on sends them),
+  Databento, Polygon or Yahoo — each one switchable.
 - **Daily diary** with pre/post-session routines, market conditions, edge blockers and execution charts.
-- **Risk tiers** that move you between risk levels based on drawdown and recent days, prop-firm account rules
-  (profit target, static / intraday / EOD trailing drawdown) and payouts / ROI.
+- **Weekly → yearly reviews** with your own questions, market-condition and strategy cards with their stats, and an
+  **AI coach** (your own key, a free local model, or offline).
+- **Strategies and market conditions** side by side: P&L curve, win rate and EV per card, full stats on click.
+- **Risk tiers and risk profiles** that move you between risk levels based on drawdown and recent days, days-to-ruin,
+  prop-firm account rules (profit target, static / intraday / EOD trailing drawdown) and payouts / ROI.
+- **Share view-only:** a live link or an offline snapshot file of your journal or one page, with account numbers hidden and
+  optional hidden dollar amounts. **Sync trade reviews** across copy-traded accounts.
 - **Macro:** an economic calendar (list, week and month views, in your time zone, with forecasts and actuals) and the
   CFTC **COT report** — who's long, who's short and who's crowded across index, rates, FX, metals, energy and crypto futures.
-- **Weekly → yearly reviews** with your own questions, and an **AI coach** (your own key, a free local model, or offline).
 - **Private by design:** password protection, encrypted API keys, daily backups — nothing leaves your machine unless you
   connect a service yourself. (The Macro pages download public calendar and COT data when you open them; they send nothing about you.)
-- 16 languages, themes, works on your phone, update notifications.
+- Windows, macOS, Linux and Docker; 16 languages, themes, works on your phone, one-click updates.
 
 ## Screenshots
 
 | | |
 |---|---|
-| ![Daily diary with today's risk and edge blockers](docs/screenshots/diary.png) | ![Monthly review calendar and stats](docs/screenshots/review.png) |
-| **Daily diary** — today's risk tier, edge blockers, session cards | **Reviews** — weekly to yearly, with your own questions |
+| ![Full-screen chart with drawing tools and indicators](docs/screenshots/chart.png) | ![Bar-by-bar market replay](docs/screenshots/replay.png) |
+| **Full-screen chart** — drawing tools, indicators, your executions | **Market replay** — step through the session bar by bar |
+| ![Ronin Score, custom charts and cross analysis](docs/screenshots/custom-charts.png) | ![Daily diary with today's risk and edge blockers](docs/screenshots/diary.png) |
+| **Your own dashboards** — Ronin Score, custom charts, cross analysis | **Daily diary** — today's risk tier, edge blockers, session cards |
+| ![Monthly review with market-condition and strategy cards](docs/screenshots/review.png) | ![Strategy performance cards](docs/screenshots/strategy.png) |
+| **Reviews** — weekly to yearly, conditions and strategies | **Strategies** — P&L curve and stats per strategy |
 | ![Performance by market condition](docs/screenshots/market-conditions.png) | ![Prop-firm accounts with drawdown and ROI](docs/screenshots/accounts.png) |
 | **Market conditions** — how you trade in each one | **Accounts** — prop-firm rules, drawdown, costs & payouts |
 
@@ -74,15 +91,15 @@ so installed copies can check for updates.
 
 | Route | What it does |
 |---|---|
-| `#/dashboard` | KPI cards (Total P&L, Win rate slider, Profit-factor gauge, Performance Ratio, ROMAD, Most traded), Net P&L chart (area / line / daily bars), average hold time, recent trades, plus extra widgets (daily P&L, weekday, hour, long vs short, symbols, calendar). Date range, filters, layout presets and **Edit layout** (show / hide / reorder widgets). |
+| `#/dashboard` | Widget dashboards: KPI cards (Total P&L, Win rate, Profit factor, Performance Ratio, ROMAD, Ronin Score), Net P&L chart, account progress, hold time, edge blockers, weekday / hour / symbol breakdowns, average day and trade, streaks, risk, drawdown, calendar, Custom Chart and Cross Analysis widgets and more. Date range, filters, a dashboard picker (add / rename / delete dashboards) and **Edit layout** (drag, resize, add and remove widgets; saved per dashboard). |
 | `#/journal/database` | Trade database: sortable / hideable columns, bulk select, pagination, List / Grid / Calendar views, **Add trade** (manual with auto P&L or **CSV import** — Tradovate/NinjaTrader performance exports supported). Click a trade for the detail drawer: strategy, tags, rating, notes, screenshots, review status. |
 | `#/journal/inbox` | Unreviewed trades (badge count in the sidebar). |
 | **Import** (Journal toolbar, or Accounts → Import from ATAS) | Drop an ATAS statistics export (.xlsx or .csv), a Tradovate performance CSV or any trade list. ATAS executions are paired into round-trip trades (scale-in/out, reversals, per-fill commissions; positions still open are left out until closed). Every account in the file is created or mapped, duplicates are skipped, and trades you already tagged or annotated are kept when you re-import. Column mapping, date format and time-shift controls handle non-standard files. |
 | `#/coach` | Trading Coach chat with templates, chat history, context picker, image + voice input, request counter. Answers offline from your data, or connect an AI provider (your own key or a free local model) in the coach's settings. |
-| `#/diary` | Daily Diary: **Start Trading Session** check-in wizard, Grid / List / Calendar views with session scores. Each day (`#/diary/YYYY-MM-DD`) has intraday P&L, trades, plan adherence checks, post-session review and rich-text notes. |
-| `#/review/weekly` · `monthly` · `quarterly` · `yearly` | Periodic reviews. Each page has a calendar of daily P&L for the period (Mon–Fri strip, month grid, three months, or a 12-month heat map), review stats (EV, Performance Ratio, ROMAD, P&L, win rate, PF, Sharpe, biggest drawdown, avg winning/losing day, best/worst day, max consecutive winning/losing days, winning-day %, disciplined trades %, size management %) and the review prompts. ‹ › steps to past periods; answers save automatically; **Mark … reviewed** completes it. A review becomes due at 1:00 PM on the last weekday of the period: you get a notification and a **Due** badge in the sidebar until it's done. Last period's commitment is shown at the top. |
+| `#/diary` | Daily Diary: **Start Trading Session** check-in wizard, Grid / List / Calendar views with session scores. Each day (`#/diary/YYYY-MM-DD`) has execution charts (open one full screen for drawing tools, indicators and bar-by-bar replay), intraday P&L, trades, plan adherence checks, post-session review and rich-text notes. |
+| `#/review/weekly` · `monthly` · `quarterly` · `yearly` | Periodic reviews. Each page has a calendar of daily P&L for the period (Mon–Fri strip, month grid, three months, or a 12-month heat map), review stats (EV, Performance Ratio, ROMAD, P&L, win rate, PF, Sharpe, biggest drawdown, avg winning/losing day, best/worst day, max consecutive winning/losing days, winning-day %, disciplined trades %, size management %) and the review prompts. ‹ › steps to past periods; answers save automatically; **Mark … reviewed** completes it. A review becomes due at 1:00 PM on the last weekday of the period: you get a notification and a **Due** badge in the sidebar until it's done. Last period's commitment is shown at the top. Monthly, quarterly and yearly reviews also show a card per market condition and per strategy; click one for its full stats. |
 | `#/notebook` | Free-form notebook (not in the sidebar; open it at this address). |
-| `#/strategy` | **Trading strategies** and **Market conditions** tabs: performance of each strategy and each market condition. 3-step strategy builder (Basics, Rules Engine, Media & Education). Strategy pages show stats from linked trades, equity curve and a pre-trade checklist. |
+| `#/strategy` | **Trading strategies** and **Market conditions** tabs: a card per strategy / condition with its P&L curve, net P&L, win rate and EV over 30 days / 90 days / 1 year / all time; click for the full stats. 3-step strategy builder (Basics, Rules Engine, Media & Education). Strategy pages show stats from linked trades, equity curve and a pre-trade checklist. |
 | `#/macro/calendar` | **Economic Calendar**: List (today / this week / next week), Week and Month views in your time zone, impact and currency filters, search, a countdown to the next release and the next high-impact event, beat / miss colouring, and earlier releases of each event. Data: ForexFactory's public weekly feed (this week and next; every week fetched is kept, so history builds up; checked every 30 minutes). Its feed has no actual figures, so actuals — and the weeks ForexFactory hasn't published — come from TradingView's public calendar feed, checked every few minutes around releases (unofficial; switch it off at the bottom of the page). Official US release dates (Fed, BLS) are the last fallback. Market and bank holidays for the US, UK, eurozone, Japan, Canada, Australia, New Zealand and Switzerland are worked out from each country's rules (`holidays.js`), so they show months ahead, marked *markets closed*, *early close* or *banks closed*. |
 | `#/macro/cot` | **COT Report**: about 30 futures markets from the CFTC's weekly Commitments of Traders (Legacy, futures only, ~3 years): large speculators' net position and weekly change, % long, COT index over 6M / 1Y / 3Y with *crowded long / short* flags, commercials, open interest and a trend line. Click a market for its chart and recent weeks; **Add market** searches every market in the report. Updates after each Friday release. |
 | `#/accounts` | Account cards with equity charts, status menu, add / edit / delete, detail modal with profit-target / drawdown / daily-limit progress. |
