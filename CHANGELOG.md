@@ -2,6 +2,11 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.5.1
+
+- **About RoninFlow in shared journals:** clicking the RoninFlow name at the top left of a view-only link or snapshot file opens a short popup explaining what RoninFlow is, with buttons to the GitHub repository and the latest download.
+- Shared view-only pages now scroll like a normal web page (the page could get stuck on long reviews).
+
 ## 1.5.0
 
 - **Share your journal, view-only:** a Share button at the top makes a link anyone can open to see your whole journal or just the page you're on (a review, a diary day, the dashboard…). Nobody can change anything, account numbers are hidden and accounts show as "Account 1, 2…", and only your first name appears. Pick when a link expires, optionally hide dollar amounts, and turn off or remove links any time; each link shows how often it's been viewed.
