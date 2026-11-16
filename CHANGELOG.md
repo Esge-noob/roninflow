@@ -2,6 +2,13 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.6.0
+
+- **Price data from every platform add-on:** the NinjaTrader, Quantower, cTrader, MetaTrader 4/5 and Sierra Chart add-ons now load the 1-minute bars for each day you traded from the platform's own data connection and send them for the diary's execution charts — no Databento, Polygon or Yahoo needed. Past days (up to 45) fill in when the add-on starts, today's chart keeps up as you trade, and a day that's done isn't fetched again. (ATAS already sent the bars of the 1-minute chart it's on.)
+  - **Update your add-on to get this:** reinstall it the same way you installed it (e.g. `npm run addon:nt`, then F5 in the NinjaScript Editor; recompile the Expert Advisor in MetaEditor; rebuild the Sierra Chart study or cTrader cBot). Older add-ons keep syncing trades but don't send bars.
+  - Sierra Chart opens a hidden 1-minute chart of each contract to read its bars, building the symbol from your chart's (e.g. MNQZ25 + "_FUT_CME").
+- Settings → Price data and each add-on's help explain where the bars come from.
+
 ## 1.5.1
 
 - **About RoninFlow in shared journals:** clicking the RoninFlow name at the top left of a view-only link or snapshot file opens a short popup explaining what RoninFlow is, with buttons to the GitHub repository and the latest download.
