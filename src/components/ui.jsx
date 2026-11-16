@@ -1,5 +1,6 @@
 import { StatLabel } from './StatInfo';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, ChevronDown, CalendarDays, Check, TrendingUp, TrendingDown, Wallet } from 'lucide-react';
 import { useStore } from '../store/store';
 import { fmtMoney, fmtDate, datePresets, MONTHS_LONG, keyOf, pad } from '../lib/stats';
@@ -76,22 +77,44 @@ export function Drawer({ open, onClose, children }) {
 }
 
 /** Click-outside popover anchored under its trigger. */
-export function Popover({ trigger, children, align = 'left', width, className = '', up = false, block = false }) {
+export function Popover({ trigger, children, align = 'left', width, className = '', up = false, block = false, portal = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const popRef = useRef(null);
+  const [pos, setPos] = useState(null);
   useEffect(() => {
     if (!open) return;
-    const h = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    const h = (e) => ref.current && !ref.current.contains(e.target) && !popRef.current?.contains(e.target) && setOpen(false);
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [open]);
+  // portal: drawn over the whole page (fixed, next to the trigger), so a small card or a scroll box can't cut it off
+  useLayoutEffect(() => {
+    if (!open || !portal) return undefined;
+    const place = () => {
+      const r = ref.current?.getBoundingClientRect();
+      if (!r) return;
+      const w = Math.min(width || 260, window.innerWidth - 16);
+      const left = Math.max(8, Math.min(window.innerWidth - w - 8, align === 'right' ? r.right - w : r.left));
+      const below = window.innerHeight - r.bottom - 14, above = r.top - 14;
+      const flip = up || (below < 260 && above > below);
+      setPos({ left, width: w, ...(flip ? { bottom: window.innerHeight - r.top + 6, maxHeight: above } : { top: r.bottom + 6, maxHeight: below }) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+  }, [open, portal, width, align, up]);
+  const body = typeof children === 'function' ? children(() => setOpen(false)) : children;
   return (
     <div ref={ref} style={{ position: 'relative', display: block ? 'flex' : 'inline-flex', width: block ? '100%' : undefined }} className={className}>
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
-      {open && (
-        <div className="pop" style={{ [up ? 'bottom' : 'top']: 'calc(100% + 6px)', [align]: 0, width }}>
-          {typeof children === 'function' ? children(() => setOpen(false)) : children}
-        </div>
+      {open && !portal && (
+        <div className="pop" style={{ [up ? 'bottom' : 'top']: 'calc(100% + 6px)', [align]: 0, width }}>{body}</div>
+      )}
+      {open && portal && pos && createPortal(
+        <div ref={popRef} className="pop pop-fixed" style={{ position: 'fixed', ...pos, overflowY: 'auto' }}>{body}</div>,
+        document.body,
       )}
     </div>
   );
