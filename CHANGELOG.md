@@ -2,6 +2,13 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.6.1
+
+- **Price data settings:** every source in Settings → Price data now has an on/off switch.
+  - **Your platform add-on** is on by default. The badge shows when bars are coming in ("Receiving · 2 symbols", or "On · waiting for bars"). Off: charts don't use your platform's bars and the add-ons stop fetching them.
+  - **Use bars from:** if you're connected to more than one platform, pick which one the charts use — or leave it on "Any platform" (the one with the most data for that day). Only the chosen platform's add-on fetches bars. Bars are now kept per platform; ones saved before this still fill in any day the chosen platform hasn't sent.
+  - **Databento and Polygon** can be switched off without removing the key.
+
 ## 1.6.0
 
 - **Price data from every platform add-on:** the NinjaTrader, Quantower, cTrader, MetaTrader 4/5 and Sierra Chart add-ons now load the 1-minute bars for each day you traded from the platform's own data connection and send them for the diary's execution charts — no Databento, Polygon or Yahoo needed. Past days (up to 45) fill in when the add-on starts, today's chart keeps up as you trade, and a day that's done isn't fetched again. (ATAS already sent the bars of the 1-minute chart it's on.)
