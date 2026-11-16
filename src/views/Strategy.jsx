@@ -1,9 +1,9 @@
 import { StatLabel } from '../components/StatInfo';
 import { useMemo, useState } from 'react';
-import { Settings, LayoutGrid, List, Plus, ChevronDown, ChevronLeft, ChevronRight, X, Trash, Pencil, ArrowLeft, ImagePlus, Check, Target, Link as LinkIcon } from 'lucide-react';
+import { Settings, LayoutGrid, List, Plus, ChevronDown, ChevronLeft, ChevronRight, X, Trash, Pencil, ArrowLeft, ArrowRight, ImagePlus, Check, Target, Link as LinkIcon } from 'lucide-react';
 import { useStore, navigate, useAccountTrades } from '../store/store';
 import { PlaybookSettings } from '../components/Playbook';
-import { GroupStatsModal, regimeNotes } from './Review';
+import { GroupStatsModal, GroupStats, regimeNotes } from './Review';
 import { playbookOf, regimeStats, regimeGroups } from '../lib/playbook';
 import { groupByDay, keyOf } from '../lib/stats';
 import { Seg, Modal, Popover, Money, Confirm, useToast, fileToDataUrl, CloseX } from '../components/ui';
@@ -205,6 +205,7 @@ export default function Strategy({ sub }) {
 function StrategyIndex() {
   const [tab, setTabState] = useState(() => ((window.location.hash.split('?')[1] || '').includes('tab=conditions') ? 'conditions' : 'strategies'));
   const setTab = (t) => { setTabState(t); try { window.history.replaceState(null, '', t === 'conditions' ? '#/strategy?tab=conditions' : '#/strategy'); } catch { /* ignore */ } };
+  const [lookback, setLookback] = useState(90);
   return (
     <div className="page">
       <div className="row page-head-row" style={{ marginBottom: 18 }}>
@@ -212,7 +213,7 @@ function StrategyIndex() {
         <div className="grow" />
         <Seg value={tab} onChange={setTab} options={[{ value: 'strategies', label: 'Trading strategies' }, { value: 'conditions', label: 'Market conditions' }]} />
       </div>
-      {tab === 'conditions' ? <MarketConditions /> : <Strategies />}
+      {tab === 'conditions' ? <MarketConditions lookback={lookback} setLookback={setLookback} /> : <Strategies lookback={lookback} setLookback={setLookback} />}
     </div>
   );
 }
@@ -220,11 +221,13 @@ function StrategyIndex() {
 const LOOKBACKS = [{ value: 30, label: '30 days' }, { value: 90, label: '90 days' }, { value: 365, label: '1 year' }, { value: 100000, label: 'All time' }];
 
 /** How you perform in each market condition you log on your sessions. */
-function MarketConditions() {
+const fromKey = (lookback) => (lookback >= 100000 ? '' : keyOf(new Date(Date.now() - lookback * 86400e3)));
+const curveData = (trades) => [{ label: '', y: 0 }, ...equityCurve(trades).map((c) => ({ label: '', y: c.y }))];
+
+function MarketConditions({ lookback, setLookback }) {
   const { state } = useStore();
   const trades = useAccountTrades();
   const pb = playbookOf(state);
-  const [lookback, setLookback] = useState(90);
   const [edit, setEdit] = useState(false);
   const stats = useMemo(() => regimeStats(trades, state.diary, pb.regimes, lookback), [trades, state.diary, pb.regimes, lookback]);
   const untagged = useMemo(() => {
@@ -235,7 +238,7 @@ function MarketConditions() {
   }, [trades, state.diary, pb.regimes, lookback]);
   const caption = LOOKBACKS.find((l) => l.value === lookback)?.label;
   const [open, setOpen] = useState(null);
-  const groups = useMemo(() => regimeGroups(trades, state.diary, pb.regimes, lookback >= 100000 ? '' : keyOf(new Date(Date.now() - lookback * 86400e3))), [trades, state.diary, pb.regimes, lookback]);
+  const groups = useMemo(() => regimeGroups(trades, state.diary, pb.regimes, fromKey(lookback)), [trades, state.diary, pb.regimes, lookback]);
   const sel = open && groups.groups.find((g) => g.id === open);
   const best = [...stats].filter((r) => r.days >= 3).sort((a, b) => b.ev - a.ev)[0];
   const worst = [...stats].filter((r) => r.days >= 3).sort((a, b) => a.ev - b.ev)[0];
@@ -295,80 +298,112 @@ function MarketConditions() {
   );
 }
 
-function Strategies() {
+const ruleNotes = (s) => [s.entryRules?.length && ['Entry', s.entryRules.join(' · ')], s.exitRules?.length && ['Exit', s.exitRules.join(' · ')], s.riskRules?.length && ['Risk', s.riskRules.join(' · ')]].filter(Boolean);
+
+function Strategies({ lookback, setLookback }) {
   const { state, setSetting } = useStore();
+  const all = useAccountTrades();
   const [view, setView] = useState('grid');
   const [cat, setCat] = useState('');
   const [open, setOpen] = useState(false);
+  const [statsOf, setStatsOf] = useState(null);
   const tourDone = state.settings.strategyTourDone;
-  const list = state.strategies.filter((s) => !cat || s.category === cat);
-  const stats = (id) => { const trades = state.trades.filter((t) => t.strategyId === id); return { ...summarize(trades), trades }; };
+  const caption = LOOKBACKS.find((l) => l.value === lookback)?.label;
+  const rows = useMemo(() => {
+    const from = fromKey(lookback);
+    const inRange = all.filter((t) => String(t.entry).slice(0, 10) >= from);
+    return state.strategies.filter((s) => !cat || s.category === cat).map((s) => {
+      const trades = inRange.filter((t) => t.strategyId === s.id);
+      const st = summarize(trades);
+      return { s, trades, st, ev: st.count ? st.net / st.count : 0 };
+    });
+  }, [all, state.strategies, cat, lookback]);
+  const ranked = rows.filter((r) => r.st.count >= 5);
+  const best = [...ranked].sort((a, b) => b.ev - a.ev)[0];
+  const worst = [...ranked].sort((a, b) => a.ev - b.ev)[0];
+  const sel = statsOf && rows.find((r) => r.s.id === statsOf);
+  const unassigned = useMemo(() => { const from = fromKey(lookback); return all.filter((t) => String(t.entry).slice(0, 10) >= from && !state.strategies.some((s) => s.id === t.strategyId)).length; }, [all, state.strategies, lookback]);
   return (
-    <div>
-      <div className="row page-head-row" style={{ marginBottom: 18 }}>
+    <div className="col gap16">
+      <div className="toolbar">
+        <Seg value={lookback} onChange={setLookback} options={LOOKBACKS} />
         <div className="grow" />
-        <div className="row gap12 page-head-tools">
-          <Popover align="right" trigger={({ toggle }) => <button className="btn" onClick={toggle}>{cat || 'Filters'} <ChevronDown size={14} /></button>}>
-            {(close) => ['', ...CATEGORIES].map((c) => <button key={c} className={`pop-item ${cat === c ? 'on' : ''}`} onClick={() => { setCat(c); close(); }}>{c || 'All categories'}</button>)}
-          </Popover>
-          <div className="sep-v" />
-          <Seg value={view} onChange={setView} options={[{ value: 'grid', label: 'Grid', icon: LayoutGrid }, { value: 'list', label: 'List', icon: List }]} />
-          <div className="sep-v" />
-          <div style={{ position: 'relative' }}>
-            <button className="btn white" onClick={() => setOpen(true)}>Add Strategy <Plus size={17} /></button>
-            {!tourDone && state.strategies.length === 0 && (
-              <div className="pop tour-pop" style={{ right: 0, top: 'calc(100% + 10px)', width: 280, padding: 16 }}>
-                <div className="row between"><b style={{ fontWeight: 600 }}>Add strategy</b><span className="muted" style={{ fontSize: 12 }}>1/3</span></div>
-                <div className="muted" style={{ fontSize: 13, margin: '8px 0 14px' }}>Rules, examples, and a checklist in one place.</div>
-                <div className="row between">
-                  <button className="btn xs ghost" onClick={() => setSetting('strategyTourDone', true)}>Skip</button>
-                  <button className="btn xs white" onClick={() => { setSetting('strategyTourDone', true); setOpen(true); }}>Next</button>
-                </div>
+        <Popover align="right" trigger={({ toggle }) => <button className="btn" onClick={toggle}>{cat || 'Filters'} <ChevronDown size={14} /></button>}>
+          {(close) => ['', ...CATEGORIES].map((c) => <button key={c} className={`pop-item ${cat === c ? 'on' : ''}`} onClick={() => { setCat(c); close(); }}>{c || 'All categories'}</button>)}
+        </Popover>
+        <Seg value={view} onChange={setView} options={[{ value: 'grid', label: 'Grid', icon: LayoutGrid }, { value: 'list', label: 'List', icon: List }]} />
+        <div style={{ position: 'relative' }}>
+          <button className="btn white" onClick={() => setOpen(true)}>Add Strategy <Plus size={17} /></button>
+          {!tourDone && state.strategies.length === 0 && (
+            <div className="pop tour-pop" style={{ right: 0, top: 'calc(100% + 10px)', width: 280, padding: 16 }}>
+              <div className="row between"><b style={{ fontWeight: 600 }}>Add strategy</b><span className="muted" style={{ fontSize: 12 }}>1/3</span></div>
+              <div className="muted" style={{ fontSize: 13, margin: '8px 0 14px' }}>Rules, examples, and a checklist in one place.</div>
+              <div className="row between">
+                <button className="btn xs ghost" onClick={() => setSetting('strategyTourDone', true)}>Skip</button>
+                <button className="btn xs white" onClick={() => { setSetting('strategyTourDone', true); setOpen(true); }}>Next</button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {list.length === 0 ? (
-        <div className="empty" style={{ minHeight: '55vh' }}>
+      {rows.length === 0 ? (
+        <div className="empty panel" style={{ minHeight: '50vh' }}>
           <Target size={34} className="muted2" />
-          <div style={{ color: 'var(--fg)', fontSize: 17, fontWeight: 500 }}>No strategies yet</div>
-          <button className="btn" onClick={() => setOpen(true)}>Create your first strategy</button>
-        </div>
-      ) : view === 'grid' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 18 }}>
-          {list.map((s) => {
-            const st = stats(s.id);
-            return (
-              <div key={s.id} className="strat-card" onClick={() => navigate(`strategy/${s.id}`)}>
-                {s.media[0] && <img src={s.media[0]} alt="" style={{ width: '100%', aspectRatio: '16/8', objectFit: 'cover', border: '1px solid var(--border)' }} />}
-                <div className="row between"><b style={{ fontWeight: 600, fontSize: 16 }}>{s.name}</b><span className="badge neutral">{s.category}</span></div>
-                <div className="row gap6 wrap">{[...s.timeframes, ...s.tags].slice(0, 5).map((t) => <span key={t} className="chip" style={{ padding: '2px 7px' }}>{t}</span>)}</div>
-                {st.count ? <div className="strat-curve" title="P&L curve"><PnlChart data={[{ label: '', y: 0 }, ...equityCurve(st.trades).map((c) => ({ label: '', y: c.y }))]} height={70} compact /></div> : <div className="strat-curve empty">No trades yet</div>}
-                <div className="row gap24" style={{ fontSize: 13 }}>
-                  <div><div className="muted">Net P&L</div><Money v={st.net} colored /></div>
-                  <div><div className="muted"><StatLabel ctx={st}>Win rate</StatLabel></div>{st.count ? `${Math.round(st.winRate)}%` : '—'}</div>
-                  <div><div className="muted">Trades</div>{st.count}</div>
-                  <div><div className="muted">R:R</div>{s.rr || '—'}</div>
-                </div>
-              </div>
-            );
-          })}
+          <div style={{ color: 'var(--fg)', fontSize: 17, fontWeight: 500 }}>{state.strategies.length ? 'No strategies in this category' : 'No strategies yet'}</div>
+          {!state.strategies.length && <button className="btn" onClick={() => setOpen(true)}>Create your first strategy</button>}
         </div>
       ) : (
-        <div className="tbl-wrap">
-          <table className="tbl">
-            <thead><tr>{['Name', 'Category', 'Timeframes', 'R:R', 'Trades', 'Win rate', 'Net P&L'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
-            <tbody>
-              {list.map((s) => { const st = stats(s.id); return (
-                <tr key={s.id} onClick={() => navigate(`strategy/${s.id}`)}>
-                  <td>{s.name}</td><td>{s.category}</td><td className="muted">{s.timeframes.join(', ') || '—'}</td><td>{s.rr || '—'}</td><td>{st.count}</td><td>{st.count ? `${Math.round(st.winRate)}%` : '—'}</td><td><Money v={st.net} colored /></td>
-                </tr>
-              ); })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          {best && (
+            <div className="panel" style={{ padding: '14px 18px', fontSize: 13.5 }}>
+              <span>Your best strategy: <b className="pos">{best.s.name}</b> </span>
+              {worst && worst !== best && worst.ev < 0 && <span className="muted"> · consider pausing <b className="neg">{worst.s.name}</b> or trading it smaller.</span>}
+            </div>
+          )}
+          {view === 'grid' ? (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 18 }}>
+              {rows.map(({ s, trades, st, ev }) => (
+                <div key={s.id} className="strat-card" onClick={() => setStatsOf(s.id)}>
+                  {s.media[0] && <img src={s.media[0]} alt="" style={{ width: '100%', aspectRatio: '16/8', objectFit: 'cover', border: '1px solid var(--border)' }} />}
+                  <div className="row between gap8"><b style={{ fontWeight: 600, fontSize: 16 }}>{s.name}</b><span className="badge neutral">{s.category}</span></div>
+                  {[...s.timeframes, ...s.tags].length > 0 && <div className="row gap6 wrap">{[...s.timeframes, ...s.tags].slice(0, 5).map((t) => <span key={t} className="chip" style={{ padding: '2px 7px' }}>{t}</span>)}{s.rr && <span className="chip" style={{ padding: '2px 7px' }}>R:R {s.rr}</span>}</div>}
+                  {trades.length ? <div className="strat-curve" title="P&L curve"><PnlChart data={curveData(trades)} height={70} compact /></div> : <div className="strat-curve empty">No trades in this period</div>}
+                  <div className="row gap24" style={{ fontSize: 13 }}>
+                    <div><div className="muted">Net P&L</div>{st.count ? <Money v={st.net} colored /> : '—'}</div>
+                    <div><div className="muted"><StatLabel ctx={st}>Win rate</StatLabel></div>{st.count ? `${Math.round(st.winRate)}%` : '—'}</div>
+                    <div><div className="muted">Trades</div>{st.count}</div>
+                    <div><div className="muted">EV / trade</div>{st.count ? <Money v={ev} colored /> : '—'}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead><tr>{['Name', 'Category', 'Timeframes', 'R:R', 'Trades', 'Win rate', 'PF', 'EV / trade', 'Net P&L'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {rows.map(({ s, st, ev }) => (
+                    <tr key={s.id} onClick={() => setStatsOf(s.id)}>
+                      <td>{s.name}</td><td>{s.category}</td><td className="muted">{s.timeframes.join(', ') || '—'}</td><td>{s.rr || '—'}</td><td>{st.count}</td><td>{st.count ? `${Math.round(st.winRate)}%` : '—'}</td><td>{st.count ? pfText(st.profitFactor) : '—'}</td><td>{st.count ? <Money v={ev} colored /> : '—'}</td><td><Money v={st.net} colored /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="muted" style={{ fontSize: 12.5 }}>
+            {unassigned > 0 ? `${unassigned} trade${unassigned === 1 ? '' : 's'} in this period have no strategy — pick one on each trade in the Trading Journal.` : 'Every trade in this period has a strategy.'}
+          </div>
+        </>
+      )}
+      {sel && (
+        <GroupStatsModal
+          title={sel.s.name} badge={sel.s.category} trades={sel.trades} notes={ruleNotes(sel.s)}
+          sub={`${caption} · ${sel.trades.length} trade${sel.trades.length === 1 ? '' : 's'}`}
+          action={<button className="btn" onClick={() => { setStatsOf(null); navigate(`strategy/${sel.s.id}`); }}>Open strategy page <ArrowRight size={14} /></button>}
+          onClose={() => setStatsOf(null)}
+        />
       )}
       <StrategyWizard open={open} onClose={() => setOpen(false)} />
     </div>
@@ -383,9 +418,9 @@ function StrategyDetail({ id }) {
   const [del, setDel] = useState(false);
   const [checked, setChecked] = useState([]);
   const [openT, setOpenT] = useState(null);
-  const trades = useMemo(() => state.trades.filter((t) => t.strategyId === id), [state.trades, id]);
+  const acctTrades = useAccountTrades();
+  const trades = useMemo(() => acctTrades.filter((t) => t.strategyId === id), [acctTrades, id]);
   if (!s) return <div className="page empty">Strategy not found. <a href="#/strategy" className="accent">Back to strategies</a></div>;
-  const st = summarize(trades);
   const rules = [...s.entryRules.map((r) => ['Entry', r]), ...s.exitRules.map((r) => ['Exit', r]), ...s.riskRules.map((r) => ['Risk', r])];
   return (
     <div className="page">
@@ -403,16 +438,10 @@ function StrategyDetail({ id }) {
         {[...s.timeframes, ...s.conditions, ...s.tags].map((t) => <span key={t} className="chip">{t}</span>)}
         {s.rr && <span className="chip on">R:R {s.rr}</span>}
       </div>
-      <div className="kpis">
-        {[['Net P&L', <Money key="m" v={st.net} colored />], ['Win rate', st.count ? `${Math.round(st.winRate)}%` : '—'], ['Profit factor', st.count ? pfText(st.profitFactor) : '—'], ['Trades', st.count]].map(([k, v]) => (
-          <div key={k} className="panel"><div className="muted" style={{ fontSize: 13 }}><StatLabel ctx={st}>{k}</StatLabel></div><div style={{ fontSize: 26, fontWeight: 500, marginTop: 10 }}>{v}</div></div>
-        ))}
+      <div className="col gap16" style={{ marginBottom: 22 }}>
+        <GroupStats trades={trades} empty="Assign trades to this strategy from the Trading Journal (open a trade → Strategy)." />
       </div>
       <div className="dash-grid">
-        <div className="panel">
-          <div className="panel-head"><div className="card-title">Equity</div></div>
-          {trades.length ? <PnlChart data={equityCurve(trades).map((c) => ({ label: fmtDate(c.x), y: c.y }))} height={260} /> : <div className="muted">Assign trades to this strategy from the Trading Journal (open a trade → Strategy).</div>}
-        </div>
         <div className="panel">
           <div className="panel-head"><div className="card-title">Pre-trade checklist</div>{checked.length > 0 && <button className="btn xs" onClick={() => setChecked([])}>Reset</button>}</div>
           {rules.length === 0 && <div className="muted">No rules defined yet.</div>}

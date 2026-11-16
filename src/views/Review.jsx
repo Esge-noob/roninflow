@@ -594,9 +594,23 @@ export function GroupCard({ name, count, badge, color, trades, none, onClick, ch
   );
 }
 
+/** The stats for a group of trades: notes, EV / PR / ROMAD, the metric grid and the equity curve. */
+export function GroupStats({ trades, notes, empty = 'No trades yet.' }) {
+  const m = useMetrics(trades);
+  return (
+    <>
+      {notes?.length > 0 && <div className="rv-strat-notes">{notes.map(([k, v]) => <div key={k}><i>{k}:</i> {v}</div>)}</div>}
+      {trades.length ? <>
+        <Headline m={m} />
+        <MetricGrid m={m} />
+        <EquityPanel trades={trades} title="Equity curve" height={220} />
+      </> : <div className="empty" style={{ padding: 30 }}>{empty}</div>}
+    </>
+  );
+}
+
 /** Full stats for a group of trades (one strategy, one market condition…) in a pop-up. */
 export function GroupStatsModal({ title, badge, color, sub, notes, trades, action, onClose }) {
-  const m = useMetrics(trades);
   return createPortal(
     <Modal open onClose={onClose} width={1100} className="rv-strat-modal">
       <ModalHead
@@ -605,12 +619,7 @@ export function GroupStatsModal({ title, badge, color, sub, notes, trades, actio
         onClose={onClose}
       />
       <div className="modal-body col gap16">
-        {notes?.length > 0 && <div className="rv-strat-notes">{notes.map(([k, v]) => <div key={k}><i>{k}:</i> {v}</div>)}</div>}
-        {trades.length ? <>
-          <Headline m={m} />
-          <MetricGrid m={m} />
-          <EquityPanel trades={trades} title="Equity curve" height={220} />
-        </> : <div className="empty" style={{ padding: 30 }}>No trades yet.</div>}
+        <GroupStats trades={trades} notes={notes} />
         {action && <div className="row" style={{ justifyContent: 'flex-end' }}>{action}</div>}
       </div>
     </Modal>,
