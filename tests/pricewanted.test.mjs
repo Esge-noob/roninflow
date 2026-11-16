@@ -3,6 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 import os from 'node:os';
 import path from 'node:path';
 import { createCandleHandler, dayWindow } from '../candles.js';
@@ -99,4 +101,27 @@ test('bars dropped as a .bars.jsonl file reach the price data and the file is cl
   assert.ok(!fs.existsSync(file), 'removed once fully read and quiet');
   const files = fs.readdirSync(path.join(dir, 'bars'));
   assert.deepEqual(files, ['EURUSD']);
+});
+
+test('switching add-on price data off stops the list and the charts using it', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const date = new Date((now - 3 * 86400) * 1000).toLocaleDateString('en-CA');
+  const { h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: `${date}T06:40:00` }] });
+  const call = (method, url, body) => new Promise((resolve) => {
+    const { Readable } = require('node:stream');
+    const req = Readable.from(body ? [JSON.stringify(body)] : []);
+    Object.assign(req, { method, url, headers: {}, setEncoding() {} });
+    const res = { headers: {}, setHeader(k, v) { this.headers[k] = v; }, end(t) { resolve({ status: this.statusCode, body: JSON.parse(t) }); } };
+    h(req, res);
+  });
+  const w = dayWindow(date, Intl.DateTimeFormat().resolvedOptions().timeZone);
+  h.ingestBars({ symbol: 'MNQ', bars: bars(w.from + 15 * 3600, 30) });
+  assert.equal((await call('GET', '/api/candles/config')).body.addon, true, 'on by default');
+  assert.equal((await call('GET', `/api/candles?symbol=MNQ&date=${date}`)).body.source, 'Your platform (add-on)');
+  assert.equal((await call('POST', '/api/candles/config', { yahoo: false, addon: false })).body.addon, false);
+  assert.deepEqual(h.wanted('ninjatrader'), []);
+  assert.equal((await call('GET', `/api/candles?symbol=MNQ&date=${date}`)).status, 424, 'no other source set up');
+  assert.equal((await call('POST', '/api/candles/config', { yahoo: false })).body.addon, false, 'kept when other settings are saved');
+  await call('POST', '/api/candles/config', { yahoo: false, addon: true });
+  assert.equal(h.wanted('ninjatrader').length, 1);
 });

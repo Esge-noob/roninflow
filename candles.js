@@ -7,7 +7,7 @@
 //        → { items: [{ symbol, contract, from, to }] }  or lines "symbol|contract|from|to" (newest day first)
 //        MetaTrader and Sierra Chart can't make web requests: the same list is written to price-wanted.txt in their
 //        drop folders, and they drop bars back as <name>.bars.jsonl (one ingest body per line).
-//   GET  /api/candles/config  · POST /api/candles/config { provider, yahoo, databentoKey?, polygonKey? }   (journal only)
+//   GET  /api/candles/config  · POST /api/candles/config { yahoo, addon?, databentoKey?, polygonKey? }   (journal only)
 //   GET  /api/candles/lib     → TradingView Lightweight Charts (downloaded once, then served from data/vendor)
 //
 // Where prices come from is up to you (Settings → Price data). In order:
@@ -190,6 +190,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   const wantCache = new Map();
   /** Trade days (newest first) whose 1-minute bars an add-on for `source` should fetch from its platform. */
   function wanted(source, { tz = Intl.DateTimeFormat().resolvedOptions().timeZone, now = Math.floor(Date.now() / 1000), limit = 20 } = {}) {
+    if (cfg.addon === false) return []; // add-on price data switched off: nothing to fetch
     const ck = `${source}|${tz}`;
     const hit = wantCache.get(ck);
     if (hit && now - hit.at < 20) return hit.items;
@@ -273,7 +274,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const end = Math.min(to, now);
       const save = (rec) => { if (rec.candles.length) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(rec)); } return rec; };
       // 1. your platform add-on's bars
-      const ab = addonBars(symbol, from, end);
+      const ab = cfg.addon === false ? { candles: [] } : addonBars(symbol, from, end); // switched off in Settings → Price data
       const addonRec = ab.candles.length >= 5 ? { symbol: rootOf(symbol), ysym, date, tz, from, to, interval: ab.interval, source: 'Your platform (add-on)', fetchedAt: now, final: false, candles: ab.candles } : null;
       if (addonRec && ab.interval === '1m') return addonRec; // coarser add-on bars are used if nothing better is set up
       // 2. Databento (futures)
@@ -382,13 +383,14 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (u.pathname === '/api/candles/config') {
         if (req.method === 'POST') {
           const b = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
-          cfg = { ...cfg, yahoo: !!b.yahoo, decided: true };
+          cfg = { ...cfg, yahoo: !!b.yahoo, decided: true, ...(typeof b.addon === 'boolean' ? { addon: b.addon } : {}) };
+          wantCache.clear();
           for (const k of ['databento', 'polygon']) if (typeof b[`${k}Key`] === 'string' && b[`${k}Key`] !== '••••••••') vault?.set(`price:${k}`, b[`${k}Key`].trim());
           fs.mkdirSync(dataDir, { recursive: true });
           fs.writeFileSync(cfgFile, JSON.stringify(cfg));
         }
         const rootsWithBars = (() => { try { return fs.readdirSync(barsDir); } catch { return []; } })();
-        return send(res, 200, { yahoo: !!cfg.yahoo, decided: !!cfg.decided, databento: !!keyOf('databento'), polygon: !!keyOf('polygon'), addonSymbols: rootsWithBars, vault: !!vault });
+        return send(res, 200, { yahoo: !!cfg.yahoo, addon: cfg.addon !== false, decided: !!cfg.decided, databento: !!keyOf('databento'), polygon: !!keyOf('polygon'), addonSymbols: rootsWithBars, vault: !!vault });
       }
       if (u.pathname === '/api/candles/lib') {
         const buf = await lib();
