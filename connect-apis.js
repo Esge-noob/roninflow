@@ -278,8 +278,35 @@ function listDrops(dir, depth, out) {
   }
   return out;
 }
-export function createDropWatcher({ ingest, setHeartbeat, log, offsets, dirs }) {
+export function createDropWatcher({ ingest, setHeartbeat, log, offsets, dirs, onBars }) {
   const folders = dirs || (() => [...metatraderDirs().map((d) => [d, 0]), ...ctraderDirs().map((d) => [d, 3]), ...journalDropDirs().map((d) => [d, 0])]);
+  // price bars (<name>.bars.jsonl, one ingest body per line): read what's complete, then remove the file once the
+  // add-on has stopped writing to it, so it doesn't grow forever (it's recreated on the next write)
+  const barOffsets = new Map();
+  function readBars(file, name, source) {
+    const st = fs.statSync(file);
+    let from = barOffsets.get(file) || 0;
+    if (st.size < from) from = 0;
+    if (st.size > from) {
+      const fd = fs.openSync(file, 'r');
+      const buf = Buffer.alloc(st.size - from);
+      fs.readSync(fd, buf, 0, buf.length, from);
+      fs.closeSync(fd);
+      const end = buf.lastIndexOf(10);
+      if (end < 0) return;
+      barOffsets.set(file, from + end + 1);
+      let n = 0;
+      for (const l of buf.subarray(0, end + 1).toString('utf8').split('\n')) {
+        const line = l.replace(/^\uFEFF/, '').trim();
+        if (!line) continue;
+        try { n += onBars?.(JSON.parse(line)) || 0; } catch (e) { log(`[${source}] ${name}: skipped a price-data line (${e.message})`); }
+      }
+      if (n) log(`[${source}] received ${n} price bar(s)`);
+    }
+    if ((barOffsets.get(file) || 0) >= st.size && Date.now() - st.mtimeMs > 15000) {
+      try { fs.unlinkSync(file); barOffsets.delete(file); } catch { /* still open in the platform — next time */ }
+    }
+  }
   return function scan() {
     const seen = new Set();
     for (const [dir, depth] of folders()) {
@@ -298,6 +325,7 @@ export function createDropWatcher({ ingest, setHeartbeat, log, offsets, dirs }) 
             if (j && j.account) setHeartbeat(source, { platform: j.platform || label, version: j.version, accounts: [String(j.account)], ...(Number.isFinite(Number(j.balance)) && j.balance !== null && j.balance !== '' ? { balances: [{ account: String(j.account), balance: Number(j.balance), openPnl: Number.isFinite(Number(j.equity)) ? Number(j.equity) - Number(j.balance) : 0 }] } : {}), at: new Date(mtime).toISOString() });
             continue;
           }
+          if (/\.bars\.jsonl$/i.test(name)) { readBars(file, name, source); continue; }
           const size = fs.statSync(file).size;
           if (size < (offsets[file] || 0)) offsets[file] = 0; // file was recreated
           const from = offsets[file] || 0;

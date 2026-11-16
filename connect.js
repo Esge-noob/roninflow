@@ -234,7 +234,7 @@ export function createConnectHandler(dataDir, { log = () => {}, vault } = {}) {
     }
   }, 15000);
   scheduler.unref?.();
-  const mtScan = createDropWatcher({ ingest, setHeartbeat, log, offsets: db.mtOffsets });
+  const mtScan = createDropWatcher({ ingest, setHeartbeat, log, offsets: db.mtOffsets, onBars: (body) => handler.barsSink?.(body) });
   const mtTimer = setInterval(() => { const before = JSON.stringify(db.mtOffsets); mtScan(); if (JSON.stringify(db.mtOffsets) !== before) save(); }, 10000);
   mtTimer.unref?.();
   const publicApi = (id) => {
@@ -320,6 +320,10 @@ export function createConnectHandler(dataDir, { log = () => {}, vault } = {}) {
       return send(res, 400, { error: e.message });
     }
   };
+  /** Trades in the inbox (for the price-data list: which contracts were traded on which days). */
+  handler.recentTrades = () => Object.values(db.trades).filter((t) => t && !t.removed && t.kind === 'trade' && t.entry);
+  /** Where price bars dropped by file-based add-ons (MetaTrader, Sierra Chart) go — set by the server. */
+  handler.barsSink = null;
   /** Token check for other endpoints add-ons post to (e.g. price bars). */
   handler.tokenOk = (req, loopback) => {
     if (loopback) return true;

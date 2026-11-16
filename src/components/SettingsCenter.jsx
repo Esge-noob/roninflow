@@ -167,7 +167,7 @@ function Prices() {
       <div className="muted" style={{ fontSize: 13 }}>The execution charts in your diary need 1-minute price bars. Pick where they come from — the first one that has the symbol is used, and every day is saved so it’s only fetched once.</div>
       <div className="panel col gap6" style={{ padding: 14 }}>
         <div className="row between"><b style={{ fontWeight: 600 }}>1 · Your platform add-on</b>{cfg.addonSymbols?.length ? <span className="badge pos-soft">{cfg.addonSymbols.length} symbol{cfg.addonSymbols.length === 1 ? '' : 's'} received</span> : <span className="badge neutral">Nothing received yet</span>}</div>
-        <div className="muted" style={{ fontSize: 12.5 }}>Your own data feed, free and private. The ATAS Journal Sync indicator sends the bars of the chart it’s on (put it on a 1-minute chart). Other tools can POST bars to <code>/api/candles/ingest</code> with your webhook token.</div>
+        <div className="muted" style={{ fontSize: 12.5 }}>Your own data feed, free and private. The NinjaTrader, Quantower, Sierra Chart, MetaTrader and cTrader add-ons load the 1-minute bars for each day you traded from the platform’s data connection and send them while the platform is open; the ATAS indicator sends the bars of the chart it’s on (keep it on a 1-minute chart). Update an older add-on to get this. Other tools can POST bars to <code>/api/candles/ingest</code> with your webhook token.</div>
       </div>
       <div className="panel col gap8" style={{ padding: 14 }}>
         <div className="row between"><b style={{ fontWeight: 600 }}>2 · Databento <span className="muted" style={{ fontWeight: 400 }}>— CME futures</span></b>{cfg.databento && <span className="badge pos-soft"><Check size={12} /> Key saved</span>}</div>

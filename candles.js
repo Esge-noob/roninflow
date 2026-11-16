@@ -1,18 +1,24 @@
 // Price candles for the execution chart in the daily diary.
 //   GET  /api/candles?symbol=MES&date=2026-11-09&tz=America/Los_Angeles
 //        → { symbol, interval, source, candles: [[t, o, h, l, c, v], …] }   (t = unix seconds, UTC)
-//   POST /api/candles/ingest  { symbol, bars: [[t, o, h, l, c, v], …] }  ← platform add-ons (token unless from this PC)
+//   POST /api/candles/ingest  { symbol, bars: [[t, o, h, l, c, v], …], from?, to? }  ← platform add-ons (token unless from this PC)
+//        from/to (unix seconds) = the range the add-on asked its platform for, so that range isn't asked for again
+//   GET  /api/candles/wanted?source=ninjatrader[&format=lines]  ← add-ons: trade days still missing 1-minute bars
+//        → { items: [{ symbol, contract, from, to }] }  or lines "symbol|contract|from|to" (newest day first)
+//        MetaTrader and Sierra Chart can't make web requests: the same list is written to price-wanted.txt in their
+//        drop folders, and they drop bars back as <name>.bars.jsonl (one ingest body per line).
 //   GET  /api/candles/config  · POST /api/candles/config { provider, yahoo, databentoKey?, polygonKey? }   (journal only)
 //   GET  /api/candles/lib     → TradingView Lightweight Charts (downloaded once, then served from data/vendor)
 //
 // Where prices come from is up to you (Settings → Price data). In order:
-//   1. bars your platform add-on sends (ATAS today) — your own data feed, no extra service
+//   1. bars your platform add-on sends — your own data feed, no extra service
 //   2. Databento with your own API key (CME futures, 1-minute OHLCV)
 //   3. Polygon with your own API key (stocks, crypto, forex)
 //   4. Yahoo Finance — off by default: its feed is unofficial and not licensed for this, so only if you opt in
 // Every candle set is saved in data/candles/ so a day only has to be fetched once.
 import fs from 'node:fs';
 import path from 'node:path';
+import { metatraderDirs, journalDropDirs } from './connect-apis.js';
 
 const LIB_VERSION = '5.0.7';
 const LIB_URLS = [
@@ -109,7 +115,7 @@ async function polygon(key, ticker, from, to) {
 
 const isFutures = (symbol) => !/(-PERP|-SPOT|-SWAP|USDT|USDC|\/|:)/i.test(String(symbol)) && (ROOTS.includes(rootOf(symbol)) || /^[A-Z0-9]{1,4}[FGHJKMNQUVXZ]\d{1,2}$/.test(String(symbol).toUpperCase()));
 
-export function createCandleHandler(dataDir, { readTrades, log = () => {}, vault, tokenOk } = {}) {
+export function createCandleHandler(dataDir, { readTrades, readConnTrades, log = () => {}, vault, tokenOk, dropDirs } = {}) {
   const cacheDir = path.join(dataDir, 'candles');
   const barsDir = path.join(dataDir, 'bars');
   const cfgFile = path.join(dataDir, 'price-source.json');
@@ -157,6 +163,86 @@ export function createCandleHandler(dataDir, { readTrades, log = () => {}, vault
     // bar size from the data (an add-on on a 1-minute chart sends 1-minute bars)
     const step = out.length > 2 ? Math.min(...out.slice(1, 50).map((r, i) => r[0] - out[i][0]).filter((d) => d > 0)) : 60;
     return { candles: out, interval: step >= 3600 ? `${Math.round(step / 3600)}h` : `${Math.max(1, Math.round(step / 60))}m` };
+  }
+
+  // ---------- which trade days the add-ons should still fetch bars for ----------
+  // price-covered.json: { "<ROOT>": [[from, to], …] } — time ranges (unix seconds) add-ons already sent bars for. A range
+  // an add-on asked its platform for counts even when the platform had nothing, so it isn't asked for again.
+  const coverFile = path.join(dataDir, 'price-covered.json');
+  let covered = {};
+  try { covered = JSON.parse(fs.readFileSync(coverFile, 'utf8')) || {}; } catch { /* first run */ }
+  const WANT_DAYS = 45;
+  const localDate = (unix, tz) => new Date(unix * 1000).toLocaleDateString('en-CA', { timeZone: tz });
+  function markCovered(symbol, from, to) {
+    from = Math.floor(Number(from)); to = Math.floor(Number(to));
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return;
+    const root = rootOf(symbol);
+    const cut = Math.floor(Date.now() / 1000) - (WANT_DAYS + 5) * DAY; // forget what nobody will ask about again
+    const list = [...(covered[root] || []), [from, to]].filter((r) => r[1] > cut).sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const r of list) { const last = merged[merged.length - 1]; if (last && r[0] <= last[1] + 60) last[1] = Math.max(last[1], r[1]); else merged.push([r[0], r[1]]); }
+    covered[root] = merged;
+    try { fs.mkdirSync(dataDir, { recursive: true }); fs.writeFileSync(coverFile, JSON.stringify(covered)); } catch (e) { log('[candles] could not save price-covered.json', e.message); }
+    wantCache.clear();
+  }
+  /** How far the covered ranges reach from `from` on (0 = nothing covered at `from`). */
+  const coveredTo = (root, from) => (covered[root] || []).find((r) => r[0] <= from + 60 && r[1] > from)?.[1] || 0;
+  const wantCache = new Map();
+  /** Trade days (newest first) whose 1-minute bars an add-on for `source` should fetch from its platform. */
+  function wanted(source, { tz = Intl.DateTimeFormat().resolvedOptions().timeZone, now = Math.floor(Date.now() / 1000), limit = 20 } = {}) {
+    const ck = `${source}|${tz}`;
+    const hit = wantCache.get(ck);
+    if (hit && now - hit.at < 20) return hit.items;
+    const since = new Date((now - WANT_DAYS * DAY) * 1000).toLocaleDateString('en-CA', { timeZone: tz });
+    const days = new Map(); // ROOT|date → { symbol, contract }
+    const add = (t, date) => {
+      if (!t?.symbol || !t.contract || String(t.source || '').toLowerCase() !== source || date < since) return;
+      const key = `${rootOf(t.symbol)}|${date}`;
+      if (!days.has(key)) days.set(key, { symbol: t.symbol, contract: String(t.contract), date });
+    };
+    try { for (const t of (readTrades?.() || [])) if (t?.entry && !t.deleted) add(t, String(t.entry).slice(0, 10)); } catch { /* journal not readable yet */ }
+    try { for (const t of (readConnTrades?.() || [])) { const e = Date.parse(t?.entry); if (Number.isFinite(e)) add(t, localDate(Math.floor(e / 1000), tz)); } } catch { /* inbox not ready */ }
+    const items = [];
+    for (const [key, d] of [...days].sort((a, b) => (a[1].date < b[1].date ? 1 : -1))) {
+      const { from, to } = dayWindow(d.date, tz);
+      if (from > now) continue;
+      const end = Math.min(to, now);
+      const have = coveredTo(rootOf(d.symbol), from);
+      if (have >= end - (end === now ? 90 : 0)) continue;              // today: refreshed every ~minute and a half
+      if (!have) {                                                      // another add-on (ATAS on a chart) may have sent them
+        const ab = addonBars(d.symbol, from, end);
+        if (ab.interval === '1m' && ab.candles.length >= 200 && ab.candles[ab.candles.length - 1][0] >= end - 300) continue;
+      }
+      items.push({ symbol: d.symbol, contract: d.contract, from: have > from ? Math.max(from, have - 600) : from, to: end });
+      if (items.length >= limit) break;
+    }
+    wantCache.set(ck, { at: now, items });
+    return items;
+  }
+  const wantedLines = (items) => items.map((i) => [i.symbol, i.contract, i.from, i.to].map((v) => String(v).replace(/[|\r\n]/g, ' ')).join('|')).join('\n') + (items.length ? '\n' : '');
+  // MetaTrader / Sierra Chart: the list goes into their drop folders as price-wanted.txt
+  const wantedFiles = dropDirs || (() => [...metatraderDirs().map((d) => [d, 'metatrader']), ...journalDropDirs().map((d) => [d, 'sierrachart'])]);
+  const lastWritten = new Map();
+  function writeWantedFiles() {
+    for (const [dir, source] of wantedFiles()) {
+      if (!fs.existsSync(dir)) continue; // that platform's add-on isn't installed on this computer
+      const text = wantedLines(wanted(source)).replace(/\n/g, '\r\n'); // Windows line ends: MetaTrader reads lines
+      const file = path.join(dir, 'price-wanted.txt');
+      if (lastWritten.get(file) === text && fs.existsSync(file)) continue;
+      try { fs.writeFileSync(file, text); lastWritten.set(file, text); } catch (e) { log(`[candles] could not write ${file}: ${e.message}`); }
+    }
+  }
+  if (!dropDirs) { setTimeout(writeWantedFiles, 15000).unref?.(); setInterval(writeWantedFiles, 60000).unref?.(); }
+  /** One add-on bars message (web request or a line of a .bars.jsonl file). */
+  function ingestBars(body) {
+    const groups = Array.isArray(body?.series) ? body.series : [body];
+    let n = 0;
+    for (const g of groups) {
+      if (!g?.symbol) continue;
+      if (Array.isArray(g.bars)) n += storeBars(g.symbol, g.bars);
+      if (g.from !== undefined && g.to !== undefined) markCovered(g.symbol, g.from, g.to);
+    }
+    return n;
   }
   const libFile = path.join(dataDir, 'vendor', `lightweight-charts-${LIB_VERSION}.js`);
   const inflight = new Map();
@@ -277,16 +363,21 @@ export function createCandleHandler(dataDir, { readTrades, log = () => {}, vault
 
   const send = (res, code, obj) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(obj)); };
 
-  return async function candles(req, res) {
+  const handler = async function candles(req, res) {
     const u = new URL(req.originalUrl || req.url, 'http://x');
     try {
       if (u.pathname === '/api/candles/ingest' && req.method === 'POST') {
         if (tokenOk && !tokenOk(req)) return send(res, 401, { error: 'Missing or wrong token (Connections → Webhook / API).' });
         const body = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; if (t.length > 20e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
-        const groups = Array.isArray(body.series) ? body.series : [body];
-        let n = 0;
-        for (const g of groups) if (g?.symbol && Array.isArray(g.bars)) n += storeBars(g.symbol, g.bars);
-        return send(res, 200, { ok: true, bars: n });
+        return send(res, 200, { ok: true, bars: ingestBars(body) });
+      }
+      if (u.pathname === '/api/candles/wanted' && req.method === 'GET') {
+        if (tokenOk && !tokenOk(req)) return send(res, 401, { error: 'Missing or wrong token (Connections → Webhook / API).' });
+        const source = String(u.searchParams.get('source') || '').toLowerCase();
+        if (!/^[a-z0-9_-]{2,32}$/.test(source)) return send(res, 400, { error: 'source needed, e.g. ?source=ninjatrader' });
+        const items = wanted(source);
+        if (u.searchParams.get('format') === 'lines') { res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(wantedLines(items)); }
+        return send(res, 200, { items });
       }
       if (u.pathname === '/api/candles/config') {
         if (req.method === 'POST') {
@@ -315,4 +406,8 @@ export function createCandleHandler(dataDir, { readTrades, log = () => {}, vault
       return send(res, e.code === 'NO_SOURCE' ? 424 : 502, { error: e.message || 'Couldn’t load prices', code: e.code });
     }
   };
+  handler.ingestBars = ingestBars;
+  handler.wanted = wanted;
+  handler.writeWantedFiles = writeWantedFiles;
+  return handler;
 }

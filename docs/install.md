@@ -89,7 +89,9 @@ the first start), `TJ_SECRET_KEY` (encryption key for saved API keys instead of 
 
 ## Price data for the charts
 
-Settings → Price data. In order of preference: bars sent by your platform add-on (ATAS), your own Databento key
+Settings → Price data. In order of preference: bars sent by your platform add-on (every add-on — NinjaTrader,
+Quantower, Sierra Chart, MetaTrader and cTrader load the 1-minute bars for each day you traded from the platform's own
+data connection; ATAS sends the bars of the 1-minute chart it's on), your own Databento key
 (CME futures), your own Polygon key (stocks, crypto, forex), or — only if you turn it on — Yahoo Finance's unofficial
 feed. Without any of these the diary still works; only the execution charts stay empty.
 

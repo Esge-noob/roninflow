@@ -4,6 +4,10 @@
 // %LOCALAPPDATA%\TradeJournal\drop, which the journal on this PC reads every 10 seconds and pairs into trades.
 // Read-only: it never places or changes orders.
 //
+// Price data: the journal lists the days you traded that still lack 1-minute bars (price-wanted.txt in the same folder,
+// lines "symbol|contract|from|to" in UTC unix seconds). The study opens a hidden 1-minute chart for each one, reads its
+// bars and drops them as sierrachart-<account>.bars.jsonl, which the journal reads for the diary charts.
+//
 // Install: npm run addon:sierra (copies this file into C:\SierraChart\ACS_Source), then in Sierra Chart:
 // Analysis → Build Custom Studies DLL → select TradeJournalSync.cpp → Remote Build. Then add the study
 // "RoninFlow Sync" to your trading chart(s) (Analysis → Studies → Add Custom Study).
@@ -12,6 +16,8 @@
 #include <cstdio>
 #include <cctype>
 #include <string>
+#include <map>
+#include <vector>
 
 SCDLLName("RoninFlow Sync")
 
@@ -75,6 +81,161 @@ static std::string SafeName(const std::string& s)
 	return out;
 }
 
+// ---------------------------------------------------------------- price data
+static std::string ReadFileText(const std::string& path)
+{
+	HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (h == INVALID_HANDLE_VALUE) return "";
+	std::string out;
+	char buf[8192];
+	DWORD got = 0;
+	while (ReadFile(h, buf, sizeof(buf), &got, NULL) && got > 0) out.append(buf, got);
+	CloseHandle(h);
+	return out;
+}
+
+// days since 1970-01-01 for a calendar date (no time zone involved)
+static long long DaysFromCivil(int y, int m, int d)
+{
+	y -= m <= 2;
+	long long era = (y >= 0 ? y : y - 399) / 400;
+	long long yoe = y - era * 400;
+	long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+static long long UnixUtc(const SCDateTime& gmt)
+{
+	int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0, ms = 0;
+	gmt.GetDateTimeYMDHMS_MS(y, mo, d, h, mi, s, ms);
+	return DaysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s;
+}
+
+struct PriceJob
+{
+	std::string line, symbol, feed;
+	long long from = 0, to = 0;
+	int chart = 0;
+	unsigned long long startedAt = 0, lastChangeAt = 0;
+	int lastSize = -1;
+};
+static std::map<std::string, unsigned long long> g_priceRecent; // list line → when it was handled (asked again after 5 min)
+static std::map<int, PriceJob> g_priceJobs;                       // one job at a time per chart running the study
+static int g_priceOwner = 0;                                      // only one chart's study fetches prices
+static unsigned long long g_priceOwnerSeen = 0;
+
+// "MNQZ25" on a chart whose symbol is "ESZ25_FUT_CME" → "MNQZ25_FUT_CME" (the data feed's naming)
+static std::string FeedSymbol(const std::string& contract, const char* chartSymbol)
+{
+	if (contract.find_first_of("_-.") != std::string::npos) return contract;
+	std::string cs = chartSymbol ? chartSymbol : "";
+	size_t cut = cs.find_first_of("_-.");
+	return contract + (cut != std::string::npos && cut > 0 ? cs.substr(cut) : "");
+}
+
+static void PriceData(SCStudyInterfaceRef sc, const std::string& folder, const std::string& account)
+{
+	unsigned long long now = GetTickCount64();
+	if (g_priceOwner != sc.ChartNumber)
+	{
+		if (g_priceOwner != 0 && now - g_priceOwnerSeen < 120000) return;
+		g_priceOwner = sc.ChartNumber;
+	}
+	g_priceOwnerSeen = now;
+	PriceJob& job = g_priceJobs[sc.ChartNumber];
+	SCDateTime& lastList = sc.GetPersistentSCDateTime(2);
+
+	if (job.chart == 0)
+	{
+		if (sc.CurrentSystemDateTime - lastList < SCDateTime::SECONDS(20)) return;
+		lastList = sc.CurrentSystemDateTime;
+		std::string text = ReadFileText(folder + "\\price-wanted.txt");
+		size_t pos = 0;
+		while (pos < text.size())
+		{
+			size_t eol = text.find('\n', pos);
+			std::string line = text.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+			pos = eol == std::string::npos ? text.size() : eol + 1;
+			while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+			if (line.empty()) continue;
+			auto seen = g_priceRecent.find(line);
+			if (seen != g_priceRecent.end() && now - seen->second < 300000) continue;
+			std::vector<std::string> p;
+			size_t a = 0, b;
+			while ((b = line.find('|', a)) != std::string::npos) { p.push_back(line.substr(a, b - a)); a = b + 1; }
+			p.push_back(line.substr(a));
+			if (p.size() < 4) continue;
+			long long from = _atoi64(p[2].c_str()), to = _atoi64(p[3].c_str());
+			if (to <= from) continue;
+			job = PriceJob();
+			job.line = line; job.symbol = p[0]; job.from = from; job.to = to;
+			job.feed = FeedSymbol(p[1], sc.Symbol.GetChars());
+			long long nowUnix = UnixUtc(sc.AdjustDateTimeToGMT(sc.CurrentSystemDateTime));
+			int days = (int)((nowUnix - from) / 86400) + 2;
+			s_ACSOpenChartParameters op;
+			op.PriorChartNumber = 0;
+			op.ChartDataType = INTRADAY_DATA;
+			op.Symbol = SCString(job.feed.c_str());
+			op.IntradayBarPeriodType = IBPT_DAYS_MINS_SECS;
+			op.IntradayBarPeriodLength = 60;
+			op.DaysToLoad = days < 2 ? 2 : (days > 60 ? 60 : days);
+			op.LoadWeekendData = 1;
+			op.HideNewChart = 1;
+			job.chart = sc.OpenChartOrGetChartReference(op);
+			job.startedAt = job.lastChangeAt = now;
+			if (job.chart <= 0)
+			{
+				g_priceRecent[line] = now; // couldn't open a chart for it — try again in a few minutes
+				job = PriceJob();
+			}
+			break;
+		}
+		return;
+	}
+
+	// wait until the hidden chart has loaded its data (the bar count stops changing)
+	SCDateTimeArray times;
+	sc.GetChartDateTimeArray(job.chart, times);
+	int size = times.GetArraySize();
+	if (size != job.lastSize) { job.lastSize = size; job.lastChangeAt = now; }
+	bool settled = size > 0 && now - job.lastChangeAt > 5000;
+	if (!settled && now - job.startedAt < 120000) return;
+
+	g_priceRecent[job.line] = now;
+	if (size > 0)
+	{
+		SCGraphData data;
+		sc.GetChartBaseData(job.chart, data);
+		std::string bars;
+		int count = 0;
+		for (int i = 0; i < size; ++i)
+		{
+			long long t = UnixUtc(sc.AdjustDateTimeToGMT(times[i]));
+			if (t < job.from || t >= job.to) continue;
+			char row[200];
+			snprintf(row, sizeof(row), "%s[%lld,%.10g,%.10g,%.10g,%.10g,%.10g]", count ? "," : "", t,
+				(double)data[SC_OPEN][i], (double)data[SC_HIGH][i], (double)data[SC_LOW][i], (double)data[SC_LAST][i], (double)data[SC_VOLUME][i]);
+			bars += row;
+			++count;
+		}
+		char range[100];
+		snprintf(range, sizeof(range), ",\"from\":%lld,\"to\":%lld,\"bars\":[", job.from, job.to);
+		std::string line = "{\"source\":\"sierrachart\",\"symbol\":\"" + JsonEscape(job.symbol.c_str()) + "\"" + range + bars + "]}\n";
+		if (WriteFileText(folder + "\\sierrachart-" + SafeName(account) + ".bars.jsonl", line, true))
+		{
+			char msg[300];
+			snprintf(msg, sizeof(msg), "RoninFlow Sync: sent %d one-minute bar(s) of %s", count, job.feed.c_str());
+			sc.AddMessageToLog(SCString(msg), 0);
+		}
+	}
+	else
+	{
+		std::string m = "RoninFlow Sync: no price data for " + job.feed + " (check the symbol) - will try again later";
+		sc.AddMessageToLog(SCString(m.c_str()), 0);
+	}
+	job = PriceJob();
+}
+
 SCSFExport scsf_TradeJournalSync(SCStudyInterfaceRef sc)
 {
 	SCInputRef InTimesAreUtc = sc.Input[0];
@@ -82,7 +243,7 @@ SCSFExport scsf_TradeJournalSync(SCStudyInterfaceRef sc)
 	if (sc.SetDefaults)
 	{
 		sc.GraphName = "RoninFlow Sync";
-		sc.StudyDescription = "Sends this chart's fills (symbol + trade account) to RoninFlow. Read-only, never trades.";
+		sc.StudyDescription = "Sends this chart's fills (symbol + trade account) and 1-minute price data for the days you traded to RoninFlow. Read-only, never trades.";
 		sc.AutoLoop = 0;
 		sc.GraphRegion = 0;
 		sc.UpdateAlways = 1; // keep running (and writing the 'alive' status) even when the market is quiet
@@ -147,6 +308,8 @@ SCSFExport scsf_TradeJournalSync(SCStudyInterfaceRef sc)
 		std::string st = "{\"platform\":\"Sierra Chart\",\"version\":\"1.0.0\",\"account\":\"" + JsonEscape(account.c_str()) + "\",\"symbol\":\"" + JsonEscape(sc.Symbol.GetChars()) + "\"}";
 		WriteFileText(statusFile, st, false);
 	}
+
+	PriceData(sc, folder, account);
 
 	if (!announced)
 	{

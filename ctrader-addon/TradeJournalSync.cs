@@ -7,6 +7,8 @@
 //   1. a web request to the journal (default: the journal on this PC, http://127.0.0.1:5173)
 //   2. the same trades written to Documents\cAlgo\Data\cBots (the journal on this PC watches that folder)
 // The journal ignores repeats, so getting a trade both ways is fine.
+// Price data: every minute it asks the journal which days you traded still lack 1-minute bars (GET /api/candles/wanted),
+// loads them from cTrader and sends them (POST /api/candles/ingest) for the diary charts.
 //
 // Install: cTrader → Algo → cBots → New → paste this file over the template → Build (Ctrl+B).
 // Then add an instance on any symbol/chart and press Start. One instance per account you want synced.
@@ -23,7 +25,7 @@ namespace cAlgo.Robots
     [Robot(AccessRights = AccessRights.None, TimeZone = TimeZones.UTC)]
     public class TradeJournalSync : Robot
     {
-        private const string SyncVersion = "1.0.0";
+        private const string SyncVersion = "1.1.0";
 
         [Parameter("Journal address", DefaultValue = "http://127.0.0.1:5173/api/connect/ingest")]
         public string JournalUrl { get; set; }
@@ -41,6 +43,8 @@ namespace cAlgo.Robots
         private int lastHistoryCount = -1;
         private DateTime lastHeartbeat = DateTime.MinValue;
         private int failures;
+        private DateTime nextPrices = DateTime.UtcNow.AddSeconds(20);
+        private bool priceAnnounced;
 
         protected override void OnStart()
         {
@@ -65,6 +69,7 @@ namespace cAlgo.Robots
         {
             Scan(Server.Time.AddDays(-7));
             Flush();
+            nextPrices = DateTime.UtcNow.AddSeconds(15); // bars for the trade soon after it's in
         }
 
         protected override void OnTimer()
@@ -73,6 +78,85 @@ namespace cAlgo.Robots
             Flush();
             WriteStatus();
             if ((DateTime.UtcNow - lastHeartbeat).TotalSeconds >= 30) Heartbeat();
+            if (DateTime.UtcNow >= nextPrices) { nextPrices = DateTime.UtcNow.AddSeconds(60); PriceRound(); }
+        }
+
+        // ---------------------------------------------------------------- price data (1-minute bars for the diary charts)
+        private void PriceRound()
+        {
+            try
+            {
+                string list = Get(ApiUrl("/api/candles/wanted?source=ctrader&format=lines"));
+                if (list == null) return;
+                int done = 0;
+                foreach (string raw in list.Split('\n'))
+                {
+                    string[] p = raw.Trim().Split('|');
+                    long from, to;
+                    if (p.Length < 4 || !long.TryParse(p[2], out from) || !long.TryParse(p[3], out to) || to <= from) continue;
+                    if (SendBars(p[0], p[1], from, to) && ++done >= 4) break; // the rest next minute
+                }
+            }
+            catch (Exception e) { Print("[RoninFlow] price data: {0}", e.Message); }
+        }
+
+        /// <summary>False when this cTrader account doesn't have the symbol (another account's cBot may).</summary>
+        private bool SendBars(string symbol, string name, long from, long to)
+        {
+            if (!Symbols.Exists(name)) return false;
+            var rows = new List<string>();
+            try
+            {
+                DateTime f = DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime;
+                Bars bars = MarketData.GetBars(TimeFrame.Minute, name);
+                // older days: load further back until the range is covered (each call loads another chunk)
+                for (int guard = 0; guard < 200 && bars.Count > 0 && bars.OpenTimes[0] > f; guard++)
+                    if (bars.LoadMoreHistory() <= 0) break;
+                for (int i = 0; i < bars.Count; i++)
+                {
+                    // the robot runs in UTC (TimeZone above), so bar times are UTC
+                    long open = new DateTimeOffset(DateTime.SpecifyKind(bars.OpenTimes[i], DateTimeKind.Utc)).ToUnixTimeSeconds();
+                    if (open < from || open >= to) continue;
+                    rows.Add("[" + open.ToString(CultureInfo.InvariantCulture) + "," + D(bars.OpenPrices[i]) + "," + D(bars.HighPrices[i]) + "," + D(bars.LowPrices[i]) + "," + D(bars.ClosePrices[i]) + "," + D(bars.TickVolumes[i]) + "]");
+                }
+            }
+            catch (Exception e) { Print("[RoninFlow] price data for {0}: {1} — will try again", name, e.Message); return true; }
+            var body = new StringBuilder("{\"source\":\"ctrader\",");
+            Str(body, "symbol", symbol);
+            body.Append(",\"from\":").Append(from.ToString(CultureInfo.InvariantCulture)).Append(",\"to\":").Append(to.ToString(CultureInfo.InvariantCulture)).Append(",\"bars\":[").Append(string.Join(",", rows)).Append("]}");
+            if (Post(body.ToString(), ApiUrl("/api/candles/ingest")) && (!priceAnnounced || rows.Count > 0))
+            {
+                priceAnnounced = true;
+                Print("[RoninFlow] price data: sent {0} one-minute bar(s) of {1}", rows.Count, name);
+            }
+            return true;
+        }
+
+        // http://127.0.0.1:5173/api/connect/ingest → http://127.0.0.1:5173 + path
+        private string ApiUrl(string path)
+        {
+            string u = (JournalUrl ?? "").Trim();
+            int i = u.IndexOf("/api/", StringComparison.OrdinalIgnoreCase);
+            return (i > 0 ? u.Substring(0, i) : u.TrimEnd('/')) + path;
+        }
+
+        private string Get(string target)
+        {
+            try
+            {
+                var req = new HttpRequest(new Uri(target));
+                req.Method = HttpMethod.Get;
+                req.Timeout = TimeSpan.FromSeconds(8);
+                if (!string.IsNullOrWhiteSpace(Token)) req.Headers.Add("Authorization", "Bearer " + Token.Trim());
+                HttpResponse res = Http.Send(req);
+                return res.IsSuccessful ? res.Body : null;
+            }
+            catch { return null; }
+        }
+
+        private static string D(double v)
+        {
+            return double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("R", CultureInfo.InvariantCulture);
         }
 
         // Every closing deal is one journal trade (a partial close is its own trade, with its own P&L).
@@ -162,12 +246,12 @@ namespace cAlgo.Robots
             catch { /* the web request path still works */ }
         }
 
-        private bool Post(string json)
+        private bool Post(string json, string target = null)
         {
             if (string.IsNullOrWhiteSpace(JournalUrl)) return false;
             try
             {
-                var req = new HttpRequest(new Uri(JournalUrl.Trim()));
+                var req = new HttpRequest(new Uri(target ?? JournalUrl.Trim()));
                 req.Method = HttpMethod.Post;
                 req.Body = json;
                 req.Timeout = TimeSpan.FromSeconds(8);

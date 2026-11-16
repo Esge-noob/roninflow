@@ -308,6 +308,22 @@ export const CONNECTORS = [
   { id: 'file-generic', name: 'Any CSV / Excel', group: 'file', status: 'ready', blurb: 'Fills or closed trades from anywhere — map the columns if needed.', steps: ['Export executions or closed trades from your platform as CSV or .xlsx.', 'Drop it here; check the column mapping if the preview looks off.'] },
 ];
 
+// every live add-on also sends the 1-minute price data for the diary's execution charts
+const PRICE_NOTES = {
+  atas: 'Price data for the diary charts: the indicator sends the bars of the chart it’s on — keep it on a 1-minute chart of what you trade.',
+  ninjatrader: 'Price data for the diary charts: for each day you traded it loads the 1-minute bars from your NinjaTrader data connection and sends them — no extra data service needed.',
+  quantower: 'Price data for the diary charts: for each day you traded it loads the 1-minute bars from your Quantower connection and sends them while it runs.',
+  sierrachart: 'Price data for the diary charts: for each day you traded it opens a hidden 1-minute chart of that contract, reads the bars and sends them. The symbol is built from your chart’s (e.g. MNQZ25 + “_FUT_CME”).',
+  metatrader: 'Price data for the diary charts: for each day you traded it copies the 1-minute bars from MetaTrader’s history and sends them while it runs.',
+  ctrader: 'Price data for the diary charts: for each day you traded it loads the 1-minute bars from cTrader and sends them while it runs.',
+};
+for (const c of CONNECTORS) {
+  const note = PRICE_NOTES[c.id];
+  if (!note) continue;
+  c.notes = [...(c.notes || []), note];
+  if (c.unix?.notes) c.unix.notes = [...c.unix.notes, note];
+}
+
 const NAMES = { atas: 'ATAS', webhook: 'Webhook' };
 /** Display name for a source id (connector inbox sources are free-form, e.g. "ninjatrader", "my-bot"). */
 export function platformName(source) {

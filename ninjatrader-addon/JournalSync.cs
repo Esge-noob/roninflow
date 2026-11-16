@@ -3,6 +3,8 @@
 // Sends every execution (fill) from every connected NinjaTrader account to the journal's connector inbox
 // (POST /api/connect/ingest), plus a heartbeat every 30 s with account balances and open P&L.
 // The journal pairs fills into trades, so scale-ins, partial exits and reversals come out right.
+// Price data: every minute it asks the journal which days you traded still lack 1-minute bars (GET /api/candles/wanted),
+// loads them from your NinjaTrader data connection and sends them (POST /api/candles/ingest) for the diary charts.
 //
 // Install: copy this file to  Documents\NinjaTrader 8\bin\Custom\AddOns\  (npm run addon:nt does it),
 //          then in NinjaTrader: New → NinjaScript Editor → press F5 to compile. It starts by itself after that
@@ -25,13 +27,14 @@ using System.Text;
 using System.Threading;
 using NinjaTrader.Cbi;
 using NinjaTrader.Code;
+using NinjaTrader.Data;
 #endregion
 
 namespace NinjaTrader.NinjaScript.AddOns
 {
 	public class TradeJournalSync : AddOnBase
 	{
-		private const string SyncVersion = "1.0.0";
+		private const string SyncVersion = "1.1.0";
 		private const string DefaultUrl = "http://127.0.0.1:5173/api/connect/ingest";
 
 		private string url = DefaultUrl;
@@ -42,6 +45,9 @@ namespace NinjaTrader.NinjaScript.AddOns
 		private readonly HashSet<string> sent = new HashSet<string>();
 		private System.Threading.Timer flushTimer;
 		private System.Threading.Timer heartbeatTimer;
+		private System.Threading.Timer priceTimer;
+		private int priceBusy;
+		private bool priceAnnounced;
 		private int busy;
 		private DateTime nextTry = DateTime.MinValue;
 		private static TimeZoneInfo platformZone; // from journal-sync.txt "timezone=", else the PC's own zone
@@ -69,6 +75,7 @@ namespace NinjaTrader.NinjaScript.AddOns
 				Account.AccountStatusUpdate += OnAccountStatusUpdate;
 				flushTimer = new System.Threading.Timer(_ => Flush(), null, 2000, 2000);
 				heartbeatTimer = new System.Threading.Timer(_ => Heartbeat(), null, 3000, 30000);
+				priceTimer = new System.Threading.Timer(_ => PriceRound(), null, 20000, 60000);
 				Log("started — sending to " + url);
 			}
 			else if (State == State.Terminated)
@@ -84,6 +91,7 @@ namespace NinjaTrader.NinjaScript.AddOns
 				}
 				if (flushTimer != null) flushTimer.Dispose();
 				if (heartbeatTimer != null) heartbeatTimer.Dispose();
+				if (priceTimer != null) priceTimer.Dispose();
 				Flush(); // last attempt
 			}
 		}
@@ -175,6 +183,7 @@ namespace NinjaTrader.NinjaScript.AddOns
 				failures = 0;
 				if (lastError != "") { Log("connected to the journal again"); lastError = ""; }
 				Log("sent " + batch.Count + " execution(s) → " + Short(reply));
+				try { if (priceTimer != null) priceTimer.Change(15000, 60000); } catch { } // bars for the trade soon after it's in
 			}
 			catch (Exception ex)
 			{
@@ -219,9 +228,114 @@ namespace NinjaTrader.NinjaScript.AddOns
 			catch { /* the fill sender reports connection problems */ }
 		}
 
-		private string Post(string json)
+		// ---------------------------------------------------------------- price data (1-minute bars for the diary charts)
+		private void PriceRound()
 		{
-			var req = (HttpWebRequest)WebRequest.Create(url);
+			if (Interlocked.Exchange(ref priceBusy, 1) == 1) return;
+			try
+			{
+				string list;
+				try { list = Get(ApiUrl("/api/candles/wanted?source=ninjatrader&format=lines")); }
+				catch { return; } // journal not reachable — the fill sender reports that
+				int done = 0;
+				foreach (string raw in list.Split('\n'))
+				{
+					string[] p = raw.Trim().Split('|');
+					long from, to;
+					if (p.Length < 4 || !long.TryParse(p[2], out from) || !long.TryParse(p[3], out to) || to <= from) continue;
+					SendBars(p[0], p[1], from, to);
+					if (++done >= 6) break; // the rest next minute
+				}
+			}
+			catch (Exception ex) { Log("price data: " + ex.Message); }
+			finally { Interlocked.Exchange(ref priceBusy, 0); }
+		}
+
+		private void SendBars(string symbol, string contract, long from, long to)
+		{
+			NinjaTrader.Cbi.Instrument inst = null;
+			try { inst = NinjaTrader.Cbi.Instrument.GetInstrument(contract); } catch { }
+			if (inst == null)
+			{
+				Log("price data: NinjaTrader doesn't know " + contract + " — skipping it");
+				PostBars(symbol, from, to, new List<string>()); // so it isn't asked for again
+				return;
+			}
+			var rows = new List<string>();
+			string err = null;
+			var finished = new ManualResetEventSlim(false);
+			BarsRequest br = null;
+			try
+			{
+				br = new BarsRequest(inst, ToPlatform(from), ToPlatform(to));
+				br.BarsPeriod = new BarsPeriod { BarsPeriodType = BarsPeriodType.Minute, Value = 1 };
+				br.TradingHours = inst.MasterInstrument.TradingHours;
+				br.Request((r, code, msg) =>
+				{
+					try
+					{
+						if (code != ErrorCode.NoError) { err = code + " " + msg; return; }
+						NinjaTrader.Data.Bars b = r.Bars;
+						for (int i = 0; i < b.Count; i++)
+						{
+							long open = Unix(ToUtc(b.GetTime(i))) - 60; // NinjaTrader stamps a bar with its close time
+							if (open < from || open >= to) continue;
+							rows.Add("[" + open + "," + D(b.GetOpen(i)) + "," + D(b.GetHigh(i)) + "," + D(b.GetLow(i)) + "," + D(b.GetClose(i)) + "," + b.GetVolume(i).ToString(CultureInfo.InvariantCulture) + "]");
+						}
+					}
+					catch (Exception ex) { err = ex.Message; }
+					finally { finished.Set(); }
+				});
+				if (!finished.Wait(90000)) err = "no answer from the data connection";
+			}
+			catch (Exception ex) { err = ex.Message; }
+			finally { if (br != null) try { br.Dispose(); } catch { } }
+			if (err != null) { Log("price data for " + contract + ": " + err + " — will try again"); return; }
+			// nothing back and no data connection: try again later rather than mark the day as done
+			if (rows.Count == 0 && !AnyConnection()) return;
+			PostBars(symbol, from, to, rows);
+			if (!priceAnnounced || rows.Count > 0) { priceAnnounced = true; Log("price data: sent " + rows.Count + " one-minute bar(s) of " + contract); }
+		}
+
+		private void PostBars(string symbol, long from, long to, List<string> rows)
+		{
+			Post("{\"source\":\"ninjatrader\",\"symbol\":" + Quote(symbol) + ",\"from\":" + from + ",\"to\":" + to + ",\"bars\":[" + string.Join(",", rows) + "]}", ApiUrl("/api/candles/ingest"));
+		}
+
+		private static bool AnyConnection()
+		{
+			try { lock (NinjaTrader.Cbi.Connection.Connections) return NinjaTrader.Cbi.Connection.Connections.Any(c => c.Status == ConnectionStatus.Connected); }
+			catch { return true; }
+		}
+
+		// http://127.0.0.1:5173/api/connect/ingest → http://127.0.0.1:5173 + path
+		private string ApiUrl(string path)
+		{
+			int i = url.IndexOf("/api/", StringComparison.OrdinalIgnoreCase);
+			return (i > 0 ? url.Substring(0, i) : url.TrimEnd('/')) + path;
+		}
+
+		private static DateTime ToPlatform(long unix)
+		{
+			DateTime utc = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unix);
+			try { return TimeZoneInfo.ConvertTimeFromUtc(utc, platformZone ?? TimeZoneInfo.Local); } catch { return utc.ToLocalTime(); }
+		}
+		private static long Unix(DateTime utc) { return (long)(utc - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds; }
+		private static string D(double v) { return v.ToString("R", CultureInfo.InvariantCulture); }
+
+		private string Get(string target)
+		{
+			var req = (HttpWebRequest)WebRequest.Create(target);
+			req.Method = "GET";
+			req.Timeout = 10000;
+			if (!string.IsNullOrEmpty(token)) req.Headers["Authorization"] = "Bearer " + token;
+			using (var res = (HttpWebResponse)req.GetResponse())
+			using (var r = new StreamReader(res.GetResponseStream())) return r.ReadToEnd();
+		}
+
+		private string Post(string json, string target = null)
+		{
+			var req = (HttpWebRequest)WebRequest.Create(target ?? url);
 			req.Method = "POST";
 			req.ContentType = "application/json";
 			req.Timeout = 10000;

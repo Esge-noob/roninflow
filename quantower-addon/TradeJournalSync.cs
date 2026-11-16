@@ -2,6 +2,8 @@
 //
 // Sends every fill (trade) from your connected Quantower accounts to RoninFlow, plus account balances.
 // The journal pairs fills into round-trip trades. Read-only: it never places or changes orders.
+// Price data: every minute it asks the journal which days you traded still lack 1-minute bars (GET /api/candles/wanted),
+// loads them from your Quantower connection and sends them (POST /api/candles/ingest) for the diary charts.
 //
 // Install: npm run addon:qt (builds it into Quantower's Strategies folder; needs the free .NET SDK).
 // Then in Quantower: Strategies Manager → "RoninFlow Sync" → Run.
@@ -9,6 +11,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -19,7 +22,7 @@ namespace TradeJournal
 {
     public sealed class TradeJournalSync : Strategy
     {
-        private const string SyncVersion = "1.0.0-beta";
+        private const string SyncVersion = "1.1.0-beta";
 
         [InputParameter("Journal address", 0)]
         public string JournalUrl = "http://127.0.0.1:5173/api/connect/ingest";
@@ -38,6 +41,9 @@ namespace TradeJournal
         private System.Threading.Timer timer;
         private int busy, failures;
         private DateTime lastHeartbeat = DateTime.MinValue;
+        private DateTime nextPrices = DateTime.UtcNow.AddSeconds(20);
+        private int priceBusy;
+        private bool priceAnnounced;
 
         public TradeJournalSync() : base()
         {
@@ -74,7 +80,7 @@ namespace TradeJournal
             catch (Exception e) { this.Log("[RoninFlow] couldn't load trade history: " + e.Message, StrategyLoggingLevel.Error); }
         }
 
-        private void OnTrade(Trade t) { this.Enqueue(t); }
+        private void OnTrade(Trade t) { if (this.Enqueue(t)) this.nextPrices = DateTime.UtcNow.AddSeconds(15); }
 
         private bool Enqueue(Trade t)
         {
@@ -130,8 +136,98 @@ namespace TradeJournal
                     }
                 }
                 if ((DateTime.UtcNow - this.lastHeartbeat).TotalSeconds >= 30) this.Heartbeat();
+                if (DateTime.UtcNow >= this.nextPrices)
+                {
+                    this.nextPrices = DateTime.UtcNow.AddSeconds(60);
+                    if (Interlocked.Exchange(ref this.priceBusy, 1) == 0)
+                        Task.Run(() => { try { this.PriceRound(); } finally { Interlocked.Exchange(ref this.priceBusy, 0); } });
+                }
             }
             finally { Interlocked.Exchange(ref this.busy, 0); }
+        }
+
+        // ---------------------------------------------------------------- price data (1-minute bars for the diary charts)
+        private void PriceRound()
+        {
+            try
+            {
+                string list = this.Get(this.ApiUrl("/api/candles/wanted?source=quantower&format=lines"));
+                if (list == null) return;
+                int done = 0;
+                foreach (string raw in list.Split('\n'))
+                {
+                    string[] p = raw.Trim().Split('|');
+                    long from, to;
+                    if (p.Length < 4 || !long.TryParse(p[2], out from) || !long.TryParse(p[3], out to) || to <= from) continue;
+                    if (this.SendBars(p[0], p[1], from, to) && ++done >= 6) break; // the rest next minute
+                }
+            }
+            catch (Exception e) { this.Log("[RoninFlow] price data: " + e.Message, StrategyLoggingLevel.Error); }
+        }
+
+        /// <summary>False when Quantower doesn't have that symbol right now (nothing was asked for).</summary>
+        private bool SendBars(string symbol, string contract, long from, long to)
+        {
+            global::TradingPlatform.BusinessLayer.Symbol sym = null;
+            try { sym = QCore.Symbols.FirstOrDefault(s => s != null && (s.Name == contract || s.Id == contract)); } catch { }
+            if (sym == null)
+            {
+                // not loaded right now (another connection, or an expired contract) — try again later
+                return false;
+            }
+            var rows = new List<string>();
+            HistoricalData hd = null;
+            try
+            {
+                DateTime f = DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime, t = DateTimeOffset.FromUnixTimeSeconds(to).UtcDateTime;
+                hd = sym.GetHistory(Period.MIN1, f, t);
+                if (hd == null) return true;
+                for (int i = 0; i < hd.Count; i++)
+                {
+                    var b = hd[i, SeekOriginHistory.Begin] as HistoryItemBar;
+                    if (b == null) continue;
+                    DateTime left = b.TimeLeft.Kind == DateTimeKind.Local ? b.TimeLeft.ToUniversalTime() : b.TimeLeft;
+                    long open = new DateTimeOffset(DateTime.SpecifyKind(left, DateTimeKind.Utc)).ToUnixTimeSeconds();
+                    if (open < from || open >= to) continue;
+                    rows.Add("[" + open + "," + D(b.Open) + "," + D(b.High) + "," + D(b.Low) + "," + D(b.Close) + "," + D(b.Volume) + "]");
+                }
+            }
+            catch (Exception e) { this.Log("[RoninFlow] price data for " + contract + ": " + e.Message + " — will try again", StrategyLoggingLevel.Error); return true; }
+            finally { var d = hd as IDisposable; if (d != null) try { d.Dispose(); } catch { } }
+            var body = new StringBuilder("{\"source\":\"quantower\",");
+            Str(body, "symbol", symbol);
+            body.Append(",\"from\":").Append(from).Append(",\"to\":").Append(to).Append(",\"bars\":[").Append(string.Join(",", rows)).Append("]}");
+            if (this.Post(body.ToString(), this.ApiUrl("/api/candles/ingest")) && (!this.priceAnnounced || rows.Count > 0))
+            {
+                this.priceAnnounced = true;
+                this.Log("[RoninFlow] price data: sent " + rows.Count + " one-minute bar(s) of " + contract);
+            }
+            return true;
+        }
+
+        // http://127.0.0.1:5173/api/connect/ingest → http://127.0.0.1:5173 + path
+        private string ApiUrl(string path)
+        {
+            string u = this.JournalUrl.Trim();
+            int i = u.IndexOf("/api/", StringComparison.OrdinalIgnoreCase);
+            return (i > 0 ? u.Substring(0, i) : u.TrimEnd('/')) + path;
+        }
+
+        private string Get(string target)
+        {
+            try
+            {
+                var msg = new HttpRequestMessage(System.Net.Http.HttpMethod.Get, target);
+                if (!string.IsNullOrWhiteSpace(this.Token)) msg.Headers.TryAddWithoutValidation("Authorization", "Bearer " + this.Token.Trim());
+                using (HttpResponseMessage res = http.SendAsync(msg).GetAwaiter().GetResult())
+                    return res.IsSuccessStatusCode ? res.Content.ReadAsStringAsync().GetAwaiter().GetResult() : null;
+            }
+            catch { return null; }
+        }
+
+        private static string D(double v)
+        {
+            return double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("R", CultureInfo.InvariantCulture);
         }
 
         private void Heartbeat()
@@ -153,11 +249,11 @@ namespace TradeJournal
             this.Post("{\"source\":\"quantower\",\"heartbeat\":{\"platform\":\"Quantower\",\"version\":\"" + SyncVersion + "\",\"accounts\":[" + string.Join(",", accts) + "],\"balances\":[" + string.Join(",", bals) + "]}}");
         }
 
-        private bool Post(string json)
+        private bool Post(string json, string target = null)
         {
             try
             {
-                var msg = new HttpRequestMessage(System.Net.Http.HttpMethod.Post, this.JournalUrl.Trim()) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+                var msg = new HttpRequestMessage(System.Net.Http.HttpMethod.Post, target ?? this.JournalUrl.Trim()) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
                 if (!string.IsNullOrWhiteSpace(this.Token)) msg.Headers.TryAddWithoutValidation("Authorization", "Bearer " + this.Token.Trim());
                 using (HttpResponseMessage res = http.SendAsync(msg).GetAwaiter().GetResult())
                 {
