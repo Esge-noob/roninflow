@@ -122,7 +122,7 @@ export default function DashGrid({ layout, editing, onChange, renderItem, render
       <div ref={ref} className={`dgrid mobile ${editing ? 'editing' : ''}`}>
         {editing && <div className="dgrid-note">Moving and resizing is only available on a wider screen. You can still add, remove and configure widgets here.</div>}
         {readingOrder(layout).map((it) => (
-          <div key={it.id} className="gw" data-id={it.id} style={{ height: Math.max(it.h, mobileMin(it)) * ROW_H + (Math.max(it.h, mobileMin(it)) - 1) * GAP }}>
+          <div key={it.id} className={`gw ${MOBILE_FIT.has(it.id) ? 'gw-fit' : ''}`} data-id={it.id} style={{ height: MOBILE_FIT.has(it.id) ? undefined : Math.max(it.h, mobileMin(it)) * ROW_H + (Math.max(it.h, mobileMin(it)) - 1) * GAP }}>
             <div className="gw-body">{renderItem(it)}</div>
             {chrome(it, false)}
           </div>
@@ -157,6 +157,8 @@ export default function DashGrid({ layout, editing, onChange, renderItem, render
 }
 
 // on a phone a widget is the full width, so a few need a bit more height than on desktop
+// on a phone these size to their content instead of their desktop height (the calendar's tiles get much smaller)
+const MOBILE_FIT = new Set(['calendar']);
 const mobileMin = (it) => ({ hold: 5, longShort: 4, payouts: 4, progress: 4 }[it.id] || 0);
 
 function GridCells({ colW, rows }) {
