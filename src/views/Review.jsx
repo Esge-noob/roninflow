@@ -4,8 +4,7 @@ import { X, Maximize2, ChevronLeft, ChevronRight, ChartArea, ChartColumn, ChartC
 import { useStore, useAccountTrades, navigate } from '../store/store';
 import { AccountPicker, Fit, Seg, Private, Modal, ModalHead, useToast } from '../components/ui';
 import { PnlChart, MarkerScale } from '../components/Charts';
-import { RegimeCards } from '../components/Playbook';
-import { playbookOf } from '../lib/playbook';
+import { playbookOf, regimeGroups } from '../lib/playbook';
 import { DiaryDayModal } from './Diary';
 import { StatLabel } from '../components/StatInfo';
 import { statKey } from '../lib/statInfo';
@@ -574,14 +573,79 @@ function PeriodPnl({ period, label, net }) {
 // ---------------------------------------------------------------- market conditions & strategies
 const PERIOD_WORD = { monthly: 'month', quarterly: 'quarter', yearly: 'year' };
 
+/** A strategy or market condition: name, a small P&L curve and its headline numbers. Click for the full stats. */
+export function GroupCard({ name, count, badge, color, trades, none, onClick, children }) {
+  const st = useMemo(() => summarize(trades), [trades]);
+  return (
+    <button className={`rv-strat ${none ? 'none' : ''}`} style={color ? { '--rg': color } : undefined} onClick={onClick}>
+      <div className="row between gap8">
+        <b className="truncate" style={{ fontWeight: 600 }}>{color && <span className="rv-strat-dot" />}{name}</b>
+        <span className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{count}</span>
+      </div>
+      {badge && <div className="row gap6"><span className="badge neutral">{badge}</span></div>}
+      {children}
+      <div className="rv-strat-curve">{trades.length ? <PnlChart data={curveOf(trades)} height={54} compact /> : <div className="rv-strat-nil">No trades</div>}</div>
+      <div className="rv-strat-stats">
+        <div><span>P&L</span><b className={trades.length ? tone.money(st.net) : 'muted2'}><Private>{trades.length ? money0(st.net) : '—'}</Private></b></div>
+        <div><span>Win rate</span><b className={trades.length ? tone.winRate(st.winRate) : 'muted2'}>{trades.length ? `${Math.round(st.winRate)}%` : '—'}</b></div>
+        <div><span>PF</span><b className={trades.length ? tone.pf(st.profitFactor) : 'muted2'}>{trades.length ? pfText(st.profitFactor) : '—'}</b></div>
+      </div>
+    </button>
+  );
+}
+
+/** Full stats for a group of trades (one strategy, one market condition…) in a pop-up. */
+export function GroupStatsModal({ title, badge, color, sub, notes, trades, action, onClose }) {
+  const m = useMetrics(trades);
+  return createPortal(
+    <Modal open onClose={onClose} width={1100} className="rv-strat-modal">
+      <ModalHead
+        title={<span className="row gap8" style={color ? { '--rg': color } : undefined}>{color ? <span className="rv-strat-dot big" /> : <Target size={17} className="muted" />} {title}{badge && <span className="badge neutral">{badge}</span>}</span>}
+        sub={sub}
+        onClose={onClose}
+      />
+      <div className="modal-body col gap16">
+        {notes?.length > 0 && <div className="rv-strat-notes">{notes.map(([k, v]) => <div key={k}><i>{k}:</i> {v}</div>)}</div>}
+        {trades.length ? <>
+          <Headline m={m} />
+          <MetricGrid m={m} />
+          <EquityPanel trades={trades} title="Equity curve" height={220} />
+        </> : <div className="empty" style={{ padding: 30 }}>No trades yet.</div>}
+        {action && <div className="row" style={{ justifyContent: 'flex-end' }}>{action}</div>}
+      </div>
+    </Modal>,
+    document.body,
+  );
+}
+
+export const regimeNotes = (r) => [r.trigger && ['How to spot it', r.trigger], r.confirmation && ['Confirmation', r.confirmation]].filter(Boolean);
+
 /** How each market condition went in this period (hidden until market conditions are set up). */
 function PeriodConditions({ period, trades }) {
   const { state } = useStore();
-  if (!playbookOf(state).regimes?.length) return null;
+  const [open, setOpen] = useState(null);
+  const regimes = playbookOf(state).regimes || [];
+  const { groups, untagged } = useMemo(() => regimeGroups(trades, state.diary, regimes), [trades, state.diary, regimes]);
+  if (!regimes.length || !trades.length) return null;
+  const nDays = (n) => `${n} day${n === 1 ? '' : 's'}`;
+  const cards = [...groups].sort((a, b) => (b.days ? 1 : 0) - (a.days ? 1 : 0));
   return (
     <div className="panel" style={{ padding: 18 }}>
-      <div className="card-title" style={{ marginBottom: 12 }}>Market conditions this {PERIOD_WORD[period.type]}</div>
-      <RegimeCards trades={trades} lookback={100000} caption={period.label} />
+      <div className="panel-head" style={{ marginBottom: 12 }}>
+        <div className="card-title">Market conditions this {PERIOD_WORD[period.type]}</div>
+        <span className="muted hide-m" style={{ fontSize: 12.5 }}>Click a condition for its stats</span>
+      </div>
+      <div className="rv-strats">
+        {cards.map((r) => <GroupCard key={r.id} name={r.name} badge={r.style} color={r.color} count={nDays(r.days)} trades={r.trades} onClick={() => setOpen(r)} />)}
+        {untagged.days > 0 && <GroupCard none name="No condition logged" count={nDays(untagged.days)} trades={untagged.trades} onClick={() => setOpen({ id: '', name: 'No condition logged', ...untagged })} />}
+      </div>
+      {open && (
+        <GroupStatsModal
+          title={open.name} badge={open.style} color={open.color} trades={open.trades} notes={regimeNotes(open)}
+          sub={`${period.label} · ${nDays(open.days)} · ${nTrades(open.trades.length)}${open.id ? '' : ' — log the condition in each day’s pre-session check-in'}`}
+          onClose={() => setOpen(null)}
+        />
+      )}
     </div>
   );
 }
@@ -596,11 +660,10 @@ function PeriodStrategies({ period, trades }) {
     const known = new Map(state.strategies.map((x) => [x.id, x]));
     const by = new Map();
     for (const t of trades) { const k = known.has(t.strategyId) ? t.strategyId : ''; (by.get(k) || by.set(k, []).get(k)).push(t); }
-    return [...by].map(([id, list]) => ({ id, name: id ? known.get(id).name : 'No strategy', category: id ? known.get(id).category : '', trades: list, st: summarize(list) }))
-      .sort((a, b) => (a.id ? 0 : 1) - (b.id ? 0 : 1) || b.st.net - a.st.net);
+    return [...by].map(([id, list]) => ({ id, name: id ? known.get(id).name : 'No strategy', category: id ? known.get(id).category : '', trades: list, net: summarize(list).net }))
+      .sort((a, b) => (a.id ? 0 : 1) - (b.id ? 0 : 1) || b.net - a.net);
   }, [trades, state.strategies]);
   if (!trades.length) return null;
-  const sel = open && rows.find((r) => r.id === open.id);
   return (
     <div className="panel" style={{ padding: 18 }}>
       <div className="panel-head" style={{ marginBottom: 12 }}>
@@ -608,43 +671,17 @@ function PeriodStrategies({ period, trades }) {
         <span className="muted hide-m" style={{ fontSize: 12.5 }}>Click a strategy for its stats</span>
       </div>
       <div className="rv-strats">
-        {rows.map((r) => (
-          <button key={r.id || 'none'} className={`rv-strat ${r.id ? '' : 'none'}`} onClick={() => setOpen(r)}>
-            <div className="row between gap8">
-              <b className="truncate" style={{ fontWeight: 600 }}>{r.name}</b>
-              <span className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{nTrades(r.st.count)}</span>
-            </div>
-            <div className="rv-strat-curve"><PnlChart data={curveOf(r.trades)} height={54} compact /></div>
-            <div className="rv-strat-stats">
-              <div><span>P&L</span><b className={tone.money(r.st.net)}><Private>{money0(r.st.net)}</Private></b></div>
-              <div><span>Win rate</span><b className={tone.winRate(r.st.winRate)}>{Math.round(r.st.winRate)}%</b></div>
-              <div><span>PF</span><b className={tone.pf(r.st.profitFactor)}>{pfText(r.st.profitFactor)}</b></div>
-            </div>
-          </button>
-        ))}
+        {rows.map((r) => <GroupCard key={r.id || 'none'} none={!r.id} name={r.name} count={nTrades(r.trades.length)} trades={r.trades} onClick={() => setOpen(r)} />)}
       </div>
       {!state.strategies.length && <div className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>Create strategies on the Strategy page and pick one on each trade to compare them here.</div>}
-      {sel && createPortal(<StrategyPeriodModal row={sel} period={period} onClose={() => setOpen(null)} />, document.body)}
+      {open && (
+        <GroupStatsModal
+          title={open.name} badge={open.category} trades={open.trades} sub={`${period.label} · ${nTrades(open.trades.length)}`}
+          action={open.id && <button className="btn" onClick={() => { setOpen(null); navigate(`strategy/${open.id}`); }}>Open strategy <ArrowRight size={14} /></button>}
+          onClose={() => setOpen(null)}
+        />
+      )}
     </div>
-  );
-}
-
-function StrategyPeriodModal({ row, period, onClose }) {
-  const m = useMetrics(row.trades);
-  return (
-    <Modal open onClose={onClose} width={1100} className="rv-strat-modal">
-      <ModalHead
-        title={<span className="row gap8"><Target size={17} className="muted" /> {row.name}{row.category && <span className="badge neutral">{row.category}</span>}</span>}
-        sub={`${period.label} · ${nTrades(row.trades.length)}`}
-        onClose={onClose}
-      />
-      <div className="modal-body col gap16">
-        <Headline m={m} />
-        <MetricGrid m={m} />
-        <EquityPanel trades={row.trades} title="Equity curve" height={220} />
-        {row.id && <div className="row" style={{ justifyContent: 'flex-end' }}><button className="btn" onClick={() => { onClose(); navigate(`strategy/${row.id}`); }}>Open strategy <ArrowRight size={14} /></button></div>}
-      </div>
-    </Modal>
   );
 }
 

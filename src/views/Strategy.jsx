@@ -2,8 +2,9 @@ import { StatLabel } from '../components/StatInfo';
 import { useMemo, useState } from 'react';
 import { Settings, LayoutGrid, List, Plus, ChevronDown, ChevronLeft, ChevronRight, X, Trash, Pencil, ArrowLeft, ImagePlus, Check, Target, Link as LinkIcon } from 'lucide-react';
 import { useStore, navigate, useAccountTrades } from '../store/store';
-import { RegimeCards, PlaybookSettings } from '../components/Playbook';
-import { playbookOf, regimeStats } from '../lib/playbook';
+import { PlaybookSettings } from '../components/Playbook';
+import { GroupStatsModal, regimeNotes } from './Review';
+import { playbookOf, regimeStats, regimeGroups } from '../lib/playbook';
 import { groupByDay, keyOf } from '../lib/stats';
 import { Seg, Modal, Popover, Money, Confirm, useToast, fileToDataUrl, CloseX } from '../components/ui';
 import { PnlChart } from '../components/Charts';
@@ -232,6 +233,10 @@ function MarketConditions() {
     const ds = groupByDay(trades).filter((d) => d.date >= from && !ids.has(state.diary[d.date]?.pre?.regime));
     return { days: ds.length, net: ds.reduce((a, d) => a + d.net, 0) };
   }, [trades, state.diary, pb.regimes, lookback]);
+  const caption = LOOKBACKS.find((l) => l.value === lookback)?.label;
+  const [open, setOpen] = useState(null);
+  const groups = useMemo(() => regimeGroups(trades, state.diary, pb.regimes, lookback >= 100000 ? '' : keyOf(new Date(Date.now() - lookback * 86400e3))), [trades, state.diary, pb.regimes, lookback]);
+  const sel = open && groups.groups.find((g) => g.id === open);
   const best = [...stats].filter((r) => r.days >= 3).sort((a, b) => b.ev - a.ev)[0];
   const worst = [...stats].filter((r) => r.days >= 3).sort((a, b) => a.ev - b.ev)[0];
   return (
@@ -255,7 +260,31 @@ function MarketConditions() {
               {worst && worst.ev < 0 && <span className="muted"> · consider sitting out <b className="neg">{worst.name}</b> or trading it smaller.</span>}
             </div>
           )}
-          <RegimeCards trades={trades} lookback={lookback} caption={LOOKBACKS.find((l) => l.value === lookback)?.label} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(320px,1fr))', gap: 18 }}>
+            {stats.map((r) => {
+              const g = groups.groups.find((x) => x.id === r.id);
+              return (
+                <div key={r.id} className="strat-card cond" style={{ '--rg': r.color }} onClick={() => setOpen(r.id)}>
+                  <div className="row between gap8"><b style={{ fontWeight: 600, fontSize: 16 }}>{r.name}</b>{r.style && <span className="badge neutral">{r.style}</span>}</div>
+                  {r.trigger && <div className="cond-txt"><i>How to spot it:</i> {r.trigger}</div>}
+                  {g?.trades.length ? <div className="strat-curve" title="P&L curve"><PnlChart data={[{ label: '', y: 0 }, ...equityCurve(g.trades).map((c) => ({ label: '', y: c.y }))]} height={70} compact /></div> : <div className="strat-curve empty">No trading days logged in this condition</div>}
+                  <div className="row gap24" style={{ fontSize: 13 }}>
+                    <div><div className="muted">Net P&L</div>{r.days ? <Money v={r.net} colored /> : '—'}</div>
+                    <div><div className="muted">Win rate</div>{r.days ? `${Math.round(r.winRate)}%` : '—'}</div>
+                    <div><div className="muted">Days</div>{r.days}</div>
+                    <div><div className="muted">EV / day</div>{r.days ? <Money v={r.ev} colored /> : '—'}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {sel && (
+            <GroupStatsModal
+              title={sel.name} badge={sel.style} color={sel.color} trades={sel.trades} notes={regimeNotes(sel)}
+              sub={`${caption} · ${sel.days} trading day${sel.days === 1 ? '' : 's'} · ${sel.trades.length} trade${sel.trades.length === 1 ? '' : 's'}`}
+              onClose={() => setOpen(null)}
+            />
+          )}
           <div className="muted" style={{ fontSize: 12.5 }}>
             {untagged.days > 0 ? `${untagged.days} trading day${untagged.days === 1 ? '' : 's'} in this period had no market condition logged — set it in the pre-session check-in or on the day page.` : 'Every trading day in this period has a market condition logged.'}
           </div>

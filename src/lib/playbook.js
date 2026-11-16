@@ -160,6 +160,20 @@ export function regimeStats(trades, diary, regimes, lookback = 90) {
   });
 }
 
+/**
+ * Trades grouped by the market condition logged for their day (from `from` on, a YYYY-MM-DD key or ''):
+ * one group per condition plus `untagged` for days with none logged.
+ */
+export function regimeGroups(trades, diary, regimes, from = '') {
+  const ids = new Set(regimes.map((r) => r.id));
+  const days = groupByDay(trades).filter((d) => d.date >= from);
+  const pick = (test) => { const ds = days.filter(test); return { days: ds.length, trades: ds.flatMap((d) => d.trades), dayNets: ds.map((d) => d.net) }; };
+  return {
+    groups: regimes.map((r) => ({ ...r, ...pick((d) => diary[d.date]?.pre?.regime === r.id) })),
+    untagged: pick((d) => !ids.has(diary[d.date]?.pre?.regime)),
+  };
+}
+
 /** Names of the edge blockers flagged on a trade. */
 export const tradeBlockers = (t) => (Array.isArray(t?.blockers) ? t.blockers : []);
 
