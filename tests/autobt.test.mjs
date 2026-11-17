@@ -101,3 +101,46 @@ test('sweep: every combination, a robustness score from its neighbours; walk-for
   assert.ok(mc.net.p5 <= mc.net.p50 && mc.net.p50 <= mc.net.p95 && mc.dd.p50 <= mc.dd.p95);
   assert.deepEqual(E.monteCarlo([{ pnl: 50 }, { pnl: -30 }], 100), E.monteCarlo([{ pnl: 50 }, { pnl: -30 }], 100), 'same seed, same answer');
 });
+
+test('stop and limit entries, trailing stop, break-even, risk sizing and MAE / MFE', () => {
+  // price rises 0.25 a minute from 100 after minute 5, then falls back
+  const px = (k) => (k < 5 ? 100 : k < 45 ? 100 + (k - 5) * 0.25 : 110 - (k - 45) * 0.5);
+  const d = data(1, 80, (i, k) => { const p = px(k); return [p, p + 0.25, p - 0.25, p]; });
+  const sig = { long: [{ a: { k: 'close' }, op: 'xa', b: { k: 'value', v: 100.1 } }] };
+  // stop entry 2 ticks above the signal bar's high
+  const st = E.run(d, spec({ ...sig, entry: { type: 'stop', off: 2, expire: 3 } })).trades[0];
+  const sigBar = 6; // the close crosses 100.1 at minute 6 (100.25)
+  assert.equal(st.ep, d.h[sigBar] + 0.5, 'filled at the stop level');
+  // limit entry 4 ticks below the signal close never fills while price keeps rising
+  assert.equal(E.run(d, spec({ ...sig, entry: { type: 'limit', off: 4, expire: 3 } })).trades.length, 0);
+  // trailing stop 8 ticks: exits on the way down, near the top
+  const tr = E.run(d, spec({ ...sig, trail: { type: 'ticks', v: 8 } })).trades[0];
+  assert.equal(tr.r, 'trail');
+  assert.ok(tr.xp >= 107.5 && tr.xp <= 108.5, `trailed out at ${tr.xp}`);
+  assert.ok(tr.mfe > 0 && tr.mae <= 0);
+  // break-even after 1R with a 4-tick stop → stopped at entry once it fails
+  const be = E.run(d, spec({ ...sig, stop: { type: 'ticks', v: 4 }, be: { type: 'r', v: 1, plus: 0 } })).trades[0];
+  assert.equal(be.r, 'stop');
+  assert.equal(be.xp, be.ep, 'stopped at break-even');
+  // risk sizing: $100 per trade, 4-tick (1 point) stop, $2/point → 50 contracts
+  assert.equal(E.run(d, spec({ ...sig, stop: { type: 'ticks', v: 4 }, sizing: { type: 'risk', risk: 100, max: 1000 } })).trades[0].q, 50);
+});
+
+test('TradingView-style intrabar path: a bar opening near its high goes up first', () => {
+  const d = data(1, 30, (i, k) => (k < 5 ? flat(100) : k === 5 ? [100, 101, 100, 101] : k === 6 ? [101, 101, 101, 101] : k === 8 ? [103.5, 104, 98, 100] : flat(101)));
+  const s = spec({ long: [{ a: { k: 'close' }, op: 'xa', b: { k: 'value', v: 100.5 } }], stop: { type: 'ticks', v: 8 }, target: { type: 'ticks', v: 8 } });
+  assert.equal(E.run(d, s).trades[0].r, 'stop', 'worst case by default');
+  assert.equal(E.run(d, { ...s, path: 'ohlc' }).trades[0].r, 'target', 'open nearer the high: target first');
+});
+
+test('report figures', () => {
+  const T = (pnl, d = 1, day = 1, mae = 0, mfe = 0) => ({ pnl, d, day, e: day * 86400, x: day * 86400 + 600, bars: 5, fee: 2, mae, mfe });
+  const s = E.stats([T(100, 1, 1, -20, 150), T(-50, -1, 2, -60, 10), T(-50, 1, 3, -80, 5), T(200, 1, 4, -10, 220), T(0, -1, 5)], 10000);
+  assert.equal(s.net, 200); assert.equal(s.grossProfit, 300); assert.equal(s.grossLoss, -100); assert.equal(s.fees, 10);
+  assert.equal(s.even, 1); assert.equal(s.maxConsecLosses, 2); assert.equal(s.largestWin, 200); assert.equal(s.largestLoss, -50);
+  assert.equal(s.maxDD, 100, 'close to close');
+  assert.equal(s.maxDDIntra, 130, 'intrabar: 100 below the peak, then 30 more inside the third trade (MAE 80 from −50)');
+  assert.deepEqual([s.long.trades, s.short.trades, s.long.net, s.short.net], [3, 2, 250, -50]);
+  assert.equal(s.returnPct, 2);
+  assert.ok(s.sortino > s.sharpe, 'Sortino only counts the down days');
+});

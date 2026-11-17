@@ -1,16 +1,18 @@
 // Automated backtests: build a strategy from rules (or code), run it over the 1-minute history your platform add-on
 // downloaded, and check the result for luck and overfitting — out-of-sample lock, parameter sweeps that favour
 // broad plateaus, walk-forward, Monte Carlo, slippage stress and a random-entry baseline.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, ArrowLeft, Play, Trash, Download, Square, Lock, Unlock, Copy, AlertTriangle, CheckCircle2, Info, Code2, ListChecks, X } from 'lucide-react';
+import { Plus, ArrowLeft, Play, Trash, Download, Square, Lock, Unlock, Copy, AlertTriangle, CheckCircle2, Info, Code2, ListChecks, X, FileDown } from 'lucide-react';
 import { useStore, navigate } from '../store/store';
 import { Seg, Modal, ModalHead, Money, Confirm, useToast } from '../components/ui';
 import { PnlChart } from '../components/Charts';
 import { fmtMoney, uid, keyOf, pfText, summarize } from '../lib/stats';
-import { pointValueOf, rootOf } from '../lib/backtest';
+import { pointValueOf, rootOf, localIso } from '../lib/backtest';
 import { TICKS } from '../components/ExecChart';
 import { engine, loadSeries, stopEngine } from '../lib/autoWorker';
+
+const ChartStudio = lazy(() => import('../components/ChartStudio'));
 
 // ---------------------------------------------------------------------------------------------- vocabulary
 const KINDS = [
@@ -67,7 +69,10 @@ const TEMPLATES = [
   { id: 'blank', name: 'Blank — my own rules', desc: 'Start from nothing.', spec: { tf: 5, long: [], short: [] }, params: [] },
   { id: 'code', name: 'Code (JavaScript)', desc: 'Write onBar() yourself for anything the rules can’t say.', spec: { tf: 5, mode: 'code', code: CODE_TEMPLATE, stop: { type: 'atr', v: 1.5, n: 14 }, target: { type: 'r', v: 2 } }, params: [{ name: 'fast', value: 9, min: 5, max: 15, step: 2 }, { name: 'slow', value: 21, min: 15, max: 45, step: 5 }] },
 ];
-const DEFAULT_SPEC = { mode: 'rules', tf: 5, side: 'both', long: [], short: [], exitWhen: [], stop: { type: 'ticks', v: 40 }, target: { type: 'r', v: 2 }, maxBars: '', entryFrom: '06:30', entryTo: '11:30', flatAt: '12:55', flatEod: true, maxTradesDay: 3, reverse: false, qty: 1, fee: 0, slip: 1, code: CODE_TEMPLATE };
+const DEFAULT_SPEC = { mode: 'rules', tf: 5, side: 'both', long: [], short: [], exitWhen: [], entry: { type: 'market', off: 1, expire: 3 }, stop: { type: 'ticks', v: 40 }, target: { type: 'r', v: 2 }, trail: { type: 'none', v: 20, n: 14 }, be: { type: 'none', v: 1, plus: 1 }, sizing: { type: 'fixed', risk: 200, max: 10 }, path: 'worst', initial: 50000, maxBars: '', entryFrom: '06:30', entryTo: '11:30', flatAt: '12:55', flatEod: true, maxTradesDay: 3, reverse: false, qty: 1, fee: 0, slip: 1, code: CODE_TEMPLATE };
+const ENTRY_TYPES = [['market', 'Market'], ['stop', 'Stop (breakout)'], ['limit', 'Limit (pullback)']];
+const TRAIL_TYPES = [['none', 'Off'], ['ticks', 'Ticks'], ['atr', '× ATR']];
+const BE_TYPES = [['none', 'Off'], ['ticks', 'After ticks'], ['r', 'After × stop (R)']];
 
 const hashOf = (o) => { const s = JSON.stringify(o); let h = 0; for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
 const yesterday = () => keyOf(new Date(Date.now() - 86400e3));
@@ -233,7 +238,7 @@ export function AutoEditor({ id }) {
   const runIt = () => go(async () => {
     await prepare();
     setBusy({ what: 'Running…' });
-    const r = await engine.analyze(specFull, P0, { is, oos: s.oos ? oosR : null });
+    const r = await engine.analyze(specFull, P0, { is, oos: s.oos ? oosR : null, initial: Number(specFull.initial) || 50000 });
     setRes({ ...r, hash: nowHash });
     setTab('results');
     if (lastHash.current !== nowHash && s.lastHash !== nowHash) patch((x) => ({ variations: (x.variations || 0) + 1, lastHash: nowHash, last: { net: r.is.stats.net, trades: r.is.stats.trades, pf: r.is.stats.pf } }));
@@ -265,7 +270,7 @@ export function AutoEditor({ id }) {
     setUnlock(false);
     await prepare();
     setBusy({ what: 'Testing on the locked period…' });
-    const r = await engine.analyze(specFull, P0, { is, oos: oosR, checks: false });
+    const r = await engine.analyze(specFull, P0, { is, oos: oosR, checks: false, initial: Number(specFull.initial) || 50000 });
     patch({ oos: { at: new Date().toISOString(), hash: nowHash, stats: r.oos.stats, params: P0, from: splitDay, to } });
     setRes((x) => ({ ...(x || r), oos: r.oos, is: x?.is || r.is, hash: nowHash }));
     toast('Out-of-sample result recorded');
@@ -298,7 +303,7 @@ export function AutoEditor({ id }) {
         </div>
         <div className="col gap16" style={{ minWidth: 0 }}>
           <Seg value={tab} onChange={setTab} options={[{ value: 'results', label: 'Results' }, { value: 'optimize', label: 'Optimize' }, { value: 'walk', label: 'Walk-forward' }]} />
-          {tab === 'results' && <Results s={s} res={res} fresh={res?.hash === nowHash} oosFresh={oosFresh} splitDay={splitDay} to={to} onUnlock={() => setUnlock(true)} busy={!!busy} />}
+          {tab === 'results' && <Results s={s} res={res} fresh={res?.hash === nowHash} oosFresh={oosFresh} splitDay={splitDay} to={to} onUnlock={() => setUnlock(true)} busy={!!busy} from={from} />}
           {tab === 'optimize' && <Optimize s={s} patch={patch} sw={sw} grid={grid} combos={combos} onRun={sweepIt} busy={!!busy} />}
           {tab === 'walk' && <WalkForward s={s} patch={patch} wf={wf} grid={grid} combos={combos} onRun={wfIt} busy={!!busy} />}
         </div>
@@ -323,22 +328,40 @@ function DataPanel({ s, patch, hist, from, to, splitDay }) {
       <div className="panel-head"><div className="card-title">Price history</div>{cov?.days ? <span className="muted" style={{ fontSize: 12.5 }}>{cov.days} days of 1-minute bars</span> : null}</div>
       <div className="col gap10" style={{ fontSize: 13 }}>
         {cov?.days ? <div>Saved: <b>{cov.first}</b> → <b>{cov.last}</b></div> : <div className="muted">No {s.symbol} history saved yet.</div>}
-        {running && (
+        {running && job.mode === 'chart' && (
+          <div className="ab-job">
+            <div className="ab-job-bar"><i /></div>
+            <b style={{ fontWeight: 500 }}>Waiting for ATAS charts</b>
+            <ol className="ab-steps">
+              <li>In ATAS, open a <b>1-minute</b> {s.symbol} chart (time frame M1).</li>
+              <li>Chart settings → <b>Days to load</b>: as many as you want (365 = a year, if your data feed has it).</li>
+              <li>Add the <b>Journal Sync</b> indicator to that chart (or remove and re-add it). It sends everything the chart loaded within a minute.</li>
+              <li>To go further back, do the same on earlier contracts’ charts (e.g. {s.symbol}U6, {s.symbol}M6…) — RoninFlow joins them at each roll and back-adjusts the prices.</li>
+            </ol>
+            {Object.keys(job.seen || {}).length === 0 && <span className="muted">No ATAS chart has checked in yet. This needs Journal Sync 1.4 or newer — reinstall it from Start menu → RoninFlow → Install platform add-ons → ATAS.</span>}
+            {Object.entries(job.charts || {}).map(([name, c]) => (
+              <span key={name} className={c.oneMinute ? '' : 'neg'}>{name}: {c.oneMinute ? `${c.count.toLocaleString()} bars, ${new Date(c.first * 1000).toLocaleDateString()} – ${new Date(c.last * 1000).toLocaleDateString()}` : 'this chart isn’t a 1-minute time chart — switch it to M1'}</span>
+            ))}
+            {job.oldest && <span className="muted">History now goes back to <b>{job.oldest}</b>.</span>}
+          </div>
+        )}
+        {running && job.mode !== 'chart' && (
           <div className="ab-job">
             <div className="ab-job-bar"><i /></div>
             <span>Downloading from {job.source} · back to {job.next ? job.next : '…'} · {job.done} week{job.done === 1 ? '' : 's'} checked{job.failed ? ` · ${job.failed} skipped` : ''}</span>
             {job.stale && <span className="neg">No answer from the add-on for 15 minutes — is {job.source} running with the RoninFlow add-on?</span>}
           </div>
         )}
+        {job && !running && job.mode === 'chart' && job.oldest && <div className="muted">From your ATAS charts: back to <b>{job.oldest}</b> ({Object.keys(job.charts || {}).join(', ')}). Press Download more history to add more charts.</div>}
         {job && !running && job.reason === 'start' && <div className="muted">Your platform’s 1-minute history starts around <b>{job.oldest}</b> — that’s as far back as it goes.</div>}
         {job && !running && job.reason === 'contract' && <div className="muted">Stopped at {job.next}: the contract names before that can’t be worked out for {s.symbol}.</div>}
         {job?.reason === 'demo' && <div className="muted">Demo: made-up prices from Jan 2025.</div>}
         <div className="row gap8 wrap">
-          {running ? <button className="btn sm" onClick={hist.stop}><Square size={12} /> Stop download</button>
+          {running ? <button className="btn sm" onClick={hist.stop}><Square size={12} /> {job.mode === 'chart' ? 'Done' : 'Stop download'}</button>
             : job?.reason !== 'demo' && <button className="btn sm" onClick={hist.start}><Download size={13} /> {cov?.days ? 'Download more history' : 'Download history'}</button>}
         </div>
         {err && <div className="neg" style={{ fontSize: 12.5 }}>{err}</div>}
-        <div className="muted" style={{ fontSize: 12 }}>Your platform add-on fetches a week at a time, newest first, using the contract that was front month then; on roll days it fetches both contracts so prices are back-adjusted (no fake jumps). It runs in the background — keep your platform open.</div>
+        {!running && <div className="muted" style={{ fontSize: 12 }}>NinjaTrader, Quantower, cTrader, MetaTrader and Sierra Chart add-ons fetch a week at a time, newest first, using the contract that was front month then. ATAS sends the history of your 1-minute charts instead. Either way, prices are back-adjusted at contract rolls (no fake jumps).</div>}
         <div className="form-grid" style={{ marginTop: 4 }}>
           <div className="field"><label className="label">Test from</label><input className="input" type="date" value={from} min={cov?.first || undefined} max={to || yesterday()} onChange={(e) => patch({ from: e.target.value })} /></div>
           <div className="field"><label className="label">to</label><input className="input" type="date" value={to} min={from || undefined} max={cov?.last || yesterday()} onChange={(e) => patch({ to: e.target.value })} /></div>
@@ -438,30 +461,51 @@ function StrategyPanel({ s, setSpec }) {
 function ExitsPanel({ s, setSpec }) {
   const sp = s.spec;
   const params = s.params || [];
+  const sub = (key, patch) => setSpec({ [key]: { ...(sp[key] || DEFAULT_SPEC[key]), ...patch } });
   const typeSel = (key, types) => (
-    <span className="row gap6">
-      <select className="select ab-small" value={sp[key]?.type || 'none'} onChange={(e) => setSpec({ [key]: { ...(sp[key] || {}), type: e.target.value, v: sp[key]?.v ?? (e.target.value === 'r' ? 2 : 20), n: sp[key]?.n ?? 14 } })}>{types.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
-      {sp[key]?.type && sp[key].type !== 'none' && <NumOrParam value={sp[key].v} params={params} onChange={(v) => setSpec({ [key]: { ...sp[key], v } })} />}
+    <span className="row gap6 wrap">
+      <select className="select ab-small" value={sp[key]?.type || 'none'} onChange={(e) => sub(key, { type: e.target.value, v: sp[key]?.v ?? (e.target.value === 'r' ? 2 : 20), n: sp[key]?.n ?? 14 })}>{types.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+      {sp[key]?.type && sp[key].type !== 'none' && <NumOrParam value={sp[key].v} params={params} onChange={(v) => sub(key, { v })} />}
     </span>
   );
+  const entry = sp.entry || DEFAULT_SPEC.entry, be = sp.be || DEFAULT_SPEC.be, sizing = sp.sizing || DEFAULT_SPEC.sizing;
   return (
     <div className="panel">
-      <div className="card-title" style={{ marginBottom: 12 }}>Exits, time & costs</div>
+      <div className="card-title" style={{ marginBottom: 12 }}>Orders, exits & costs</div>
       <div className="ab-rows">
+        <label>Entry order</label>
+        <span className="row gap6 wrap">
+          <select className="select ab-small" style={{ width: 'auto' }} value={entry.type} onChange={(e) => sub('entry', { type: e.target.value })}>{ENTRY_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          {entry.type !== 'market' && <><NumOrParam value={entry.off} params={params} onChange={(v) => sub('entry', { off: v })} width={50} /><span className="muted">ticks · lasts</span><input className="input ab-small" style={{ width: 54 }} type="number" min={1} value={entry.expire} onChange={(e) => sub('entry', { expire: e.target.value })} /><span className="muted">bars</span></>}
+        </span>
         <label>Stop loss</label>{typeSel('stop', STOP_TYPES)}
         <label>Profit target</label>{typeSel('target', TARGET_TYPES)}
+        <label>Trailing stop</label>{typeSel('trail', TRAIL_TYPES)}
+        <label>Move stop to break-even</label>
+        <span className="row gap6 wrap">
+          <select className="select ab-small" style={{ width: 'auto' }} value={be.type} onChange={(e) => sub('be', { type: e.target.value })}>{BE_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          {be.type !== 'none' && <><NumOrParam value={be.v} params={params} onChange={(v) => sub('be', { v })} width={50} /><span className="muted">+</span><input className="input ab-small" style={{ width: 50 }} type="number" value={be.plus} onChange={(e) => sub('be', { plus: e.target.value })} /><span className="muted">ticks</span></>}
+        </span>
         <label>Exit after this many bars</label><NumOrParam value={sp.maxBars} params={params} onChange={(v) => setSpec({ maxBars: v })} />
         <label>New trades only between</label><span className="row gap6"><input className="input ab-time" type="time" value={sp.entryFrom || ''} onChange={(e) => setSpec({ entryFrom: e.target.value })} /><span className="muted">–</span><input className="input ab-time" type="time" value={sp.entryTo || ''} onChange={(e) => setSpec({ entryTo: e.target.value })} /></span>
         <label>Close everything at</label><input className="input ab-time" type="time" value={sp.flatAt || ''} onChange={(e) => setSpec({ flatAt: e.target.value })} />
         <label>Close at the end of each day</label><input type="checkbox" className="cbx" checked={sp.flatEod !== false} onChange={(e) => setSpec({ flatEod: e.target.checked })} />
         <label>Max trades a day</label><NumOrParam value={sp.maxTradesDay} params={params} onChange={(v) => setSpec({ maxTradesDay: v })} />
         <label>Reverse on an opposite signal</label><input type="checkbox" className="cbx" checked={!!sp.reverse} onChange={(e) => setSpec({ reverse: e.target.checked })} />
-        <label>Contracts</label><input className="input ab-small" type="number" min={1} value={sp.qty} onChange={(e) => setSpec({ qty: Math.max(1, Number(e.target.value) || 1) })} />
+        <label>Position size</label>
+        <span className="row gap6 wrap">
+          <select className="select ab-small" style={{ width: 'auto' }} value={sizing.type} onChange={(e) => sub('sizing', { type: e.target.value })}><option value="fixed">Fixed contracts</option><option value="risk">Risk $ per trade</option></select>
+          {sizing.type === 'fixed' ? <input className="input ab-small" style={{ width: 60 }} type="number" min={1} value={sp.qty} onChange={(e) => setSpec({ qty: Math.max(1, Number(e.target.value) || 1) })} />
+            : <><span className="muted">$</span><input className="input ab-small" style={{ width: 76 }} type="number" min={1} value={sizing.risk} onChange={(e) => sub('sizing', { risk: e.target.value })} /><span className="muted">max</span><input className="input ab-small" style={{ width: 54 }} type="number" min={1} value={sizing.max} onChange={(e) => sub('sizing', { max: e.target.value })} /></>}
+        </span>
+        <label>Starting capital</label><input className="input ab-small" type="number" min={0} step={1000} value={sp.initial ?? 50000} onChange={(e) => setSpec({ initial: e.target.value })} />
         <label>Commission per contract (round trip)</label><input className="input ab-small" type="number" min={0} step="0.01" value={sp.fee} onChange={(e) => setSpec({ fee: e.target.value })} />
         <label>Slippage, ticks per side</label><input className="input ab-small" type="number" min={0} step="0.5" value={sp.slip} onChange={(e) => setSpec({ slip: e.target.value })} />
         <label>Tick size · $ per point</label><span className="row gap6"><input className="input ab-small" type="number" step="any" value={sp.tick} onChange={(e) => setSpec({ tick: e.target.value })} /><input className="input ab-small" type="number" step="any" value={sp.pv} onChange={(e) => setSpec({ pv: e.target.value })} /></span>
+        <label title="When one 1-minute bar touches both your stop and your target">Bar hits stop and target</label>
+        <select className="select ab-small" style={{ width: 'auto' }} value={sp.path || 'worst'} onChange={(e) => setSpec({ path: e.target.value })}><option value="worst">Count the stop (safest)</option><option value="ohlc">TradingView’s rule (open → nearer extreme first)</option></select>
       </div>
-      <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Times are your time zone. Stops and targets are checked on every 1-minute bar; a bar that reaches both counts as the stop. Market orders and stops pay the slippage; targets don’t.</div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Times are your time zone. Everything fills on 1-minute bars, like TradingView’s Bar Magnifier. Market orders and stops pay the slippage; limit orders and targets don’t. Risk sizing divides your $ risk by the stop distance (plus commission) and skips trades it can’t size to one contract.</div>
     </div>
   );
 }
@@ -506,14 +550,112 @@ function Metrics({ st }) {
       {m('Win rate', `${st.winRate.toFixed(1)}%`)}
       {m('Profit factor', pfText(st.pf))}
       {m('Avg trade', <Money v={st.exp} colored />)}
-      {m('Max drawdown', <Money v={-st.maxDD} colored />)}
+      {m('Max drawdown', <Money v={-(st.maxDDIntra ?? st.maxDD)} colored />)}
       {m('Sharpe', st.sharpe.toFixed(2))}
-      {m('Avg win / loss', <span><Money v={st.avgWin} /> / <Money v={st.avgLoss} /></span>)}
+      {m('Sortino', (st.sortino ?? 0).toFixed(2))}
     </div>
   );
 }
 
-function Results({ s, res, fresh, oosFresh, splitDay, to, onUnlock, busy }) {
+/** The full report, laid out like TradingView's Performance Summary / NinjaTrader's Summary tab. */
+function Report({ st }) {
+  const $ = (v) => <Money v={v} colored />;
+  const pct = (v, dp = 1) => (v == null ? '—' : `${v.toFixed(dp)}%`);
+  const num = (v, dp = 2) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(dp));
+  const rows = [
+    ['Performance', [
+      ['Net P&L', $(st.net), $(st.long.net), $(st.short.net)],
+      ['Gross profit / gross loss', <span><Money v={st.grossProfit} /> / <Money v={st.grossLoss} /></span>],
+      ['Commission paid', <Money v={-st.fees} />],
+      ['Return on starting capital', pct(st.returnPct, 2)],
+      ['Annualised return (CAGR)', pct(st.cagr, 1)],
+      ['Buy & hold (1 contract)', st.buyHold == null ? '—' : $(st.buyHold)],
+      ['Sharpe · Sortino (daily, annualised)', `${num(st.sharpe)} · ${num(st.sortino)}`],
+      ['Profit factor', pfText(st.pf)],
+      ['Net ÷ max drawdown', num(st.retDD === Infinity ? Infinity : st.retDD)],
+    ]],
+    ['Trades', [
+      ['Total trades', st.trades, st.long.trades, st.short.trades],
+      ['Win rate', pct(st.winRate), pct(st.long.winRate), pct(st.short.winRate)],
+      ['Winners · losers · even', `${st.wins} · ${st.losses} · ${st.even}`],
+      ['Average trade', $(st.exp)],
+      ['Average win · average loss', <span><Money v={st.avgWin} /> · <Money v={st.avgLoss} /></span>],
+      ['Average win ÷ average loss', num(st.ratioWL)],
+      ['Largest win', <span>{$(st.largestWin)} <span className="muted">({pct(st.largestWinPct, 0)} of gross profit)</span></span>],
+      ['Largest loss', <span>{$(st.largestLoss)} <span className="muted">({pct(st.largestLossPct, 0)} of gross loss)</span></span>],
+      ['Max consecutive wins · losses', `${st.maxConsecWins} · ${st.maxConsecLosses}`],
+      ['Average bars in trades · winners · losers', `${num(st.avgBars, 1)} · ${num(st.avgBarsWin, 1)} · ${num(st.avgBarsLoss, 1)}`],
+      ['Average MAE · MFE (worst / best open P&L)', <span><Money v={st.avgMae} /> · <Money v={st.avgMfe} /></span>],
+      ['Time in the market', st.exposure == null ? '—' : pct(st.exposure * 100)],
+    ]],
+    ['Risk', [
+      ['Max drawdown (intrabar)', <span>{$(-st.maxDDIntra)} <span className="muted">({pct(st.ddPct)} of capital)</span></span>],
+      ['Max drawdown (close to close)', $(-st.maxDD)],
+      ['Longest drawdown', `${Math.round(st.longestDD)} days`],
+      ['Max run-up (intrabar · close to close)', <span><Money v={st.maxRunUpIntra} /> · <Money v={st.maxRunUp} /></span>],
+      ['Average trade t-statistic', num(st.tstat)],
+    ]],
+  ];
+  return (
+    <div className="tbl-wrap">
+      <table className="tbl ab-report">
+        {rows.map(([title, list]) => (
+          <tbody key={title}>
+            <tr className="ab-report-h"><th>{title}</th><th>All</th><th>Long</th><th>Short</th></tr>
+            {list.map(([label, all, lo, sh]) => <tr key={label}><td className="muted">{label}</td><td colSpan={lo === undefined ? 3 : 1}>{all}</td>{lo !== undefined && <td>{lo}</td>}{sh !== undefined && <td>{sh}</td>}</tr>)}
+          </tbody>
+        ))}
+      </table>
+    </div>
+  );
+}
+
+/** Net P&L by month (rows = years). */
+function Monthly({ trades }) {
+  const cells = new Map();
+  for (const t of trades) { const d = new Date(t.x * 1000); const k = `${d.getFullYear()}-${d.getMonth()}`; cells.set(k, (cells.get(k) || 0) + t.pnl); }
+  const years = [...new Set(trades.map((t) => new Date(t.x * 1000).getFullYear()))].sort();
+  const max = Math.max(1, ...[...cells.values()].map(Math.abs));
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return (
+    <div className="tbl-wrap">
+      <table className="tbl ab-monthly">
+        <thead><tr><th />{M.map((m) => <th key={m}>{m}</th>)}<th>Year</th></tr></thead>
+        <tbody>
+          {years.map((y) => {
+            const total = M.reduce((a, _, i) => a + (cells.get(`${y}-${i}`) || 0), 0);
+            return (
+              <tr key={y}><td className="muted">{y}</td>
+                {M.map((_, i) => { const v = cells.get(`${y}-${i}`); return <td key={i} style={v == null ? undefined : { background: `color-mix(in srgb, var(${v >= 0 ? '--pos' : '--neg'}) ${Math.round(8 + (Math.abs(v) / max) * 40)}%, transparent)` }}>{v == null ? '' : fmtMoney(v, { dp: 0 })}</td>; })}
+                <td><Money v={total} colored /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** How far below its last high the account was after each trade. */
+function Underwater({ trades }) {
+  const W = 800, H = 120, PAD = { l: 60, r: 10, t: 8, b: 8 };
+  let eq = 0, peak = 0;
+  const dd = [0, ...trades.map((t) => { eq += t.pnl; peak = Math.max(peak, eq); return eq - peak; })];
+  const lo = Math.min(-1, ...dd);
+  const x = (i) => PAD.l + (i / Math.max(1, dd.length - 1)) * (W - PAD.l - PAD.r);
+  const y = (v) => PAD.t + (v / lo) * (H - PAD.t - PAD.b);
+  const path = `M${x(0)},${y(0)}` + dd.map((v, i) => `L${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('') + `L${x(dd.length - 1)},${y(0)}Z`;
+  return (
+    <svg className="ab-under" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label="Drawdown">
+      <path d={path} className="ab-under-area" />
+      <text x={PAD.l - 6} y={PAD.t + 10} textAnchor="end" className="wi-tick">$0</text>
+      <text x={PAD.l - 6} y={H - PAD.b} textAnchor="end" className="wi-tick">{fmtMoney(lo, { dp: 0 })}</text>
+    </svg>
+  );
+}
+
+function Results({ s, res, fresh, oosFresh, splitDay, to, onUnlock, busy, from }) {
   const { state, setAutoStrategies } = useStore();
   if (!res) return <div className="panel empty" style={{ minHeight: 280 }}>Press <b>Run backtest</b> to test {s.name} on the in-sample period.</div>;
   const st = res.is.stats;
@@ -524,6 +666,13 @@ function Results({ s, res, fresh, oosFresh, splitDay, to, onUnlock, busy }) {
   checks.push(v > 200 ? ['bad', `You’ve tried ${v.toLocaleString()} variations. With that many, a good-looking result can easily be luck — trust the out-of-sample and walk-forward numbers, not this one.`] : v > 30 ? ['warn', `You’ve tried ${v} variations of this strategy — the more you try, the more the best one flatters itself.`] : ['ok', `${v} variation${v === 1 ? '' : 's'} tried so far.`]);
   if (res.stress) checks.push(res.stress.net <= 0 && st.net > 0 ? ['bad', `With one more tick of slippage a side it loses money (${fmtMoney(res.stress.net)}). The edge is too thin to survive real fills.`] : ['ok', `One more tick of slippage a side: ${fmtMoney(res.stress.net, { sign: true })} (${st.net ? Math.round((res.stress.net / st.net) * 100) : 0}% of the result).`]);
   if (res.random) checks.push(res.random.beat >= 0.95 ? ['ok', `Better than ${Math.round(res.random.beat * 100)}% of ${res.random.runs} runs with random entries and the same exits.`] : res.random.beat >= 0.8 ? ['warn', `Better than ${Math.round(res.random.beat * 100)}% of random-entry runs with the same exits — the exits may be doing most of the work.`] : ['bad', `Only better than ${Math.round(res.random.beat * 100)}% of random-entry runs with the same exits — the entries add little.`]);
+  if (st.trades > 1) {
+    const tries = Math.max(1, v);
+    const adj = 1 - Math.pow(1 - st.pLuck, tries); // Šidák: the chance at least one of your variations looks this good by luck
+    checks.push(adj <= 0.05 ? ['ok', `Luck test: a result this good would come from luck alone ${(adj * 100).toFixed(adj < 0.01 ? 2 : 1)}% of the time, allowing for the ${tries} variation${tries === 1 ? '' : 's'} you tried (t = ${st.tstat.toFixed(2)}).`]
+      : adj <= 0.25 ? ['warn', `Luck test: ${Math.round(adj * 100)}% chance luck alone gives a result this good after ${tries} variation${tries === 1 ? '' : 's'} (t = ${st.tstat.toFixed(2)}). Not convincing yet.`]
+        : ['bad', `Luck test: ${Math.round(adj * 100)}% chance luck alone gives a result this good after ${tries} variation${tries === 1 ? '' : 's'} (t = ${st.tstat.toFixed(2)}). Indistinguishable from luck.`]);
+  }
   if (res.mc) checks.push(res.mc.profitable >= 0.9 ? ['ok', `Monte Carlo: profitable in ${Math.round(res.mc.profitable * 100)}% of ${res.mc.n.toLocaleString()} reshuffles.`] : ['warn', `Monte Carlo: profitable in only ${Math.round(res.mc.profitable * 100)}% of reshuffles.`]);
   const isTrades = res.is.trades;
   const oos = res.oos;
@@ -536,7 +685,17 @@ function Results({ s, res, fresh, oosFresh, splitDay, to, onUnlock, busy }) {
         <div className="panel-head"><div className="card-title">In-sample</div><span className="muted" style={{ fontSize: 12.5 }}>{isTrades.length ? `${dayOfUnix(isTrades[0].e)} – ${dayOfUnix(isTrades[isTrades.length - 1].x)}` : ''}</span></div>
         <Metrics st={st} />
         <EquitySvg a={isTrades} b={oos?.trades} />
+        <div className="muted" style={{ fontSize: 12, margin: '10px 0 4px' }}>Drawdown</div>
+        <Underwater trades={[...isTrades, ...(oos?.trades || [])]} />
       </div>
+      <details className="panel ab-details" open>
+        <summary className="card-title">Performance summary</summary>
+        <Report st={st} />
+      </details>
+      <details className="panel ab-details">
+        <summary className="card-title">Monthly P&L</summary>
+        <Monthly trades={[...isTrades, ...(oos?.trades || [])]} />
+      </details>
       <div className="panel">
         <div className="card-title" style={{ marginBottom: 10 }}>Checks</div>
         <div className="col gap8">
@@ -576,7 +735,7 @@ function Results({ s, res, fresh, oosFresh, splitDay, to, onUnlock, busy }) {
         </div>
         {link ? <LiveCompare bt={[...isTrades, ...(oos?.trades || [])]} live={live} name={link.name} /> : <div className="muted" style={{ fontSize: 13 }}>Link this backtest to a strategy in your journal to see backtest and live side by side.</div>}
       </div>
-      <TradesTable trades={[...isTrades, ...(oos?.trades || [])]} />
+      <TradesTable trades={[...isTrades, ...(oos?.trades || [])]} s={s} />
     </div>
   );
 }
@@ -608,25 +767,45 @@ function LiveCompare({ bt, live, name }) {
     </div>
   );
 }
-function TradesTable({ trades }) {
+function TradesTable({ trades, s }) {
   const [n, setN] = useState(50);
+  const [view, setView] = useState(null);
   if (!trades.length) return null;
   const list = [...trades].reverse();
-  const why = { stop: 'Stop', target: 'Target', signal: 'Exit rule', bars: 'Max bars', time: 'Time', eod: 'End of day', end: 'End of test', reverse: 'Reversed' };
+  const why = { stop: 'Stop', trail: 'Trailing stop', target: 'Target', signal: 'Exit rule', bars: 'Max bars', time: 'Time', eod: 'End of day', end: 'End of test', reverse: 'Reversed' };
+  const csv = () => {
+    const head = ['entry_time', 'side', 'qty', 'entry_price', 'exit_time', 'exit_price', 'exit_reason', 'pnl', 'commission', 'mae', 'mfe', 'bars'];
+    const lines = trades.map((t) => [localIso(t.e), t.d > 0 ? 'long' : 'short', t.q, t.ep, localIso(t.x), t.xp, t.r, t.pnl, t.fee ?? '', t.mae ?? '', t.mfe ?? '', t.bars].join(','));
+    const url = URL.createObjectURL(new Blob([[head.join(','), ...lines].join('\n')], { type: 'text/csv' }));
+    const a = document.createElement('a'); a.href = url; a.download = `${s.name.replace(/[^\w-]+/g, '-')}-trades.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+  // the price series the backtest ran on (back-adjusted), for the chart
+  const series = [...seriesCache.values()][0];
+  const candleSource = (date) => {
+    const out = [];
+    if (series) for (let i = 0; i < series.n; i++) if (keyOf(new Date(series.t[i] * 1000)) === date) out.push([series.t[i], series.o[i], series.h[i], series.l[i], series.c[i], series.v[i]]);
+    return { candles: out, interval: '1m', source: 'Backtest prices' };
+  };
+  const asJournal = (t) => ({ id: `bt${t.e}`, symbol: s.symbol, direction: t.d > 0 ? 'Long' : 'Short', entry: localIso(t.e), exit: localIso(t.x), entryPrice: t.ep, exitPrice: t.xp, qty: t.q, pnl: t.pnl, fees: t.fee || 0 });
   return (
     <div className="panel">
-      <div className="panel-head"><div className="card-title">Trades</div><span className="muted" style={{ fontSize: 12.5 }}>{trades.length.toLocaleString()} · newest first</span></div>
+      <div className="panel-head"><div className="card-title">Trades</div><span className="row gap8"><span className="muted" style={{ fontSize: 12.5 }}>{trades.length.toLocaleString()} · newest first · click one to see it on the chart</span><button className="btn xs" onClick={csv}><FileDown size={12} /> CSV</button></span></div>
       <div className="tbl-wrap">
         <table className="tbl">
-          <thead><tr><th>Entry</th><th>Side</th><th>Entry price</th><th>Exit</th><th>Exit price</th><th>Why</th><th>P&L</th></tr></thead>
+          <thead><tr><th>Entry</th><th>Side</th><th>Entry price</th><th>Exit</th><th>Exit price</th><th>Why</th><th>MAE</th><th>MFE</th><th>P&L</th></tr></thead>
           <tbody>
             {list.slice(0, n).map((t, i) => (
-              <tr key={i}><td>{fmtT(t.e)}</td><td className={t.d > 0 ? 'pos' : 'neg'}>{t.d > 0 ? 'Long' : 'Short'}{t.q > 1 ? ` ×${t.q}` : ''}</td><td>{+t.ep.toFixed(4)}</td><td className="muted">{fmtT(t.x)}</td><td>{+t.xp.toFixed(4)}</td><td className="muted">{why[t.r] || t.r}</td><td><Money v={t.pnl} colored /></td></tr>
+              <tr key={i} onClick={() => setView(t)} style={{ cursor: 'pointer' }}><td>{fmtT(t.e)}</td><td className={t.d > 0 ? 'pos' : 'neg'}>{t.d > 0 ? 'Long' : 'Short'}{t.q > 1 ? ` ×${t.q}` : ''}</td><td>{+t.ep.toFixed(4)}</td><td className="muted">{fmtT(t.x)}</td><td>{+t.xp.toFixed(4)}</td><td className="muted">{why[t.r] || t.r}</td><td className="neg">{t.mae != null ? fmtMoney(t.mae, { dp: 0 }) : ''}</td><td className="pos">{t.mfe != null ? fmtMoney(t.mfe, { dp: 0 }) : ''}</td><td><Money v={t.pnl} colored /></td></tr>
             ))}
           </tbody>
         </table>
       </div>
       {list.length > n && <button className="btn sm ghost" style={{ marginTop: 8 }} onClick={() => setN((x) => x + 200)}>Show more</button>}
+      {view && (
+        <Suspense fallback={null}>
+          <ChartStudio date={keyOf(new Date(view.e * 1000))} trades={trades.filter((t) => keyOf(new Date(t.e * 1000)) === keyOf(new Date(view.e * 1000))).map(asJournal)} candleSource={candleSource} onClose={() => setView(null)} />
+        </Suspense>
+      )}
     </div>
   );
 }

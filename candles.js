@@ -152,6 +152,17 @@ export function frontMonth(root, date) {
   return null;
 }
 export const frontQuarter = (date) => frontMonth('ES', date);
+/** { y, m } of a contract name: "MESZ6", "MESZ26", "MES Z26", "MES 12-26", "MESZ2026", "MESZ6@CME"… (null if unknown). */
+export function contractMonth(root, name) {
+  const u = String(name || '').toUpperCase().trim();
+  const rest = u.startsWith(root) ? u.slice(root.length).trim() : u;
+  const near = (yy, digits) => { const now = new Date().getUTCFullYear(); if (digits >= 4) return yy; const base = digits === 1 ? 10 : 100; let y = now - (now % base) + yy; if (y > now + 5) y -= base; if (y < now - base + 5) y += base; return y; };
+  let m = rest.match(/^(\d{1,2})[-/](\d{2,4})/);
+  if (m) return { m: Number(m[1]), y: near(Number(m[2]), m[2].length) };
+  m = rest.match(/^([FGHJKMNQUVXZ])\s?(\d{1,4})/);
+  if (m) return { m: MONTH_CODES.indexOf(m[1]) + 1, y: near(Number(m[2]), m[2].length) };
+  return null;
+}
 /** `contract` (as your platform names it, last traded on `seen`) moved to the contract that was front month on `date`.
  *  Returns null when that can't be worked out and `date` is more than ~25 days from `seen`. */
 export function contractFor(contract, root, date, seen = date) {
@@ -214,7 +225,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   }
   const listDir = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; } };
   /** Platforms that have sent bars, with how many symbols each. */
-  const addonSources = () => listDir(barsDir).filter((n) => n !== EARLIER && !n.endsWith('-roll')).map((id) => ({ id, symbols: listDir(path.join(barsDir, id)).length }));
+  const addonSources = () => listDir(barsDir).filter((n) => n !== EARLIER && !n.endsWith('-roll') && !n.startsWith('h_')).map((id) => ({ id, symbols: listDir(path.join(barsDir, id)).length }));
   function barsFrom(source, symbol, from, to) {
     const out = [];
     // a micro trades at the same price as its full-size contract, so either chart's bars will do (MES ↔ ES …)
@@ -236,6 +247,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (got.length > out.length) out = got;
     }
     if (out.length < 5) { const old = barsFrom(EARLIER, symbol, from, to); if (old.length > out.length) out = old; }
+    if (out.length < 5) { for (const c of histContracts(rootOf(symbol))) { const got = barsFrom(c.dir, symbol, from, to); if (got.length > out.length) out = got; } } // downloaded history (backtests)
     out.sort((a, b) => a[0] - b[0]);
     // bar size from the data (an add-on on a 1-minute chart sends 1-minute bars)
     const step = out.length > 2 ? Math.min(...out.slice(1, 50).map((r, i) => r[0] - out[i][0]).filter((d) => d > 0)) : 60;
@@ -453,6 +465,14 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const root = rootOf(symbol);
     const pick = cfg.addonSource && cfg.addonSource !== 'any' ? cfg.addonSource : null;
     const lc = latestContract(root, pick) || (pick ? null : latestContract(root));
+    // ATAS can't fetch history on request — its Journal Sync indicator sends whole charts instead (chart mode)
+    const atasOnly = !lc && (pick === 'atas' || (!pick && (addonSources().some((x) => x.id === 'atas') || (readTrades?.() || []).some((t) => String(t?.source).toLowerCase() === 'atas'))));
+    if (atasOnly) {
+      const old = jobs[root];
+      jobs[root] = { root, source: 'atas', mode: 'chart', status: 'running', reason: null, started: new Date().toISOString(), updated: new Date().toISOString(), pending: [], weeks: {}, rolls: old?.rolls || [], empty: 0, done: 0, bars: old?.bars || 0, failed: 0, oldest: old?.oldest || null, charts: old?.charts || {}, seen: {} };
+      saveJobs();
+      return jobs[root];
+    }
     if (!lc) throw Object.assign(new Error(`RoninFlow learns your platform’s name for ${root} contracts from a trade its add-on synced. Take one ${root} trade (sim is fine) with the add-on running, then try again.`), { code: 'NO_CONTRACT' });
     if (cfg.addon === false) throw Object.assign(new Error('Price data from your platform add-on is switched off — turn it on in Settings → Price data.'), { code: 'ADDON_OFF' });
     const old = jobs[root];
@@ -467,10 +487,44 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     if (!dropDirs) setTimeout(writeWantedFiles, 300).unref?.();
     return jobs[root];
   }
+  /** Contracts of a market whose full chart history an add-on sent: [{ dir, name, y, m }] (y/m null when unknown). */
+  function histContracts(root) {
+    const out = [];
+    for (const dir of listDir(barsDir).filter((n) => n.startsWith('h_'))) {
+      if (!fs.existsSync(path.join(barsDir, dir, root.replace(/[^\w.-]/g, '_')))) continue;
+      const name = dir.slice(2).toUpperCase();
+      out.push({ dir, name, ...(contractMonth(root, name) || { y: null, m: null }) });
+    }
+    return out.sort((a, b) => (a.y ?? 0) - (b.y ?? 0) || (a.m ?? 0) - (b.m ?? 0));
+  }
+  /** Chart-history mode (ATAS): the add-on sends whole charts; this says whether a job wants them. */
+  function chartWant(source, symbol) {
+    const root = rootOf(symbol);
+    const job = jobs[root];
+    if (!job || job.mode !== 'chart' || job.status !== 'running' || job.source !== srcId(source)) return { want: false };
+    job.seen = job.seen || {};
+    job.seen[String(symbol).slice(0, 40)] = new Date().toISOString();
+    job.updated = new Date().toISOString();
+    saveJobs();
+    return { want: true };
+  }
+  function chartDone(body) {
+    const root = rootOf(body.symbol);
+    const job = jobs[root];
+    if (!job || job.mode !== 'chart') return;
+    job.charts = job.charts || {};
+    job.charts[String(body.symbol).slice(0, 40)] = { first: Number(body.first) || null, last: Number(body.last) || null, count: Number(body.count) || 0, oneMinute: body.oneMinute !== false, at: new Date().toISOString() };
+    job.bars = Object.values(job.charts).reduce((a, c) => a + c.count, 0);
+    const firsts = Object.values(job.charts).filter((c) => c.count && c.first).map((c) => c.first);
+    if (firsts.length) job.oldest = new Date(Math.min(...firsts) * 1000).toISOString().slice(0, 10);
+    job.updated = new Date().toISOString();
+    saveJobs();
+  }
+
   /** Days (UTC file dates) with saved 1-minute bars for a market, all platforms. */
   function coverage(root) {
     const days = new Set();
-    for (const src of [...addonSources().map((x) => x.id), EARLIER]) {
+    for (const src of [...addonSources().map((x) => x.id), EARLIER, ...histContracts(root).map((c) => c.dir)]) {
       try { for (const f of fs.readdirSync(path.join(barsDir, src, root.replace(/[^\w.-]/g, '_')))) if (f.endsWith('.json')) days.add(f.slice(0, 10)); } catch { /* none */ }
     }
     const list = [...days].sort();
@@ -490,10 +544,62 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       }
       if (best) for (const r of Object.values(best)) if (r[0] >= from && r[0] < to) byT.set(r[0], r);
     }
-    const rows = [...byT.values()].sort((a, b) => a[0] - b[0]);
+    let rows = [...byT.values()].sort((a, b) => a[0] - b[0]);
     const rolls = [];
     const job = jobs[root];
-    if (adjust && job?.rolls?.length && rows.length) {
+    const hist = histContracts(root);
+    if (hist.length) {
+      // charts of one contract each (ATAS): every day uses the contract that was front month then, older contracts are
+      // shifted by the price gap where they overlap on the switch day (back-adjusted), and days no chart covers come
+      // from the live data above
+      const days = new Map(); // UTC day start → { contract → rows }
+      for (const c of hist) {
+        for (let t = from - (from % DAY); t <= to; t += DAY) {
+          const cur = readCache(barFile(c.dir, root, t));
+          if (cur) { const m = days.get(t) || new Map(); m.set(c.name, Object.values(cur).filter((r) => r[0] >= from && r[0] < to)); days.set(t, m); }
+        }
+      }
+      const byName = new Map(hist.map((c) => [c.name, c]));
+      const pickFor = (t, m) => {
+        const day = new Date(t * 1000 + 12 * 3600e3).toISOString().slice(0, 10);
+        const f = frontMonth(root, day);
+        const names = [...m.keys()].filter((n) => m.get(n).length);
+        const front = f && names.find((n) => byName.get(n)?.y === f.y && byName.get(n)?.m === f.m);
+        if (front) return front;
+        // unknown roll: the contract with the most bars that day
+        return names.sort((a, b) => m.get(b).length - m.get(a).length)[0];
+      };
+      const chosen = [...days.keys()].sort((a, b) => a - b).map((t) => ({ t, name: pickFor(t, days.get(t)) })).filter((x) => x.name);
+      // gaps where the contract changes, newest first
+      const shift = new Map(); // day start → price shift for that day's bars
+      let cum = 0;
+      for (let k = chosen.length - 1; k >= 0; k--) {
+        shift.set(chosen[k].t, cum);
+        const prev = chosen[k - 1];
+        if (prev && prev.name !== chosen[k].name) {
+          const newer = days.get(chosen[k].t), older = days.get(prev.t);
+          // overlap: both contracts on the newer day, else on the older day
+          let diffs = [];
+          for (const m of [newer, older]) {
+            const a = m.get(chosen[k].name) || [], b = new Map((m.get(prev.name) || []).map((r) => [r[0], r[4]]));
+            diffs = a.filter((r) => b.has(r[0])).map((r) => r[4] - b.get(r[0]));
+            if (diffs.length) break;
+          }
+          diffs.sort((x, y) => x - y);
+          const adj = diffs.length ? diffs[Math.floor(diffs.length / 2)] : null;
+          rolls.push({ date: new Date(chosen[k].t * 1000).toISOString().slice(0, 10), t: chosen[k].t, adj, from: prev.name, to: chosen[k].name });
+          if (adjust && adj != null) cum += adj;
+        }
+      }
+      const histT = new Set(chosen.map((x) => x.t));
+      const out = new Map();
+      for (const r of rows) if (!histT.has(r[0] - (r[0] % DAY))) out.set(r[0], r); // live data for days no chart covers
+      for (const { t, name } of chosen) {
+        const d = shift.get(t) || 0;
+        for (const r of days.get(t).get(name)) out.set(r[0], d ? [r[0], r[1] + d, r[2] + d, r[3] + d, r[4] + d, r[5]] : r);
+      }
+      rows = [...out.values()].sort((a, b) => a[0] - b[0]);
+    } else if (adjust && job?.rolls?.length && rows.length) {
       for (const r of [...job.rolls].sort((a, b) => b.date.localeCompare(a.date))) {
         const old = barsFrom(`${job.source}-roll`, root, r.from, r.to);
         if (!old.length) { rolls.push({ date: r.date, t: r.from, adj: null }); continue; }
@@ -540,6 +646,10 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         const got = Array.isArray(g.bars) ? storeBars(g.symbol.replace(/~roll$/, ''), g.bars, `${srcId(source)}-roll`) : 0;
         n += got;
         if (g.from !== undefined && g.to !== undefined) historyIngest(source, g.symbol, g.from, g.to, got);
+        continue;
+      }
+      if (g.history || body.history) { // a chart's full history (ATAS), kept per contract for the continuous series
+        n += Array.isArray(g.bars) ? storeBars(g.symbol, g.bars, `h_${srcId(g.symbol)}`) : 0;
         continue;
       }
       const got = Array.isArray(g.bars) ? storeBars(g.symbol, g.bars, source) : 0;
@@ -692,6 +802,15 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         const items = wanted(source);
         if (u.searchParams.get('format') === 'lines') { res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(wantedLines(items)); }
         return send(res, 200, { items });
+      }
+      if (u.pathname === '/api/candles/history/chart') { // the ATAS indicator: "do you want my chart's history?" / "sent it"
+        if (req.method === 'POST') {
+          if (tokenOk && !tokenOk(req)) return send(res, 401, { error: 'Missing or wrong token (Connections → Webhook / API).' });
+          const body = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; if (t.length > 1e5) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
+          chartDone(body);
+          return send(res, 200, { ok: true });
+        }
+        return send(res, 200, chartWant(u.searchParams.get('source') || 'atas', u.searchParams.get('symbol') || ''));
       }
       if (u.pathname === '/api/candles/history' || u.pathname === '/api/candles/history/bars') {
         const root = rootOf(u.searchParams.get('symbol') || '');

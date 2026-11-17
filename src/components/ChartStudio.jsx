@@ -258,7 +258,7 @@ function feed(series, data) {
  * backtest (optional) turns the replay into a trading simulator: { symbol, pv ($ per point), fee (per contract), startTime
  * ('HH:MM' local), strategyId, onTrade(trade), onDay(date), label }. `trades` are then the session's trades on `date`.
  */
-export default function ChartStudio({ date, trades: tradesIn, initialSym, onClose: closeStudio, onOpenTrade, backtest }) {
+export default function ChartStudio({ date, trades: tradesIn, initialSym, onClose: closeStudio, onOpenTrade, backtest, candleSource }) {
   const { state, setSetting } = useStore();
   const bt = backtest || null;
   // ---------------------------------------------------------------- backtest position (simulated)
@@ -300,7 +300,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     if (!sym) return undefined;
     let alive = true;
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const get = (d, refresh) => fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&date=${d}&tz=${encodeURIComponent(tz)}${refresh ? '&refresh=1' : ''}${bt && d === date ? '&want=1' : ''}`)
+    const get = candleSource ? (d) => Promise.resolve(candleSource(d)) : (d, refresh) => fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&date=${d}&tz=${encodeURIComponent(tz)}${refresh ? '&refresh=1' : ''}${bt && d === date ? '&want=1' : ''}`)
       .then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `Error ${r.status}`); return j; });
     const extraDays = [];
     for (let i = 1; i <= span; i++) { const x = new Date(`${date}T12:00:00`); x.setDate(x.getDate() - i); if (x.getDay() !== 6) extraDays.push(`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`); }

@@ -237,3 +237,24 @@ test('history download: weeks newest first with the right contracts, roll days t
   assert.deepEqual(s.rolls.map((r) => [r.date, r.adj]), [['2026-09-10', 10]]);
   assert.equal(h.history.continuous('MNQ', '2026-09-01', '2026-09-20', false).c[0], 100);
 });
+
+test('ATAS chart history: whole charts per contract, stitched at the roll and back-adjusted', async () => {
+  const { h } = setup({ trades: [{ symbol: 'MES', source: 'atas', entry: '2026-11-13T06:40:00' }] });
+  const job = h.history.start('MES', TZ);
+  assert.equal(job.mode, 'chart');
+  const day = (iso) => Date.parse(`${iso}T15:00:00Z`) / 1000;
+  const bars = (fromIso, toIso, price) => {
+    const out = [];
+    for (let t = day(fromIso); t <= day(toIso); t += 86400) for (let k = 0; k < 30; k++) out.push([t + k * 60, price, price + 1, price - 1, price, 1]);
+    return out;
+  };
+  h.ingestBars({ source: 'atas', symbol: 'MESU6', history: true, bars: bars('2026-08-01', '2026-09-15', 6000) });
+  h.ingestBars({ source: 'atas', symbol: 'MESZ6', history: true, bars: bars('2026-08-20', '2026-10-01', 6020) });
+  const s = h.history.continuous('MES', '2026-08-03', '2026-09-30');
+  const at = (iso) => s.c[s.t.findIndex((t) => t >= day(iso))];
+  assert.equal(at('2026-08-05'), 6020, 'September contract shifted up by the 20-point gap');
+  assert.equal(at('2026-09-09'), 6020, 'still September (rolls on the 10th), shifted');
+  assert.equal(at('2026-09-11'), 6020, 'December, unshifted');
+  assert.deepEqual(s.rolls.map((r) => [r.from, r.to, r.adj]), [['MESU6', 'MESZ6', 20]]);
+  assert.equal(h.history.continuous('MES', '2026-08-03', '2026-09-30', false).c[0], 6000);
+});

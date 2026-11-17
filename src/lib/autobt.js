@@ -201,10 +201,19 @@ export function makeEngine() {
 
   /**
    * One backtest. spec = { tf, side, mode: 'rules' | 'code', long: [conds], short: [conds], exitWhen: [conds], code,
+   *   entry: { type: 'market'|'stop'|'limit', off (ticks), expire (bars) },
    *   stop: { type: 'ticks'|'points'|'atr'|'none', v, n }, target: { type: 'ticks'|'points'|'atr'|'r'|'none', v, n },
+   *   trail: { type: 'none'|'ticks'|'atr', v, n }, be: { type: 'none'|'ticks'|'r', v, plus },
+   *   sizing: { type: 'fixed'|'risk', risk, max }, path: 'worst' | 'ohlc',
    *   maxBars, entryFrom, entryTo, flatAt, flatEod, maxTradesDay, days: [0..6], reverse, qty, fee, slip, tick, pv }
    * P = parameter values. range = { from, to } unix seconds (signals and entries only inside it).
    * opts.random = { p, longShare, seed } replaces the entry rules with random entries (the baseline check).
+   *
+   * Fills: market orders at the next 1-minute open (+ slippage); stop entries when a 1-minute bar trades through the level
+   * (at the level, or the open on a gap, + slippage); limit entries when price trades at the level or better (no slippage).
+   * A bar that reaches both stop and target: 'worst' counts the stop; 'ohlc' follows TradingView's broker emulator
+   * (open nearer the high → open, high, low, close; else open, low, high, close). Trailing stops and break-even moves
+   * use a bar's high / low only after that bar has been checked against the old stop.
    */
   function run(d0, spec, P = {}, range = {}, opts = {}) {
     const d = prep(d0);
@@ -212,25 +221,44 @@ export function makeEngine() {
     const f = frames(d, tf);
     const tick = Number(spec.tick) || 0.25, pv = Number(spec.pv) || 1;
     const num = (x, def = 0) => { const v = x && typeof x === 'object' && 'p' in x ? Number(P[x.p]) : Number(x); return Number.isFinite(v) ? v : def; };
-    const slip = num(spec.slip, 0) * tick, fee = num(spec.fee, 0), qty = Math.max(1, Math.round(num(spec.qty, 1)));
+    const slip = num(spec.slip, 0) * tick, fee = num(spec.fee, 0), qty0 = Math.max(1, Math.round(num(spec.qty, 1)));
     const from = range.from ?? -Infinity, to = range.to ?? Infinity;
     const eFrom = hm(spec.entryFrom), eTo = hm(spec.entryTo), flat = hm(spec.flatAt);
     const days = new Set(spec.days?.length ? spec.days : [0, 1, 2, 3, 4, 5, 6]);
     const maxDay = num(spec.maxTradesDay, 0);
     const maxBars = num(spec.maxBars, 0);
+    const entryType = spec.entry?.type || 'market', entryOff = num(spec.entry?.off, 0) * tick, expire = Math.max(1, num(spec.entry?.expire, 1));
+    const trail = spec.trail?.type && spec.trail.type !== 'none' ? spec.trail : null;
+    const be = spec.be?.type && spec.be.type !== 'none' ? spec.be : null;
+    const ohlcPath = spec.path === 'ohlc';
     const sideOk = (dir) => spec.side !== (dir > 0 ? 'short' : 'long');
     let longSig = () => false, shortSig = () => false, exitSig = () => false, code = null;
-    if (spec.mode === 'code') code = compileCode(spec.code || '', d, f, P);
-    else { longSig = compileConds(d, f, spec.long, P); shortSig = compileConds(d, f, spec.short, P); exitSig = anyOf(d, f, spec.exitWhen, P); }
-    const atrS = (spec.stop?.type === 'atr' || spec.target?.type === 'atr') ? series(d, f, { k: 'atr', n: num(spec.stop?.n ?? spec.target?.n, 14) || 14 }, P) : null;
+    if (spec.mode === 'code' && !opts.random) code = compileCode(spec.code || '', d, f, P);
+    else if (!opts.random) { longSig = compileConds(d, f, spec.long, P); shortSig = compileConds(d, f, spec.short, P); exitSig = anyOf(d, f, spec.exitWhen, P); }
+    else exitSig = spec.mode === 'code' ? () => false : anyOf(d, f, spec.exitWhen, P);
+    const atrN = num(spec.stop?.type === 'atr' ? spec.stop.n : spec.target?.type === 'atr' ? spec.target.n : trail?.type === 'atr' ? trail.n : 14, 14) || 14;
+    const atrS = [spec.stop?.type, spec.target?.type, trail?.type].includes('atr') ? series(d, f, { k: 'atr', n: atrN }, P) : null;
     const R = opts.random ? rng(opts.random.seed) : null;
     const inWindow = (m) => (eFrom == null || (eFrom <= (eTo ?? 1440) ? m >= eFrom : m >= eFrom || m < (eTo ?? 0))) && (eTo == null || (eFrom != null && eFrom > eTo ? true : m < eTo));
+    const pastFlat = (m) => flat != null && m >= flat && (eFrom == null || flat > eFrom);
     const trades = [];
-    let pos = null, pendIn = 0, pendOut = null, pendBr = null, today = null, nToday = 0, codeErr = null, eligible = 0, entries = 0;
+    let pos = null, order = null, pendOut = null, today = null, nToday = 0, codeErr = null, eligible = 0, entries = 0, placed = 0, barsIn = 0, barsAll = 0;
     const close = (j, price, why, t) => {
       const pnl = ((price - pos.ep) * pos.dir * pv - fee) * pos.q;
-      trades.push({ e: pos.t, x: t ?? d.t[j] + 30, d: pos.dir, ep: pos.ep, xp: price, q: pos.q, pnl: Math.round(pnl * 100) / 100, r: why, bars: pos.bars, day: d.tday[j] });
+      trades.push({ e: pos.t, x: t ?? d.t[j] + 30, d: pos.dir, ep: pos.ep, xp: price, q: pos.q, pnl: Math.round(pnl * 100) / 100, fee: fee * pos.q, r: why, bars: pos.bars, day: d.tday[j], mae: Math.round(pos.mae * pv * pos.q * 100) / 100, mfe: Math.round(pos.mfe * pv * pos.q * 100) / 100, sl0: pos.sl0 });
       pos = null;
+    };
+    const dist = (x, sl, a) => { if (!x || x.type === 'none') return null; if (x.type === 'ticks') return num(x.v) * tick; if (x.type === 'points') return num(x.v); if (x.type === 'atr') return num(x.v) * a; if (x.type === 'r') return sl != null ? num(x.v) * sl : null; return null; };
+    const open = (j, dir, ref, fillPx, ord) => {
+      const a = atrS ? atrS[ord.frame] : NaN;
+      const sl = ord.stop != null ? Math.abs(ref - ord.stop) : dist(spec.stop, null, a);
+      const tp = ord.target != null ? Math.abs(ord.target - ref) : dist(spec.target, sl, a);
+      let q = qty0;
+      if (spec.sizing?.type === 'risk' && sl) q = Math.max(0, Math.min(num(spec.sizing.max, 100) || 100, Math.floor(num(spec.sizing.risk, 0) / (sl * pv + fee))));
+      if (q < 1) return false; // the stop is too wide for the risk allowed: no trade
+      pos = { dir, ep: fillPx, ref, q, t: d.t[j], bars: 0, stop: sl ? ref - dir * sl : null, target: tp ? ref + dir * tp : null, sl0: sl, atr: a, mae: 0, mfe: 0, hi: ref, lo: ref, intrabar: ord.type !== 'market' };
+      nToday += 1; entries += 1;
+      return true;
     };
     const fi = new Int32Array(d.t.length).fill(-1); // 1-minute index → frame that ends there
     for (let i = 0; i < f.n; i++) fi[f.end[i]] = i;
@@ -239,93 +267,155 @@ export function makeEngine() {
     let lastJ = start;
     for (let j = start; j < d.t.length && d.t[j] < to; j++) {
       lastJ = j;
+      barsAll += 1;
       const day = d.tday[j];
-      if (day !== today) { today = day; nToday = 0; }
+      if (day !== today) { today = day; nToday = 0; if (order) order = null; }
       const lastOfDay = j + 1 >= d.t.length || d.tday[j + 1] !== day;
-      // 1. orders from the bar that just closed fill at this bar's open
-      if (pendOut && pos) { close(j, d.o[j] - pos.dir * slip, pendOut, d.t[j]); }
+      const O = d.o[j], H = d.h[j], L = d.l[j], C = d.c[j];
+      // 1. orders from the bar that just closed: exits and market entries fill at this bar's open
+      if (pendOut && pos) close(j, O - pos.dir * slip, pendOut, d.t[j]);
       pendOut = null;
-      if (pendIn && !pos && !(flat != null && d.lmin[j] >= flat && (eFrom == null || flat > eFrom))) {
-        const dir = pendIn, ep = d.o[j] + dir * slip;
-        const ref = d.o[j];
-        const a = atrS ? atrS[fi[j - 1] >= 0 ? fi[j - 1] : 0] : NaN;
-        const dist = (x, sl) => { if (!x || x.type === 'none') return null; if (x.type === 'ticks') return num(x.v) * tick; if (x.type === 'points') return num(x.v); if (x.type === 'atr') return num(x.v) * a; if (x.type === 'r') return sl != null ? num(x.v) * sl : null; return null; };
-        const sl = pendBr?.stop != null ? Math.abs(ref - pendBr.stop) : dist(spec.stop);
-        const tp = pendBr?.target != null ? Math.abs(pendBr.target - ref) : dist(spec.target, sl);
-        pos = { dir, ep, q: qty, t: d.t[j], bars: 0, stop: sl ? ref - dir * sl : null, target: tp ? ref + dir * tp : null };
-        nToday += 1;
-        entries += 1;
+      if (order && !pos && pastFlat(d.lmin[j])) order = null;
+      if (order && !pos) {
+        const { dir, type, price } = order;
+        let ref = null, px = null;
+        if (type === 'market') { ref = O; px = O + dir * slip; }
+        else if (type === 'stop') { if (dir > 0 ? O >= price : O <= price) { ref = O; px = O + dir * slip; } else if (dir > 0 ? H >= price : L <= price) { ref = price; px = price + dir * slip; } }
+        else if (type === 'limit') { if (dir > 0 ? O <= price : O >= price) { ref = O; px = O; } else if (dir > 0 ? L <= price : H >= price) { ref = price; px = price; } }
+        if (ref != null) { open(j, dir, ref, px, order); order = null; }
+        else if (type === 'market' || --order.left <= 0) order = null;
       }
-      pendIn = 0; pendBr = null;
-      // 2. the bar itself: stop / target / flat time / end of day
-      if (pos) {
-        if (flat != null && d.lmin[j] >= flat && (eFrom == null || flat > eFrom) && pos.t < d.t[j]) close(j, d.o[j] - pos.dir * slip, 'time', d.t[j]);
-      }
+      // 2. the bar itself: flat time, stop / target, then trailing and break-even, end of day
+      if (pos && pastFlat(d.lmin[j]) && pos.t < d.t[j]) close(j, O - pos.dir * slip, 'time', d.t[j]);
       if (pos) {
         const { dir, stop, target } = pos;
-        const hitS = stop != null && (dir > 0 ? d.l[j] <= stop : d.h[j] >= stop);
-        const hitT = target != null && (dir > 0 ? d.h[j] >= target : d.l[j] <= target);
         const fresh = pos.t === d.t[j];
-        if (hitS) close(j, (fresh ? stop : dir > 0 ? Math.min(d.o[j], stop) : Math.max(d.o[j], stop)) - dir * slip, 'stop');
-        else if (hitT) close(j, fresh ? target : dir > 0 ? Math.max(d.o[j], target) : Math.min(d.o[j], target), 'target');
+        const hitS = stop != null && (dir > 0 ? L <= stop : H >= stop);
+        const hitT = target != null && (dir > 0 ? H >= target : L <= target) && !(fresh && pos.intrabar && !ohlcPath);
+        let first = hitS ? 'stop' : hitT ? 'target' : null;
+        if (hitS && hitT && ohlcPath) { const highFirst = Math.abs(H - O) < Math.abs(O - L); first = (dir > 0) === highFirst ? 'target' : 'stop'; }
+        // excursions (for MAE / MFE) up to the exit
+        const adverse = first === 'stop' ? stop : dir > 0 ? L : H;
+        const favour = first === 'target' ? target : dir > 0 ? H : L;
+        pos.mae = Math.min(pos.mae, (adverse - pos.ep) * dir);
+        pos.mfe = Math.max(pos.mfe, (favour - pos.ep) * dir);
+        if (first === 'stop') close(j, (fresh ? stop : dir > 0 ? Math.min(O, stop) : Math.max(O, stop)) - dir * slip, pos.trailed ? 'trail' : 'stop');
+        else if (first === 'target') close(j, fresh ? target : dir > 0 ? Math.max(O, target) : Math.min(O, target), 'target');
+        else {
+          pos.hi = Math.max(pos.hi, H); pos.lo = Math.min(pos.lo, L);
+          if (be && pos.sl0) {
+            const trig = be.type === 'r' ? num(be.v) * pos.sl0 : num(be.v) * tick;
+            const run = dir > 0 ? pos.hi - pos.ref : pos.ref - pos.lo;
+            const lvl = pos.ref + dir * num(be.plus, 0) * tick;
+            if (run >= trig && (pos.stop == null || (dir > 0 ? lvl > pos.stop : lvl < pos.stop))) pos.stop = lvl;
+          }
+          if (trail) {
+            const tdist = trail.type === 'atr' ? num(trail.v) * (pos.atr || 0) : num(trail.v) * tick;
+            if (tdist > 0) {
+              const lvl = dir > 0 ? pos.hi - tdist : pos.lo + tdist;
+              if (pos.stop == null || (dir > 0 ? lvl > pos.stop : lvl < pos.stop)) { pos.stop = lvl; pos.trailed = true; }
+            }
+          }
+        }
       }
-      if (pos && lastOfDay && spec.flatEod !== false) close(j, d.c[j] - pos.dir * slip, 'eod', d.t[j] + 59);
-      // 3. a frame closed on this bar: read the signals (they fill on the next bar)
+      if (pos) barsIn += 1;
+      if (pos && lastOfDay && spec.flatEod !== false) { pos.mae = Math.min(pos.mae, ((pos.dir > 0 ? L : H) - pos.ep) * pos.dir); close(j, C - pos.dir * slip, 'eod', d.t[j] + 59); }
+      // 3. a frame closed on this bar: read the signals (they act from the next bar)
       const i = fi[j];
       if (i < 0 || lastOfDay) continue;
       if (pos) pos.bars += 1;
       const m = f.cl[i];
-      const canEnter = !pos && days.has(d.wday[j]) && inWindow(m) && (!maxDay || nToday < maxDay) && !(flat != null && m >= flat && (eFrom == null || flat > eFrom));
+      const canEnter = !pos && !order && days.has(d.wday[j]) && inWindow(m) && (!maxDay || nToday < maxDay) && !pastFlat(m);
+      const place = (dir, br) => {
+        const price = entryType === 'stop' ? (dir > 0 ? f.h[i] + entryOff : f.l[i] - entryOff) : entryType === 'limit' ? f.c[i] - dir * entryOff : null;
+        order = { dir, type: entryType, price, left: expire, frame: i, stop: br?.stop ?? null, target: br?.target ?? null };
+        placed += 1;
+      };
       if (code) {
         const c = code.ctx;
         c.position = pos ? pos.dir : 0; c.barsInTrade = pos ? pos.bars : 0; c.tradesToday = nToday; c.entryPrice = pos ? pos.ep : NaN;
+        if (canEnter) eligible += 1;
         let out = null;
         try { out = code.fn({ open: f.o[i], high: f.h[i], low: f.l[i], close: f.c[i], volume: f.v[i], time: m, t: f.t[i] }, i, c); } catch (e) { if (!codeErr) codeErr = `bar ${i}: ${e.message}`; }
         const act = typeof out === 'string' ? out : out?.action;
         if (pos && (act === 'exit' || (act === 'buy' && pos.dir < 0) || (act === 'sell' && pos.dir > 0))) pendOut = 'signal';
-        if ((act === 'buy' || act === 'sell') && sideOk(act === 'buy' ? 1 : -1) && (canEnter || (pos && spec.reverse && pendOut))) { pendIn = act === 'buy' ? 1 : -1; if (typeof out === 'object') pendBr = { stop: Number.isFinite(out.stop) ? out.stop : null, target: Number.isFinite(out.target) ? out.target : null }; }
+        if ((act === 'buy' || act === 'sell') && sideOk(act === 'buy' ? 1 : -1) && (canEnter || (pos && spec.reverse && pendOut))) {
+          place(act === 'buy' ? 1 : -1, typeof out === 'object' ? { stop: Number.isFinite(out.stop) ? out.stop : null, target: Number.isFinite(out.target) ? out.target : null } : null);
+        }
         continue;
       }
       if (pos) {
         if ((maxBars && pos.bars >= maxBars) || exitSig(i)) pendOut = maxBars && pos.bars >= maxBars ? 'bars' : 'signal';
-        else if (spec.reverse && ((pos.dir > 0 && shortSig(i) && sideOk(-1)) || (pos.dir < 0 && longSig(i) && sideOk(1)))) { pendOut = 'reverse'; pendIn = -pos.dir; }
+        else if (spec.reverse && !R && ((pos.dir > 0 && shortSig(i) && sideOk(-1)) || (pos.dir < 0 && longSig(i) && sideOk(1)))) { pendOut = 'reverse'; place(-pos.dir); }
         continue;
       }
       if (!canEnter) continue;
-      if (R) {
-        eligible += 1;
-        if (R() < opts.random.p) { const dir = R() < opts.random.longShare ? 1 : -1; if (sideOk(dir)) pendIn = dir; }
-        continue;
-      }
       eligible += 1;
-      if (sideOk(1) && longSig(i)) pendIn = 1;
-      else if (sideOk(-1) && shortSig(i)) pendIn = -1;
+      if (R) { if (R() < opts.random.p) { const dir = R() < opts.random.longShare ? 1 : -1; if (sideOk(dir)) place(dir); } continue; }
+      if (sideOk(1) && longSig(i)) place(1);
+      else if (sideOk(-1) && shortSig(i)) place(-1);
     }
     if (pos) close(lastJ, d.c[lastJ] - pos.dir * slip, 'end', d.t[lastJ] + 59);
-    return { trades, error: codeErr, eligible, entries };
+    const bh = lastJ > start ? Math.round((d.c[lastJ] - d.o[start]) * pv * qty0 * 100) / 100 : 0;
+    return { trades, error: codeErr, eligible, entries, placed, exposure: barsAll ? barsIn / barsAll : 0, buyHold: bh, span: lastJ > start ? (d.t[lastJ] - d.t[start]) / 86400 : 0 };
   }
 
   // ------------------------------------------------------------------------------------------- statistics
-  function stats(trades, initial = 50000) {
+  /** The report: TradingView's / NinjaTrader's usual figures, from closed trades (intrabar drawdown from each trade's MAE). */
+  function stats(trades, initial = 50000, extra = {}) {
     const n = trades.length;
-    let net = 0, gp = 0, gl = 0, w = 0, l = 0, peak = 0, eq = 0, dd = 0, streak = 0, worstStreak = 0;
+    const r2 = (v) => Math.round(v * 100) / 100;
+    let net = 0, gp = 0, gl = 0, w = 0, l = 0, even = 0, fees = 0, peak = 0, eq = 0, dd = 0, ddIntra = 0, runUp = 0, trough = 0, runUpIntra = 0;
+    let streakL = 0, streakW = 0, maxL = 0, maxW = 0, largestWin = 0, largestLoss = 0, barsW = 0, barsL = 0, barsAll = 0, mae = 0, mfe = 0;
+    let ddStart = null, longestDD = 0, inDD = false;
     const byDay = new Map();
+    const side = { long: { n: 0, net: 0, w: 0 }, short: { n: 0, net: 0, w: 0 } };
     for (const t of trades) {
-      net += t.pnl; eq += t.pnl;
-      if (t.pnl > 0) { gp += t.pnl; w++; streak = 0; } else if (t.pnl < 0) { gl -= t.pnl; l++; streak++; worstStreak = Math.max(worstStreak, streak); }
-      peak = Math.max(peak, eq); dd = Math.max(dd, peak - eq);
+      if (t.mae != null) ddIntra = Math.max(ddIntra, peak - (eq + Math.min(0, t.mae)));
+      if (t.mfe != null) runUpIntra = Math.max(runUpIntra, eq + Math.max(0, t.mfe) - trough);
+      net += t.pnl; eq += t.pnl; fees += t.fee || 0; barsAll += t.bars || 0; mae += t.mae || 0; mfe += t.mfe || 0;
+      const sd = t.d > 0 ? side.long : side.short; sd.n++; sd.net += t.pnl; if (t.pnl > 0) sd.w++;
+      if (t.pnl > 0) { gp += t.pnl; w++; streakW++; streakL = 0; maxW = Math.max(maxW, streakW); largestWin = Math.max(largestWin, t.pnl); barsW += t.bars || 0; }
+      else if (t.pnl < 0) { gl -= t.pnl; l++; streakL++; streakW = 0; maxL = Math.max(maxL, streakL); largestLoss = Math.min(largestLoss, t.pnl); barsL += t.bars || 0; }
+      else { even++; }
+      if (eq > peak) { // a new high ends a drawdown: how long it lasted (calendar days)
+        if (inDD) { longestDD = Math.max(longestDD, (t.x - ddStart) / 86400); inDD = false; }
+        peak = eq; ddStart = t.x;
+      } else if (eq < peak && !inDD) { inDD = true; if (ddStart == null) ddStart = trades[0].e; }
+      dd = Math.max(dd, peak - eq);
+      trough = Math.min(trough, eq);
+      runUp = Math.max(runUp, eq - trough);
       byDay.set(t.day, (byDay.get(t.day) || 0) + t.pnl);
     }
+    if (inDD && n) longestDD = Math.max(longestDD, (trades[n - 1].x - ddStart) / 86400);
+    ddIntra = Math.max(ddIntra, dd);
+    // daily P&L → Sharpe and Sortino (annualised, risk-free 0)
     const dayP = [...byDay.values()];
     const mean = dayP.length ? dayP.reduce((a, b) => a + b, 0) / dayP.length : 0;
-    const sd = dayP.length > 1 ? Math.sqrt(dayP.reduce((a, b) => a + (b - mean) ** 2, 0) / (dayP.length - 1)) : 0;
-    const r2 = (v) => Math.round(v * 100) / 100;
+    const sdv = dayP.length > 1 ? Math.sqrt(dayP.reduce((a, b) => a + (b - mean) ** 2, 0) / (dayP.length - 1)) : 0;
+    const down = dayP.length > 1 ? Math.sqrt(dayP.reduce((a, b) => a + Math.min(0, b) ** 2, 0) / (dayP.length - 1)) : 0;
+    // per trade: t-statistic of the average trade, and the chance of a result this good from luck alone
+    const avg = n ? net / n : 0;
+    const sdT = n > 1 ? Math.sqrt(trades.reduce((a, t) => a + (t.pnl - avg) ** 2, 0) / (n - 1)) : 0;
+    const tstat = sdT ? avg / (sdT / Math.sqrt(n)) : 0;
+    const years = (extra.span || (n ? (trades[n - 1].x - trades[0].e) / 86400 : 0)) / 365.25;
+    const ret = initial ? net / initial : 0;
     return {
-      trades: n, net: r2(net), wins: w, losses: l, winRate: n ? (w / n) * 100 : 0, pf: gl ? gp / gl : gp > 0 ? Infinity : 0,
-      avgWin: w ? gp / w : 0, avgLoss: l ? -gl / l : 0, exp: n ? net / n : 0, maxDD: r2(dd), sharpe: sd ? (mean / sd) * Math.sqrt(252) : 0,
-      days: byDay.size, retDD: dd ? net / dd : net > 0 ? Infinity : 0, worstStreak, ddPct: initial ? (dd / initial) * 100 : 0,
+      trades: n, net: r2(net), grossProfit: r2(gp), grossLoss: r2(-gl), fees: r2(fees), wins: w, losses: l, even, winRate: n ? (w / n) * 100 : 0,
+      pf: gl ? gp / gl : gp > 0 ? Infinity : 0, avgWin: w ? gp / w : 0, avgLoss: l ? -gl / l : 0, exp: avg, ratioWL: l && w ? (gp / w) / (gl / l) : 0,
+      largestWin: r2(largestWin), largestLoss: r2(largestLoss), largestWinPct: gp ? (largestWin / gp) * 100 : 0, largestLossPct: gl ? (-largestLoss / gl) * 100 : 0,
+      avgBars: n ? barsAll / n : 0, avgBarsWin: w ? barsW / w : 0, avgBarsLoss: l ? barsL / l : 0, maxConsecWins: maxW, maxConsecLosses: maxL, worstStreak: maxL,
+      maxDD: r2(dd), maxDDIntra: r2(ddIntra), ddPct: initial ? (ddIntra / initial) * 100 : 0, longestDD, maxRunUp: r2(runUp), maxRunUpIntra: r2(Math.max(runUpIntra, runUp)),
+      sharpe: sdv ? (mean / sdv) * Math.sqrt(252) : 0, sortino: down ? (mean / down) * Math.sqrt(252) : 0,
+      days: byDay.size, retDD: dd ? net / dd : net > 0 ? Infinity : 0, returnPct: ret * 100, cagr: years > 0.05 && 1 + ret > 0 ? (Math.pow(1 + ret, 1 / years) - 1) * 100 : null,
+      avgMae: n ? mae / n : 0, avgMfe: n ? mfe / n : 0, tstat, pLuck: n > 1 ? 1 - normCdf(tstat) : 1,
+      long: { trades: side.long.n, net: r2(side.long.net), winRate: side.long.n ? (side.long.w / side.long.n) * 100 : 0 },
+      short: { trades: side.short.n, net: r2(side.short.net), winRate: side.short.n ? (side.short.w / side.short.n) * 100 : 0 },
+      exposure: extra.exposure ?? null, buyHold: extra.buyHold ?? null,
     };
   }
+  /** Standard normal CDF (Abramowitz–Stegun 7.1.26). */
+  function normCdf(x) { const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(x * x) / 2); return x >= 0 ? 0.5 * (1 + y) : 0.5 * (1 - y); }
   const METRIC = { net: (s) => s.net, pf: (s) => (s.pf === Infinity ? 10 : s.pf), exp: (s) => s.exp, sharpe: (s) => s.sharpe, retDD: (s) => (s.retDD === Infinity ? 50 : s.retDD) };
 
   // ------------------------------------------------------------------------------------------- parameter sweep
@@ -415,7 +505,7 @@ export function makeEngine() {
 
   /** The same exits and settings with random entries, `runs` times: how often luck alone did as well. */
   function randomBaseline(d, spec, P, range, actual, runs = 200) {
-    const p = actual.eligible ? actual.entries / actual.eligible : 0;
+    const p = actual.eligible ? (actual.placed ?? actual.entries) / actual.eligible : 0;
     const longs = actual.trades.filter((t) => t.d > 0).length;
     const longShare = actual.trades.length ? longs / actual.trades.length : 0.5;
     const nets = [];
@@ -430,8 +520,8 @@ export function makeEngine() {
    *  Monte Carlo, a +1 tick slippage stress test and the random-entry baseline — all on the in-sample period. */
   function analyze(d, spec, P, { is, oos, initial = 50000, checks = true } = {}) {
     const a = run(d, spec, P, is);
-    const out = { is: { trades: a.trades, stats: stats(a.trades, initial), error: a.error } };
-    if (oos) { const b = run(d, spec, P, oos); out.oos = { trades: b.trades, stats: stats(b.trades, initial), error: b.error }; }
+    const out = { is: { trades: a.trades, stats: stats(a.trades, initial, a), error: a.error } };
+    if (oos) { const b = run(d, spec, P, oos); out.oos = { trades: b.trades, stats: stats(b.trades, initial, b), error: b.error }; }
     if (checks && a.trades.length) {
       out.mc = monteCarlo(a.trades);
       out.stress = stats(run(d, { ...spec, slip: (Number(spec.slip) || 0) + 1 }, P, is).trades, initial);

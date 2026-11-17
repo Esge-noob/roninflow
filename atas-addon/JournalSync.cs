@@ -27,7 +27,7 @@ namespace TradeJournal
     [Description("Sends closed trades from every connected account to RoninFlow (http://localhost:5173, or set Journal URL + Token for a journal on another computer).")]
     public class JournalSync : Indicator
     {
-        private const string SyncVersion = "1.3.0";
+        private const string SyncVersion = "1.4.0";
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
         private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -39,6 +39,10 @@ namespace TradeJournal
         private bool _fullSyncRequested = true;
         private readonly List<double[]> _bars = new();   // finished candles waiting to be sent (price data for charts)
         private DateTime _lastBarTime = DateTime.MinValue;
+        // every finished candle on this chart, by time — sent in full only when RoninFlow asks (history for backtests)
+        private readonly Dictionary<long, double[]> _allBars = new();
+        private int _historySentCount;
+        private DateTime _lastHistoryAsk = DateTime.MinValue;
 
         [Display(Name = "Journal URL", GroupName = "Connection", Order = 10)]
         public string Endpoint { get; set; } = "http://localhost:5173/api/atas";
@@ -50,6 +54,9 @@ namespace TradeJournal
 
         [Display(Name = "Send this chart's candles to the journal (price data for the diary charts)", GroupName = "Price data", Order = 30)]
         public bool SendBars { get; set; } = true;
+
+        [Display(Name = "Send this chart's full history when RoninFlow asks (automated backtests)", GroupName = "Price data", Order = 31)]
+        public bool SendHistory { get; set; } = true;
 
         [Display(Name = "Resend history every (minutes)", GroupName = "Connection", Order = 20)]
         [Range(1, 1440)]
@@ -89,22 +96,32 @@ namespace TradeJournal
         {
             // Nothing to draw. Each finished candle (the one before the current bar) is queued as price data, so the
             // journal's execution charts can use your own feed instead of an outside data provider.
-            if (!SendBars || bar < 1)
+            if (bar < 1 || (!SendBars && !SendHistory))
                 return;
             try
             {
                 var c = GetCandle(bar - 1);
-                if (c == null || c.Time <= _lastBarTime)
+                if (c == null)
+                    return;
+                var utc = DateTime.SpecifyKind(c.Time, DateTimeKind.Utc); // ATAS keeps candle times in UTC
+                var t = new DateTimeOffset(utc).ToUnixTimeSeconds();
+                if (SendHistory)
+                {
+                    lock (_lock)
+                    {
+                        if (!_allBars.ContainsKey(t) && _allBars.Count < 1500000)
+                            _allBars[t] = new double[] { t, (double)c.Open, (double)c.High, (double)c.Low, (double)c.Close, (double)c.Volume };
+                    }
+                }
+                if (!SendBars || c.Time <= _lastBarTime)
                     return;
                 _lastBarTime = c.Time;
-                var utc = DateTime.SpecifyKind(c.Time, DateTimeKind.Utc); // ATAS keeps candle times in UTC
                 if (DateTime.UtcNow - utc > TimeSpan.FromDays(7))
-                    return; // older history isn't needed
-                var t = new DateTimeOffset(utc).ToUnixTimeSeconds();
+                    return; // older candles only go when RoninFlow asks for history (below)
                 lock (_lock)
                 {
                     if (_bars.Count < 20000)
-                        _bars.Add(new[] { t, (double)c.Open, (double)c.High, (double)c.Low, (double)c.Close, (double)c.Volume });
+                        _bars.Add(new double[] { t, (double)c.Open, (double)c.High, (double)c.Low, (double)c.Close, (double)c.Volume });
                 }
             }
             catch
@@ -212,6 +229,12 @@ namespace TradeJournal
                             _bars.InsertRange(0, bars); // journal offline: keep and retry
                     }
 
+                    if (SendHistory && DateTime.UtcNow - _lastHistoryAsk > TimeSpan.FromSeconds(30))
+                    {
+                        _lastHistoryAsk = DateTime.UtcNow;
+                        await SendHistoryIfAsked(token);
+                    }
+
                     if (DateTime.UtcNow >= nextHeartbeat)
                     {
                         var trades = Snapshot();
@@ -289,6 +312,85 @@ namespace TradeJournal
                 }
             }
             return true;
+        }
+
+        private string BaseUrl()
+        {
+            var root = Endpoint.TrimEnd('/');
+            var i = root.IndexOf("/api/", StringComparison.OrdinalIgnoreCase);
+            return i >= 0 ? root.Substring(0, i) : root;
+        }
+
+        /// <summary>
+        /// When RoninFlow is downloading history for this chart's market (Backtesting → Automated → Download history), send
+        /// every candle the chart has loaded — as far back as the chart's "Days to load" reaches. Only 1-minute time charts.
+        /// </summary>
+        private async Task SendHistoryIfAsked(CancellationToken token)
+        {
+            var symbol = InstrumentInfo?.Instrument ?? "";
+            if (string.IsNullOrEmpty(symbol))
+                return;
+            int count;
+            lock (_lock)
+                count = _allBars.Count;
+            if (count < 10 || count <= _historySentCount)
+                return; // nothing new since the last time it was sent
+
+            string answer;
+            try
+            {
+                var ask = new HttpRequestMessage(HttpMethod.Get, BaseUrl() + "/api/candles/history/chart?source=atas&symbol=" + Uri.EscapeDataString(symbol));
+                if (!string.IsNullOrWhiteSpace(Token))
+                    ask.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token.Trim());
+                using var reply = await Http.SendAsync(ask, token);
+                if (!reply.IsSuccessStatusCode)
+                    return; // an older journal without history downloads
+                answer = await reply.Content.ReadAsStringAsync();
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                return;
+            }
+            if (answer.IndexOf("\"want\":true", StringComparison.Ordinal) < 0)
+                return;
+
+            List<double[]> rows;
+            lock (_lock)
+                rows = _allBars.Values.OrderBy(r => r[0]).ToList();
+            // a 1-minute time chart? most gaps between candles are exactly 60 seconds
+            int minute = 0, other = 0;
+            for (var k = 1; k < rows.Count && k < 5000; k++)
+            {
+                var gap = rows[k][0] - rows[k - 1][0];
+                if (gap == 60) minute++;
+                else if (gap > 0 && gap < 3600) other++;
+            }
+            var oneMinute = minute > other * 3;
+            var sent = 0;
+            if (oneMinute)
+            {
+                var url = BaseUrl() + "/api/candles/ingest";
+                for (var k = 0; k < rows.Count; k += 5000)
+                {
+                    var part = rows.Skip(k).Take(5000).ToArray();
+                    var payload = new { source = "atas", symbol, history = true, bars = part };
+                    using var content = new StringContent(JsonSerializer.Serialize(payload, Json), Encoding.UTF8, "application/json");
+                    using var response = await Send(url, content, token);
+                    if (!response.IsSuccessStatusCode)
+                        return; // try again on the next round
+                    sent += part.Length;
+                }
+            }
+            var done = new { source = "atas", symbol, first = rows[0][0], last = rows[rows.Count - 1][0], count = sent, oneMinute };
+            using (var doneBody = new StringContent(JsonSerializer.Serialize(done, Json), Encoding.UTF8, "application/json"))
+            using (var doneReply = await Send(BaseUrl() + "/api/candles/history/chart", doneBody, token))
+            {
+            }
+            _historySentCount = count;
         }
 
         /// <summary>POST, with the token when one is set (a journal on another computer needs it).</summary>

@@ -2258,3 +2258,25 @@ a.ruin-chip { cursor: pointer; }
 .ab-operand > .select { width: 132px; }
 .ab-psel { color: transparent !important; width: 28px !important; padding: 0 !important; background-position: center !important; }
 .ab-psel option { color: var(--fg); background: var(--panel); }
+.ab-steps { margin: 2px 0 4px; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.ab-report td, .ab-report th { padding-top: 7px; padding-bottom: 7px; font-variant-numeric: tabular-nums; }
+.ab-report-h th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border-top: 1px solid var(--border); padding-top: 14px !important; }
+.ab-report td:first-child { width: 46%; }
+.ab-details > summary { cursor: pointer; list-style: none; margin-bottom: 0; }
+.ab-details[open] > summary { margin-bottom: 12px; }
+.ab-details > summary::-webkit-details-marker { display: none; }
+.ab-details > summary::after { content: '▾'; margin-left: 8px; color: var(--muted); font-size: 12px; }
+.ab-details:not([open]) > summary::after { content: '▸'; }
+.ab-monthly td, .ab-monthly th { text-align: right; font-size: 12px; padding: 6px 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ab-monthly td:first-child, .ab-monthly th:first-child { text-align: left; }
+.ab-under { width: 100%; height: 110px; display: block; }
+.ab-under-area { fill: color-mix(in srgb, var(--neg) 30%, transparent); stroke: var(--neg); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ab-rows { grid-template-columns: minmax(110px, 36%) minmax(0, 1fr); }
+.ab-rows > :nth-child(even) { min-width: 0; justify-self: start; }
+.ab-report td:first-child { width: 40%; }
+.ab-report { font-size: 12.5px; }
+.ab-report { table-layout: fixed; width: 100%; }
+.ab-report td, .ab-report th { white-space: normal; overflow-wrap: anywhere; }
+.ab-report-h th:not(:first-child) { width: 20%; }
+.ab-rows .select { max-width: 100%; }
+.ab-report td, .ab-report th { white-space: normal !important; }
