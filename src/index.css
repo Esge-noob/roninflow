@@ -2018,6 +2018,7 @@ a.ruin-chip { cursor: pointer; }
 .studio-canvas { position: absolute; inset: 0; }
 .studio-overlay { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
 .studio-legend { top: 8px; }
+.studio-histnote { position: absolute; z-index: 3; left: 10px; bottom: 34px; max-width: min(560px, calc(100% - 90px)); padding: 6px 9px; font-size: 11.5px; line-height: 1.45; color: var(--muted); background: color-mix(in srgb, var(--bg) 88%, transparent); border: 1px solid var(--border); border-radius: 6px; pointer-events: none; }
 .studio-indlegend { position: absolute; z-index: 3; top: 28px; left: 10px; display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); pointer-events: none; }
 .studio-indlegend i, .studio-ind i { display: inline-block; width: 10px; height: 2px; margin-right: 5px; vertical-align: middle; }
 .studio-inds { display: grid; gap: 2px; padding: 4px; }

@@ -296,12 +296,18 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   // ---------------------------------------------------------------- data
   const [rec, setRec] = useState({ status: 'loading' });
   const [nonce, setNonce] = useState(0);
+  /** One day of candles for this symbol (from the server, or the backtest's own data). */
+  const fetchDay = (d, { refresh, want } = {}) => {
+    if (candleSource) return Promise.resolve(candleSource(d));
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&date=${d}&tz=${encodeURIComponent(tz)}${refresh ? '&refresh=1' : ''}${want ? '&want=1' : ''}`)
+      .then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `Error ${r.status}`); return j; });
+  };
   useEffect(() => {
     if (!sym) return undefined;
     let alive = true;
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const get = candleSource ? (d) => Promise.resolve(candleSource(d)) : (d, refresh) => fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&date=${d}&tz=${encodeURIComponent(tz)}${refresh ? '&refresh=1' : ''}${bt && d === date ? '&want=1' : ''}`)
-      .then(async (r) => { const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `Error ${r.status}`); return j; });
+    const get = (d, refresh) => fetchDay(d, { refresh, want: bt && d === date });
     const extraDays = [];
     for (let i = 1; i <= span; i++) { const x = new Date(`${date}T12:00:00`); x.setDate(x.getDate() - i); if (x.getDay() !== 6) extraDays.push(`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`); }
     setRec({ status: 'loading' });
@@ -315,7 +321,56 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       .catch((e) => alive && setRec({ status: 'error', error: e.message }));
     return () => { alive = false; };
   }, [sym, date, span, nonce]);
-  const rows = rec.status === 'ok' ? rec.candles || [] : [];
+  // Earlier history: scrolling to the chart's left edge loads the days before, a few at a time (like TradingView),
+  // without rebuilding the chart or losing your place. It stops where the saved prices get coarser than the
+  // timeframe you're on (Yahoo keeps 1-minute bars for 30 days, 2–15 minute for 60 and hourly for 2 years).
+  const histKey = `${sym}|${date}|${span}|${tf}`;
+  const [histState, setHist] = useState({ key: '' });
+  const hist = histState.key === histKey ? histState : { key: histKey, candles: [], back: 0, empty: 0, busy: false, done: '', added: 0, n: 0 };
+  const histRef = useRef(hist);
+  histRef.current = hist;
+  const rows = useMemo(() => {
+    const base = rec.status === 'ok' ? rec.candles || [] : [];
+    if (!hist.candles.length || !base.length) return base;
+    const first = base[0][0];
+    return [...hist.candles.filter((c) => c[0] < first), ...base];
+  }, [rec, hist.candles]); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadEarlier = async () => {
+    const h = histRef.current;
+    const base = rec.status === 'ok' ? rec.candles || [] : [];
+    if (h.busy || h.done || !base.length) return;
+    const key = h.key;
+    setHist({ ...h, busy: true });
+    const show = Math.max(ivSec(tf), ivSec(rec.interval || '1m'));
+    const chunk = show >= 3600 ? 10 : 3;
+    const days = [];
+    let back = h.back;
+    while (days.length < chunk && back < 400) {
+      back += 1;
+      const x = new Date(`${date}T12:00:00`); x.setDate(x.getDate() - span - back);
+      if (x.getDay() !== 6) days.push(`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`);
+    }
+    const recs = await Promise.all(days.map((d) => fetchDay(d).catch(() => null)));
+    let empty = h.empty, done = '';
+    const got = new Map();
+    for (const r of recs) { // newest day first
+      if (!r?.candles?.length) { empty += 1; continue; }
+      if (ivSec(r.interval || '1m') > show) { done = `Earlier ${sym} prices are ${tfLabel(r.interval)} bars only — switch to ${tfLabel(r.interval)} to scroll further back.`; break; }
+      empty = 0;
+      for (const c of r.candles) got.set(c[0], c);
+    }
+    if (!done && empty >= 10) done = `No earlier ${sym} prices.`;
+    if (!done && back >= 400) done = 'That’s as far back as the chart scrolls.';
+    setHist((cur) => {
+      if ((cur.key || '') !== key) return cur; // the symbol, day or timeframe changed meanwhile
+      const old = cur.candles || [];
+      const first = old.length ? old[0][0] : base[0][0];
+      const add = [...got.values()].filter((c) => c[0] < first).sort((a, b) => a[0] - b[0]);
+      return { ...cur, key, candles: [...add, ...old], back, empty, busy: false, done, added: add.length, n: (cur.n || 0) + 1 };
+    });
+  };
+  const loadEarlierRef = useRef(loadEarlier);
+  loadEarlierRef.current = loadEarlier;
   // backtest: a day without bars yet may be on its way from your platform add-on — look again for a few minutes
   const tries = useRef(0);
   useEffect(() => { tries.current = 0; }, [date, sym]);
@@ -543,6 +598,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
         el.style.left = `${Math.min(Math.max(8, h.x + 12), box.current.clientWidth - 210)}px`;
         el.style.top = `${Math.max(8, h.y + (h.m.side === 'buy' ? 12 : -80))}px`;
       };
+      chart.timeScale().subscribeVisibleLogicalRangeChange((r) => { if (r && r.from < 3 && !cancelled) loadEarlierRef.current(); });
       chart.subscribeCrosshairMove((p) => {
         showOhlc(p?.seriesData?.get(series) || api.current.bars[api.current.bars.length - 1]);
         tip(hitExec(p?.point));
@@ -596,6 +652,26 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const renderRef = useRef(render);
   renderRef.current = render;
   useEffect(() => { renderRef.current(); }, [replay.idx, replay.mode]);
+
+  // earlier days arrived: rows moved along by `added`, so the replay position follows and the view stays put
+  useEffect(() => {
+    const k = hist.added;
+    const a = api.current;
+    if (!a.chart) return;
+    if (!k) { // nothing in those days (a holiday, a weekend): keep going while you're still at the edge
+      const r0 = a.chart.timeScale().getVisibleLogicalRange();
+      if (hist.n && !hist.done && r0 && r0.from < 3) loadEarlierRef.current();
+      return;
+    }
+    const range = a.chart.timeScale().getVisibleLogicalRange();
+    const before = a.bars.length;
+    replayRef.current = { ...replayRef.current, idx: replayRef.current.idx + k };
+    if (lastIdx.current >= 0) lastIdx.current += k;
+    setReplay((r) => ({ ...r, idx: r.idx + k }));
+    renderRef.current();
+    const moved = a.bars.length - before;
+    if (range && moved > 0) { try { a.chart.timeScale().setVisibleLogicalRange({ from: range.from + moved, to: range.to + moved }); } catch { /* */ } }
+  }, [hist.n]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function focusReplay() {
     const a = api.current;
@@ -1022,6 +1098,12 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
             {IND_INFO.filter(([k, , color]) => ind[k].on && color && !(k === 'vwap' && iv >= 86400)).map(([k, name, color]) => <span key={k}><i style={{ background: color }} />{name}{IND_INFO.find((x) => x[0] === k)[3] ? ` ${ind[k].n}` : ''}</span>)}
           </div>
           <div ref={box} className="studio-canvas" />
+          {(hist.busy || hist.done || srcIv > 60) && rec.status === 'ok' && rows.length > 0 && (
+              <div className="studio-histnote">
+                {hist.busy ? 'Loading earlier days…' : hist.done || ''}
+                {!hist.busy && !hist.done && srcIv > 60 ? `Only ${tfLabel(rec.interval)} prices for this day${/Yahoo/.test(rec.source || '') ? ' — Yahoo keeps 1-minute bars for 30 days and 2–15 minute bars for 60. For 1-minute bars further back, download your platform’s history (Backtesting → Automated → Download history).' : '.'}` : ''}
+              </div>
+            )}
           <canvas ref={overlay} className="studio-overlay" />
           <div ref={tipRef} className="ec-tip" />
           {selected && (

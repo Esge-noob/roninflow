@@ -258,3 +258,22 @@ test('ATAS chart history: whole charts per contract, stitched at the roll and ba
   assert.deepEqual(s.rolls.map((r) => [r.from, r.to, r.adj]), [['MESU6', 'MESZ6', 20]]);
   assert.equal(h.history.continuous('MES', '2026-08-03', '2026-09-30', false).c[0], 6000);
 });
+
+test('a day saved with Yahoo’s hourly bars switches to 1-minute bars once the platform’s history has them', async () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'price-source.json'), JSON.stringify({ yahoo: true, decided: true })); // Yahoo switched on
+  const h = createCandleHandler(dir, { readTrades: () => [] });
+  const date = '2026-09-17';
+  const { from, to } = dayWindow(date, TZ);
+  const hourly = Array.from({ length: 20 }, (_, i) => [from + i * 3600, 6000, 6001, 5999, 6000, 5]);
+  fs.mkdirSync(path.join(dir, 'candles', 'MES=F'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'candles', 'MES=F', `${date}.json`), JSON.stringify({ symbol: 'MES', date, tz: TZ, from, to, interval: '60m', source: 'Yahoo Finance (continuous contract)', fetchedAt: to + 86400, final: true, candles: hourly }));
+  // with no other data, the saved hourly day is what the chart gets
+  assert.equal((await h.get('MES', date, TZ)).interval, '60m');
+  // the ATAS history download brings the September contract's 1-minute chart
+  h.ingestBars({ source: 'atas', symbol: 'MESU6', history: true, bars: bars(from + 3600, 300) });
+  const rec = await h.get('MES', date, TZ);
+  assert.equal(rec.interval, '1m');
+  assert.equal(rec.candles.length, 300);
+  assert.match(rec.source, /add-on/);
+});

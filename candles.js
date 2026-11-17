@@ -686,6 +686,12 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const cached = saved && (cfg.yahoo || (saved.source && !saved.source.startsWith('Yahoo'))) ? saved : null;
     const best = INTERVALS.find(([, max]) => (now - from) / DAY <= max)?.[0] || '60m';
     if (cached && !force) {
+      // saved coarser bars (Yahoo's hourly ones for an older day) give way to 1-minute bars from your platform,
+      // e.g. once its history has been downloaded for backtests
+      if (cached.interval !== '1m' && cfg.addon !== false) {
+        const ab = addonBars(symbol, from, Math.min(to, now));
+        if (ab.candles.length >= 5 && ab.interval === '1m') return { symbol: rootOf(symbol), ysym, date, tz, from, to, interval: '1m', source: 'Your platform (add-on)', fetchedAt: now, final: false, candles: ab.candles };
+      }
       const better = cached.interval !== best && cached.interval !== '1m'; // a finer interval is still available
       if (cached.final && !better) return cached;
       if (!cached.final && now - cached.fetchedAt < 45) return cached; // today: refresh at most every 45s
@@ -765,12 +771,24 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const now = Date.now() / 1000;
     const want = new Set();
+    const recent = new Map(); // root → a symbol you traded in the last 90 days
     for (const t of trades) {
       if (!t?.entry || !t.symbol) continue;
       const date = String(t.entry).slice(0, 10);
       const { from } = dayWindow(date, tz);
+      if ((now - from) / DAY <= 90) recent.set(rootOf(t.symbol), t.symbol);
       if ((now - from) / DAY > 28.5) continue;
       want.add(`${yahooSymbol(t.symbol)}|${t.symbol}|${date}`);
+    }
+    // every weekday of the last four weeks for the markets you trade, not just the days you traded: replay and
+    // backtest sessions on older days get 1-minute bars once Yahoo only has hourly ones left
+    for (const symbol of recent.values()) {
+      for (let i = 1; i <= 28; i++) {
+        const x = new Date(now * 1000 - i * DAY * 1000);
+        if (x.getDay() === 0 || x.getDay() === 6) continue;
+        const date = `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+        want.add(`${yahooSymbol(symbol)}|${symbol}|${date}`);
+      }
     }
     let n = 0;
     for (const k of want) {
