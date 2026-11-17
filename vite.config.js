@@ -11,5 +11,5 @@ export default defineConfig({
   server: { port: 5173, strictPort: true, watch: { ignored: ['**/atas-addon/**', '**/data/**', '**/logs/**'] } },
   preview: { port: 5173, strictPort: true },
   // one script file: a snapshot (share → file) inlines it, so nothing may load separately later
-  build: { rolldownOptions: { output: { codeSplitting: false } } },
+  build: { rolldownOptions: { output: { codeSplitting: false } }, chunkSizeWarningLimit: 2500 },
 })
