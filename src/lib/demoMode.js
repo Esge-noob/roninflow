@@ -22,6 +22,19 @@ export function installDemoFetch() {
       try { trades = JSON.parse(localStorage.getItem('roninflow-demo-v1') || '{}').trades || []; } catch { /* nothing saved yet */ }
       return import('./demoCandles').then(({ demoCandles }) => reply(200, { candles: demoCandles(trades, q.get('symbol'), q.get('date')), interval: '1m', source: 'Made-up demo prices' }));
     }
+    if (url.startsWith('/api/candles/ticks?')) {
+      // made-up ticks inside the demo's made-up bars, so the tick-by-tick replay can be tried
+      const q = new URL(url, 'http://demo').searchParams;
+      const from = Number(q.get('from')), to = Number(q.get('to'));
+      let trades = [];
+      try { trades = JSON.parse(localStorage.getItem('roninflow-demo-v1') || '{}').trades || []; } catch { /* nothing saved yet */ }
+      return import('./demoCandles').then(({ demoCandles, demoTicks }) => {
+        const d = new Date(from * 1000);
+        const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const ticks = demoTicks(demoCandles(trades, q.get('symbol'), day).filter((b) => b[0] >= from && b[0] < to), q.get('symbol'));
+        return reply(200, { ticks, hours: { have: [from - (from % 3600)], pending: [], none: [] }, sources: ['demo'], canFetch: true });
+      });
+    }
     if (url.startsWith('/api/candles/history')) {
       // a made-up history going back to Jan 2025 (RoninFlow downloads yours from your platform add-on)
       const q = new URL(url, 'http://demo').searchParams;

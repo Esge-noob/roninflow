@@ -27,7 +27,7 @@ namespace TradeJournal
     [Description("Sends closed trades from every connected account to RoninFlow (http://localhost:5173, or set Journal URL + Token for a journal on another computer).")]
     public class JournalSync : Indicator
     {
-        private const string SyncVersion = "1.4.0";
+        private const string SyncVersion = "1.5.0";
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
         private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -43,6 +43,11 @@ namespace TradeJournal
         private readonly Dictionary<long, double[]> _allBars = new();
         private int _historySentCount;
         private DateTime _lastHistoryAsk = DateTime.MinValue;
+        // tick data for RoninFlow's tick-by-tick replay: one hour at a time, when it asks
+        private CumulativeTradesRequest? _tickRequest;
+        private long _tickFrom, _tickTo;
+        private DateTime _tickAskedAt = DateTime.MinValue;
+        private DateTime _lastTickAsk = DateTime.MinValue;
 
         [Display(Name = "Journal URL", GroupName = "Connection", Order = 10)]
         public string Endpoint { get; set; } = "http://localhost:5173/api/atas";
@@ -57,6 +62,9 @@ namespace TradeJournal
 
         [Display(Name = "Send this chart's full history when RoninFlow asks (automated backtests)", GroupName = "Price data", Order = 31)]
         public bool SendHistory { get; set; } = true;
+
+        [Display(Name = "Send tick data when RoninFlow asks (tick-by-tick replay)", GroupName = "Price data", Order = 32)]
+        public bool SendTicks { get; set; } = true;
 
         [Display(Name = "Resend history every (minutes)", GroupName = "Connection", Order = 20)]
         [Range(1, 1440)]
@@ -235,6 +243,12 @@ namespace TradeJournal
                         await SendHistoryIfAsked(token);
                     }
 
+                    if (SendTicks && DateTime.UtcNow - _lastTickAsk > TimeSpan.FromSeconds(5))
+                    {
+                        _lastTickAsk = DateTime.UtcNow;
+                        await RequestTicksIfAsked(token);
+                    }
+
                     if (DateTime.UtcNow >= nextHeartbeat)
                     {
                         var trades = Snapshot();
@@ -391,6 +405,132 @@ namespace TradeJournal
             {
             }
             _historySentCount = count;
+        }
+
+        // ---------- ticks for the tick-by-tick replay ----------
+        // RoninFlow asks for one hour of this chart's market at a time; ATAS answers with its trade history
+        // (OnCumulativeTradesResponse), and every tick of every trade goes back as [ms, price, size, side].
+
+        private async Task RequestTicksIfAsked(CancellationToken token)
+        {
+            if (_tickRequest != null && DateTime.UtcNow - _tickAskedAt < TimeSpan.FromMinutes(3))
+                return; // still waiting for ATAS's answer
+            _tickRequest = null;
+            var symbol = InstrumentInfo?.Instrument ?? "";
+            if (string.IsNullOrEmpty(symbol))
+                return;
+            string answer;
+            try
+            {
+                var ask = new HttpRequestMessage(HttpMethod.Get, BaseUrl() + "/api/candles/ticks/want?source=atas&symbol=" + Uri.EscapeDataString(symbol));
+                if (!string.IsNullOrWhiteSpace(Token))
+                    ask.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token.Trim());
+                using var reply = await Http.SendAsync(ask, token);
+                if (!reply.IsSuccessStatusCode)
+                    return; // an older journal without tick replay
+                answer = await reply.Content.ReadAsStringAsync();
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                return;
+            }
+            long from, to;
+            try
+            {
+                using var doc = JsonDocument.Parse(answer);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("want", out var want) || want.ValueKind != JsonValueKind.True)
+                    return;
+                from = root.GetProperty("from").GetInt64();
+                to = root.GetProperty("to").GetInt64();
+            }
+            catch
+            {
+                return;
+            }
+            if (to <= from || to - from > 6 * 3600)
+                return;
+            try
+            {
+                var request = new CumulativeTradesRequest(
+                    DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime,
+                    DateTimeOffset.FromUnixTimeSeconds(to).UtcDateTime,
+                    0, int.MaxValue);
+                _tickFrom = from;
+                _tickTo = to;
+                _tickAskedAt = DateTime.UtcNow;
+                _tickRequest = request;
+                RequestForCumulativeTrades(request);
+            }
+            catch
+            {
+                _tickRequest = null; // this ATAS version can't: RoninFlow replays with bars
+            }
+        }
+
+        protected override void OnCumulativeTradesResponse(CumulativeTradesRequest request, IEnumerable<CumulativeTrade> cumulativeTrades)
+        {
+            var mine = _tickRequest;
+            if (mine == null || (!ReferenceEquals(request, mine) && request.RequestId != mine.RequestId))
+                return;
+            var symbol = InstrumentInfo?.Instrument ?? "";
+            long from = _tickFrom, to = _tickTo;
+            var ticks = new List<double[]>();
+            try
+            {
+                foreach (var trade in cumulativeTrades ?? Enumerable.Empty<CumulativeTrade>())
+                {
+                    if (trade?.Ticks == null)
+                        continue;
+                    var side = trade.Direction == TradeDirection.Buy ? 1 : trade.Direction == TradeDirection.Sell ? -1 : 0;
+                    foreach (var tick in trade.Ticks)
+                    {
+                        if (tick == null)
+                            continue;
+                        var utc = DateTime.SpecifyKind(tick.Time, DateTimeKind.Utc); // ATAS keeps times in UTC
+                        ticks.Add(new double[] { new DateTimeOffset(utc).ToUnixTimeMilliseconds(), (double)tick.Price, (double)tick.Volume, side });
+                    }
+                }
+            }
+            catch
+            {
+                // keep what was read
+            }
+            var token = _cts?.Token ?? CancellationToken.None;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await PostTicks(symbol, from, to, ticks, token);
+                }
+                catch
+                {
+                    // never let tick data affect the platform
+                }
+                finally
+                {
+                    _tickRequest = null;
+                }
+            });
+        }
+
+        private async Task PostTicks(string symbol, long from, long to, List<double[]> ticks, CancellationToken token)
+        {
+            ticks.Sort((a, b) => a[0].CompareTo(b[0]));
+            var url = BaseUrl() + "/api/candles/ticks/ingest";
+            var parts = Math.Max(1, (ticks.Count + 19999) / 20000);
+            for (var part = 0; part < parts; part++)
+            {
+                var payload = new { source = "atas", symbol, from, to, part, last = part == parts - 1, ticks = ticks.Skip(part * 20000).Take(20000).ToArray() };
+                using var content = new StringContent(JsonSerializer.Serialize(payload, Json), Encoding.UTF8, "application/json");
+                using var response = await Send(url, content, token);
+                if (!response.IsSuccessStatusCode)
+                    return; // RoninFlow asks again
+            }
         }
 
         /// <summary>POST, with the token when one is set (a journal on another computer needs it).</summary>

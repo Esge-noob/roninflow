@@ -15,10 +15,10 @@ function lowerBound(rows, t) {
 
 /**
  * rows: [[t, o, h, l, c, v], …] sorted by time; profile of the bars with from <= t < to.
- * opts: { tick (price step), rows (how many price rows to aim for; 0 = automatic), va (0–1) }
+ * opts: { tick (price step: one row per tick), va (0–1) }
  * Returns null when there's nothing to show, else { lo, step, vol, up, total, max, poc, vah, val, n }.
  */
-export function volumeProfile(rows, from, to, { tick = 0.01, rows: want = 0, va = 0.7 } = {}) {
+export function volumeProfile(rows, from, to, { tick = 0.01, va = 0.7 } = {}) {
   if (!rows?.length) return null;
   const a = lowerBound(rows, from), b = lowerBound(rows, to);
   if (b <= a) return null;
@@ -26,9 +26,8 @@ export function volumeProfile(rows, from, to, { tick = 0.01, rows: want = 0, va 
   for (let i = a; i < b; i++) { if (rows[i][3] < lo) lo = rows[i][3]; if (rows[i][2] > hi) hi = rows[i][2]; }
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
   tick = tick > 0 ? tick : 0.01;
-  const target = want > 0 ? want : 80;
-  // a whole number of ticks per row, so rows line up with real prices
-  const step = Math.max(1, Math.ceil((hi - lo) / tick / target)) * tick;
+  // one row per tick (only a range of more than 50,000 ticks gets wider rows, to keep it quick)
+  const step = Math.max(1, Math.ceil((hi - lo) / tick / 50000)) * tick;
   lo = Math.floor(lo / step + 1e-9) * step;
   const n = Math.max(1, Math.floor((hi - lo) / step + 1e-9) + 1);
   const vol = new Float64Array(n), up = new Float64Array(n);

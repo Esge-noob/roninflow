@@ -316,3 +316,29 @@ test('a backtest on the full-size contract asks the platform you trade the micro
   assert.match(a.body.error, /MES \(or ES\)/);
   void dir;
 });
+
+test('ticks: a replay asks ATAS for an hour, the indicator sends it (in parts), the hour is kept and not asked again', async () => {
+  const { h } = setup({ trades: [{ symbol: 'MES', source: 'atas', entry: '2026-11-13T06:40:00' }] });
+  h.ingestBars({ source: 'atas', symbol: 'ES', bars: bars(Date.parse('2026-11-13T15:00:00Z') / 1000, 10) }); // ATAS is connected
+  const H = Date.parse('2026-11-13T15:00:00Z') / 1000;
+  let r = await h.ticks.get('MES', H + 600, H + 1800);
+  assert.deepEqual(r.hours.pending, [H], 'waiting for ATAS');
+  assert.equal(r.canFetch, true);
+  assert.deepEqual(h.ticks.ask('atas', 'NQZ6'), { want: false }, 'not an NQ chart’s job');
+  assert.deepEqual(h.ticks.ask('atas', 'ESZ6'), { want: true, from: H, to: H + 3600 }, 'an ES chart answers for MES');
+  assert.deepEqual(h.ticks.ask('atas', 'ESZ6'), { want: false }, 'asked once, then given two minutes');
+  const ms = (s) => (H + s) * 1000;
+  h.ticks.store({ source: 'atas', symbol: 'ESZ6', from: H, to: H + 3600, part: 0, last: false, ticks: [[ms(700), 6000, 1, 1], [ms(650), 5999.75, 2, -1]] });
+  h.ticks.store({ source: 'atas', symbol: 'ESZ6', from: H, to: H + 3600, part: 1, last: true, ticks: [[ms(900), 6000.25, 3, 1], [ms(4000), 1, 1, 1]] });
+  r = await h.ticks.get('MES', H + 600, H + 1800);
+  assert.deepEqual(r.hours.have, [H]);
+  assert.deepEqual(r.sources, ['atas']);
+  assert.deepEqual(r.ticks.map((t) => t[1]), [5999.75, 6000, 6000.25], 'in time order, only that hour, only the window');
+  // sent again from the start: replaced, not doubled
+  h.ticks.store({ source: 'atas', symbol: 'ESZ6', from: H, to: H + 3600, part: 0, last: true, ticks: [[ms(700), 6000, 1, 1]] });
+  assert.equal((await h.ticks.get('MES', H, H + 3600)).ticks.length, 1);
+  // nothing that can provide ticks: says so
+  const other = setup({ trades: [] });
+  const n = await other.h.ticks.get('MES', H, H + 3600);
+  assert.deepEqual([n.hours.none, n.canFetch], [[H], false]);
+});

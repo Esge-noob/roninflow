@@ -2040,10 +2040,23 @@ a.ruin-chip { cursor: pointer; }
 .studio-text { position: absolute; z-index: 6; min-width: 200px; height: 30px; padding: 0 8px; background: var(--panel); border: 1px solid var(--primary); color: var(--fg); font-size: 13px; }
 .studio-hint { position: absolute; z-index: 5; bottom: 38px; left: 50%; transform: translateX(-50%); padding: 7px 12px; background: var(--panel); border: 1px solid var(--primary); font-size: 12.5px; display: flex; gap: 10px; align-items: center; white-space: nowrap; }
 .studio-hint.subtle { border-color: var(--border); color: var(--muted); pointer-events: none; }
-.studio-replay { display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+.studio-replay { position: relative; z-index: 8; display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
 .studio-play { width: 40px; justify-content: center; }
 .studio-speed .chip { padding: 2px 8px; font-size: 12px; }
 .studio-scrub { flex: 1; min-width: 140px; accent-color: var(--primary); }
+/* replay progress bar */
+.rp-track { position: relative; flex: 1; min-width: 160px; height: 28px; cursor: pointer; touch-action: none; outline: none; }
+.rp-rail { position: absolute; left: 0; right: 0; top: 50%; height: 6px; margin-top: -3px; border-radius: 3px; background: color-mix(in srgb, var(--fg) 10%, transparent); overflow: hidden; transition: height .12s, margin-top .12s; }
+.rp-track:hover .rp-rail, .rp-track:focus-visible .rp-rail { height: 8px; margin-top: -4px; }
+.rp-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 55%, transparent), var(--primary)); }
+.rp-day { position: absolute; top: 6px; bottom: 6px; width: 1px; background: color-mix(in srgb, var(--fg) 35%, transparent); pointer-events: none; }
+.rp-exec { position: absolute; top: 50%; width: 3px; height: 12px; margin: -6px 0 0 -1.5px; border-radius: 1.5px; background: #e8b043; pointer-events: none; box-shadow: 0 0 0 1px var(--panel); }
+.rp-thumb { position: absolute; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 35%, transparent), 0 2px 6px rgba(0,0,0,.5); pointer-events: none; transition: transform .12s; }
+.rp-track:hover .rp-thumb, .rp-track:active .rp-thumb { transform: scale(1.15); }
+.rp-track:focus-visible .rp-thumb { box-shadow: 0 0 0 4px var(--primary); }
+.rp-tip { z-index: 10; position: absolute; bottom: 100%; margin-bottom: 4px; transform: translateX(-50%); padding: 3px 8px; font-size: 11.5px; white-space: nowrap; border-radius: 4px; background: var(--panel); border: 1px solid var(--border); pointer-events: none; font-variant-numeric: tabular-nums; }
+.rp-ticks { display: inline-flex; align-items: center; gap: 4px; }
+.rp-ticks.off { opacity: 0.6; }
 .studio-clock { font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .studio .ec-tip { z-index: 6; }
 @media (max-width: 720px) {

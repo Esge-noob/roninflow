@@ -84,6 +84,27 @@ async function yahoo(ysym, interval, from, to) {
   return out;
 }
 
+// ---------- Databento trades (tick by tick) ----------
+async function databentoTrades(key, root, from, to) {
+  const q = new URLSearchParams({ dataset: 'GLBX.MDP3', symbols: `${root}.c.0`, stype_in: 'continuous', schema: 'trades', start: new Date(from * 1000).toISOString(), end: new Date(to * 1000).toISOString(), encoding: 'csv', pretty_px: 'true', map_symbols: 'false' });
+  const r = await fetch(`https://hist.databento.com/v0/timeseries.get_range?${q}`, { headers: { Authorization: `Basic ${Buffer.from(`${key}:`).toString('base64')}` }, signal: AbortSignal.timeout(60000) });
+  const text = await r.text();
+  if (!r.ok) { let msg = text; try { msg = JSON.parse(text).detail || msg; } catch { /* text */ } throw new Error(`Databento: ${String(msg).slice(0, 200)}`); }
+  const lines = text.trim().split(/\r?\n/);
+  const head = (lines.shift() || '').split(',');
+  const iT = head.indexOf('ts_event'), iP = head.indexOf('price'), iS = head.indexOf('size'), iSide = head.indexOf('side');
+  const out = [];
+  for (const line of lines) {
+    const c = line.split(',');
+    const ns = c[iT];
+    const ms = /^\d+$/.test(ns) ? Number(BigInt(ns) / 1000000n) : Date.parse(ns);
+    const px = Number(c[iP]), sz = Number(c[iS]);
+    if (!Number.isFinite(ms) || !Number.isFinite(px)) continue;
+    out.push([ms, px, sz || 0, c[iSide] === 'B' ? 1 : c[iSide] === 'A' ? -1 : 0]); // the aggressor: B = buyer, A = seller
+  }
+  return out;
+}
+
 // ---------- Databento (CME Globex, continuous front month) ----------
 async function databento(key, root, from, to) {
   const q = new URLSearchParams({ dataset: 'GLBX.MDP3', symbols: `${root}.c.0`, stype_in: 'continuous', schema: 'ohlcv-1m', start: new Date(from * 1000).toISOString(), end: new Date(to * 1000).toISOString(), encoding: 'csv', pretty_px: 'true', pretty_ts: 'true', map_symbols: 'true' });
@@ -187,6 +208,7 @@ export function renameRoot(contract, from, to) {
 export function createCandleHandler(dataDir, { readTrades, readConnTrades, log = () => {}, vault, tokenOk, dropDirs } = {}) {
   const cacheDir = path.join(dataDir, 'candles');
   const barsDir = path.join(dataDir, 'bars');
+  const handler_ticks = {};
   const cfgFile = path.join(dataDir, 'price-source.json');
   const readCfg = () => {
     try { return JSON.parse(fs.readFileSync(cfgFile, 'utf8')); } catch { /* first run */ }
@@ -841,6 +863,103 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   setTimeout(backfill, 20000).unref?.();
   setInterval(backfill, 6 * 3600 * 1000).unref?.();
 
+  // ---------- ticks (tick-by-tick replay) ----------
+  // Kept per platform, market and UTC hour: data/ticks/<source>/<ROOT>/<YYYY-MM-DDTHH>.json = [[ms, price, size, side]]
+  // (side: 1 buyer aggressor, -1 seller, 0 unknown). An hour a platform answered — even with nothing — is "covered"
+  // and not asked for again. Sources: Databento (fetched here, with a key) and ATAS (its indicator answers requests).
+  const ticksDir = path.join(dataDir, 'ticks');
+  const HOUR = 3600;
+  const tickFile = (src, root, h) => path.join(ticksDir, srcId(src), root.replace(/[^\w.-]/g, '_'), `${new Date(h * 1000).toISOString().slice(0, 13)}.json`);
+  const tickCoverFile = path.join(dataDir, 'ticks-covered.json');
+  let tickCover = {};
+  try { tickCover = JSON.parse(fs.readFileSync(tickCoverFile, 'utf8')) || {}; } catch { /* first run */ }
+  const saveTickCover = () => { try { fs.mkdirSync(dataDir, { recursive: true }); fs.writeFileSync(tickCoverFile, JSON.stringify(tickCover)); } catch { /* best effort */ } };
+  const tickWant = {}; // "ROOT|hour" → { root, h, at, asked } — hours a replay is waiting for from ATAS
+  const hoursIn = (from, to) => { const out = []; for (let h = from - (from % HOUR); h < to; h += HOUR) out.push(h); return out; };
+  const coveredBy = (root, h) => {
+    for (const r of [root, TWIN[root]].filter(Boolean)) for (const [k, hours] of Object.entries(tickCover)) if (k.endsWith(`|${r}`) && hours[h] != null) return { src: k.split('|')[0], root: r };
+    return null;
+  };
+  /** Store ticks a platform sent for [from, to) (unix s). part 0 replaces those hours; `last` marks them covered. */
+  function storeTicks({ source, symbol, from, to, part = 0, last = true, ticks = [] }) {
+    const src = srcId(source), root = rootOf(symbol);
+    from = Math.floor(Number(from)); to = Math.floor(Number(to));
+    if (!root || !Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > 6 * HOUR) return 0;
+    const hours = hoursIn(from, to);
+    if (Number(part) === 0) for (const h of hours) { try { fs.rmSync(tickFile(src, root, h), { force: true }); } catch { /* */ } }
+    const byHour = new Map();
+    for (const t of Array.isArray(ticks) ? ticks : []) {
+      const ms = Number(t?.[0]), px = Number(t?.[1]);
+      if (!Number.isFinite(ms) || !Number.isFinite(px)) continue;
+      const h = Math.floor(ms / 1000 / HOUR) * HOUR;
+      if (h < hours[0] || h > hours[hours.length - 1]) continue;
+      if (!byHour.has(h)) byHour.set(h, []);
+      byHour.get(h).push([ms, px, Number(t[2]) || 0, Math.sign(Number(t[3]) || 0)]);
+    }
+    let n = 0;
+    for (const [h, list] of byHour) {
+      const f = tickFile(src, root, h);
+      const old = readCache(f) || [];
+      const all = old.concat(list).sort((a, b) => a[0] - b[0]);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, JSON.stringify(all));
+      n += list.length;
+    }
+    if (last) {
+      const k = `${src}|${root}`;
+      tickCover[k] = tickCover[k] || {};
+      for (const h of hours) { tickCover[k][h] = (readCache(tickFile(src, root, h)) || []).length; delete tickWant[`${root}|${h}`]; if (TWIN[root]) delete tickWant[`${TWIN[root]}|${h}`]; }
+      saveTickCover();
+    }
+    return n;
+  }
+  const tickInflight = new Map();
+  /**
+   * Ticks for a replay window (at most 3 hours). Hours nobody has yet: fetched from Databento when there's a key,
+   * else asked of the ATAS indicator (pending). Returns { ticks, hours: { have, pending, none }, sources }.
+   */
+  async function ticksFor(symbol, from, to, { noPaid } = {}) {
+    const root = rootOf(symbol);
+    const now = Math.floor(Date.now() / 1000);
+    to = Math.min(to, from + 3 * HOUR, now);
+    const hours = hoursIn(from, to);
+    const dbKey = !noPaid && cfg.useDatabento !== false ? keyOf('databento') : null;
+    const atas = cfg.addon !== false && addonSources().some((x) => x.id === 'atas') && (!cfg.addonSource || cfg.addonSource === 'any' || cfg.addonSource === 'atas');
+    const have = [], pending = [], none = [];
+    const out = [];
+    const sources = new Set();
+    for (const h of hours) {
+      let cov = coveredBy(root, h);
+      if (!cov && dbKey && isFutures(symbol) && h + HOUR <= now + HOUR) {
+        const key = `${root}|${h}`;
+        if (!tickInflight.has(key)) tickInflight.set(key, databentoTrades(dbKey, root, h, Math.min(h + HOUR, now)).then((ticks) => storeTicks({ source: 'databento', symbol: root, from: h, to: h + HOUR, ticks })).catch((e) => { log('[ticks]', e.message); }).finally(() => tickInflight.delete(key)));
+        await tickInflight.get(key);
+        cov = coveredBy(root, h);
+      }
+      if (cov) {
+        have.push(h); sources.add(cov.src);
+        for (const t of readCache(tickFile(cov.src, cov.root, h)) || []) if (t[0] >= from * 1000 && t[0] < to * 1000) out.push(t);
+      } else if (atas) {
+        pending.push(h);
+        const k = `${root}|${h}`;
+        if (!tickWant[k]) tickWant[k] = { root, h, at: Date.now(), asked: 0 };
+      } else none.push(h);
+    }
+    return { ticks: out, hours: { have, pending, none }, sources: [...sources], canFetch: !!(dbKey || atas) };
+  }
+  /** The ATAS indicator asks which hour of ticks to send for its chart's market (oldest request first, one at a time). */
+  function tickAsk(source, symbol) {
+    if (srcId(source) !== 'atas') return { want: false };
+    const root = rootOf(symbol);
+    const mine = Object.values(tickWant).filter((w) => (w.root === root || TWIN[w.root] === root) && Date.now() - w.at < 30 * 60e3);
+    for (const w of Object.values(tickWant)) if (Date.now() - w.at >= 30 * 60e3) delete tickWant[`${w.root}|${w.h}`]; // nobody's waiting any more
+    const next = mine.filter((w) => Date.now() - w.asked > 120e3).sort((a, b) => a.h - b.h)[0];
+    if (!next) return { want: false };
+    next.asked = Date.now();
+    return { want: true, from: next.h, to: next.h + HOUR };
+  }
+  handler_ticks.store = storeTicks; handler_ticks.get = ticksFor; handler_ticks.ask = tickAsk;
+
   const send = (res, code, obj) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(obj)); };
 
   const handler = async function candles(req, res) {
@@ -858,6 +977,17 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         const items = wanted(source);
         if (u.searchParams.get('format') === 'lines') { res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(wantedLines(items)); }
         return send(res, 200, { items });
+      }
+      if (u.pathname === '/api/candles/ticks/ingest' && req.method === 'POST') {
+        if (tokenOk && !tokenOk(req)) return send(res, 401, { error: 'Missing or wrong token (Connections → Webhook / API).' });
+        const body = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; if (t.length > 60e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
+        return send(res, 200, { ok: true, ticks: storeTicks(body) });
+      }
+      if (u.pathname === '/api/candles/ticks/want') return send(res, 200, tickAsk(u.searchParams.get('source') || 'atas', u.searchParams.get('symbol') || ''));
+      if (u.pathname === '/api/candles/ticks') {
+        const from = Math.floor(Number(u.searchParams.get('from'))), to = Math.floor(Number(u.searchParams.get('to')));
+        if (!u.searchParams.get('symbol') || !Number.isFinite(from) || !Number.isFinite(to) || to <= from) return send(res, 400, { error: 'symbol, from and to (unix seconds) are needed' });
+        return send(res, 200, await ticksFor(u.searchParams.get('symbol'), from, to));
       }
       if (u.pathname === '/api/candles/history/chart') { // the ATAS indicator: "do you want my chart's history?" / "sent it"
         if (req.method === 'POST') {
@@ -928,6 +1058,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     }
   };
   handler.ingestBars = ingestBars;
+  handler.ticks = handler_ticks;
   handler.get = get; // shared views and snapshots (share.js)
   handler.lib = lib;
   handler.wanted = wanted;

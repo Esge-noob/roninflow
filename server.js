@@ -187,7 +187,7 @@ function handle(req, res) {
 
     // Platform add-ons and webhooks push trades with a token (checked inside), so they skip the PIN screen.
     if (req.url.startsWith('/api/connect/ingest')) return connectApi(req, res, { loopback });
-    if (req.url.startsWith('/api/candles/ingest') || req.url.startsWith('/api/candles/wanted') || req.url.startsWith('/api/candles/history/chart')) return candleApi(req, res);
+    if (req.url.startsWith('/api/candles/ingest') || req.url.startsWith('/api/candles/wanted') || req.url.startsWith('/api/candles/history/chart') || req.url.startsWith('/api/candles/ticks/ingest') || req.url.startsWith('/api/candles/ticks/want')) return candleApi(req, res);
 
     // App icon + manifest load before signing in (browsers fetch the manifest without cookies when installing).
     if (!loopback && req.method === 'GET' && /^\/(manifest\.webmanifest|favicon\.svg|sw\.js|offline\.html|icons\/[\w.-]+\.png)$/.test(req.url.split('?')[0])) return serveStatic(req, res);

@@ -8,7 +8,7 @@ import {
   MousePointer2, Slash, MoveUpRight, Minus, ChevronsRight, SeparatorVertical, Square, AlignVerticalSpaceAround, Ruler,
   CircleArrowUp, CircleArrowDown, Brush, Type, Magnet, Eye, EyeOff, Trash2, Undo2, Camera, Maximize, Maximize2, Minimize, X,
   Palette, Play, Pause, StepForward, StepBack, SkipBack, SkipForward, History, Layers, Check, ChevronDown, RefreshCw, Crosshair,
-  ChevronRight, ChevronLeft, ShieldCheck, Calendar, AlignStartVertical,
+  ChevronRight, ChevronLeft, ShieldCheck, Calendar, AlignStartVertical, Activity, ChevronsRight as TickStep,
 } from 'lucide-react';
 import { useStore } from '../store/store';
 import { IS_VIEWER } from '../lib/shareMode';
@@ -60,16 +60,16 @@ const DEFAULT_IND = {
 const IND_INFO = [
   ['ema1', 'EMA', '#f5a623', 'n'], ['ema2', 'EMA', '#4da3e5', 'n'], ['sma', 'SMA', '#c084fc', 'n'], ['vwap', 'VWAP', '#e5e7eb'],
   ['bb', 'Bollinger Bands', '#64748b', 'n'], ['volume', 'Volume'], ['rsi', 'RSI', '#a78bfa', 'n'], ['macd', 'MACD (12, 26, 9)'],
-  ['vpvr', 'Volume profile (visible range)', '#e8b043', 'n'], ['vpsess', 'Session volume profile', '#e8b043', 'n'],
+  ['vpvr', 'Volume profile (visible range)', '#e8b043'], ['vpsess', 'Session volume profile', '#e8b043'],
 ];
 
 // ---------- volume profile drawing (indicator and the fixed-range tool) ----------
 const vpCache = new Map(); // profiles are recomputed only when their range or data changes
-function profileFor(data, from, to, rowsWanted) {
+function profileFor(data, from, to) {
   const end = Math.min(to, data.until + 1);
-  const key = `${data.key}|${from}|${end}|${rowsWanted}`;
+  const key = `${data.key}|${data.tick}|${from}|${end}`;
   if (vpCache.has(key)) return vpCache.get(key);
-  const p = end > from ? volumeProfile(data.rows, from, end, { tick: data.tick, rows: rowsWanted }) : null;
+  const p = end > from ? volumeProfile(data.rows, from, end, { tick: data.tick }) : null;
   if (vpCache.size > 400) vpCache.clear();
   vpCache.set(key, p);
   return p;
@@ -80,14 +80,22 @@ function profileFor(data, from, to, rowsWanted) {
  */
 function drawProfile(ctx, p, v, x, width, side, c, fmtP, lineTo, showLabels = true, strong = 0.42) {
   const dir = side === 'right' ? -1 : 1;
-  for (let r = 0; r < p.n; r++) {
-    if (!p.vol[r]) continue;
-    const yTop = v.toY(p.lo + (r + 1) * p.step), yBot = v.toY(p.lo + r * p.step);
+  // one bar per tick; zoomed out so far that a tick is under ~1.5 px, neighbouring ticks share a pixel row
+  const y0 = v.toY(p.lo), y1 = v.toY(p.lo + p.step);
+  const px = y0 != null && y1 != null ? Math.abs(y0 - y1) : 2;
+  const g = px >= 1.5 ? 1 : Math.ceil(1.5 / Math.max(px, 0.01));
+  let max = p.max;
+  if (g > 1) { max = 0; for (let r = 0; r < p.n; r += g) { let s2 = 0; for (let k = r; k < r + g && k < p.n; k++) s2 += p.vol[k]; if (s2 > max) max = s2; } }
+  for (let r = 0; r < p.n; r += g) {
+    let vol = 0, upv = 0;
+    for (let k = r; k < r + g && k < p.n; k++) { vol += p.vol[k]; upv += p.up[k]; }
+    if (!vol) continue;
+    const yTop = v.toY(p.lo + Math.min(p.n, r + g) * p.step), yBot = v.toY(p.lo + r * p.step);
     if (yTop == null || yBot == null) continue;
     const h = Math.max(1, yBot - yTop - (yBot - yTop > 4 ? 1 : 0));
-    const len = (p.vol[r] / p.max) * width;
-    const upLen = len * (p.up[r] / p.vol[r]);
-    const inVa = r >= p.vaLo && r <= p.vaHi;
+    const len = (vol / max) * width;
+    const upLen = len * (upv / vol);
+    const inVa = r + g - 1 >= p.vaLo && r <= p.vaHi;
     ctx.fillStyle = alpha(c.up, inVa ? strong : strong * 0.4);
     ctx.fillRect(dir > 0 ? x : x - upLen, yTop, upLen, h);
     ctx.fillStyle = alpha(c.down, inVa ? strong : strong * 0.4);
@@ -211,7 +219,7 @@ function paint(ctx, d, v, selected, fmtP, tick, iv, data) {
     case 'vprofile': {
       const x0 = Math.min(P[0].x, P[1].x), x1 = Math.max(P[0].x, P[1].x);
       const t0 = fromLocal(Math.min(d.p[0].t, d.p[1].t)), t1 = fromLocal(Math.max(d.p[0].t, d.p[1].t));
-      const prof = data?.rows?.length ? profileFor(data, t0, t1 + 60, d.rows || 0) : null;
+      const prof = data?.rows?.length ? profileFor(data, t0, t1 + 60) : null;
       ctx.strokeStyle = alpha(col, selected ? 0.9 : 0.35); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
       if (!prof) { ctx.strokeRect(x0, Math.min(P[0].y, P[1].y), x1 - x0, Math.abs(P[1].y - P[0].y)); ctx.setLineDash([]); vpBox.set(d, { x0, x1, y0: Math.min(P[0].y, P[1].y), y1: Math.max(P[0].y, P[1].y) }); break; }
       const yHi = v.toY(prof.lo + prof.n * prof.step), yLo = v.toY(prof.lo);
@@ -500,9 +508,69 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   magnetRef.current = magnet;
 
   // ---------------------------------------------------------------- replay
-  const [replay, setReplay] = useState({ mode: 'off', idx: 0, playing: false, speed: 5 });
+  const [replay, setReplay] = useState({ mode: 'off', idx: 0, playing: false, speed: 5, sub: 0, subAt: -1 });
   const replayRef = useRef(replay);
   replayRef.current = replay;
+
+  // ---------------------------------------------------------------- tick-by-tick replay
+  // When a source has the day's ticks (Databento with a key; ATAS through Journal Sync 1.5) the replay moves trade by
+  // trade inside each bar: the bar builds up tick by tick and orders fill at the traded prices. `sub` = ticks of bar
+  // `subAt` (the one after idx) shown so far.
+  const tickWanted = studio.ticks !== false && !candleSource && srcIv <= 60;
+  const ticksRef = useRef(new Map()); // UTC hour start → [[ms, price, size, side]] | 'pending' | 'none'
+  const pendingSince = useRef(new Map());
+  const barTicks = useRef(new Map()); // row time → that bar's ticks (cut from its hour once)
+  const tickedTimes = useRef(new Set()); // bars already played tick by tick (their orders are done)
+  const [tickVer, setTickVer] = useState(0);
+  const [tickState, setTickState] = useState({ status: 'idle', source: '' });
+  useEffect(() => { ticksRef.current = new Map(); barTicks.current = new Map(); pendingSince.current = new Map(); setTickState({ status: 'idle', source: '' }); }, [sym]);
+  /** The ticks of bar i: an array (maybe empty), 'pending' (asked for), 'none', or undefined (not loaded yet). */
+  const ticksForBar = (i) => {
+    const row = rows[i];
+    if (!row) return null;
+    if (barTicks.current.has(row[0])) return barTicks.current.get(row[0]);
+    const got = ticksRef.current.get(row[0] - (row[0] % 3600));
+    if (!Array.isArray(got)) return got;
+    const a = row[0] * 1000, b = (row[0] + srcIv) * 1000;
+    let lo = 0, hi = got.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (got[m][0] < a) lo = m + 1; else hi = m; }
+    let j = lo;
+    while (j < got.length && got[j][0] < b) j++;
+    const part = got.slice(lo, j);
+    barTicks.current.set(row[0], part);
+    return part;
+  };
+  const tickHour = replay.mode === 'on' && rows[replay.idx] ? rows[replay.idx][0] - (rows[replay.idx][0] % 3600) : null;
+  useEffect(() => {
+    if (!tickWanted || tickHour == null) return undefined;
+    let alive = true, timer;
+    const load = async () => {
+      const hours = [tickHour, tickHour + 3600].filter((h) => { const g = ticksRef.current.get(h); return g === undefined || g === 'pending'; });
+      if (!hours.length) return;
+      let waiting = false;
+      for (const h of hours) {
+        try {
+          const r = await fetch(`/api/candles/ticks?symbol=${encodeURIComponent(sym)}&from=${h}&to=${h + 3600}`);
+          const j = await r.json().catch(() => ({}));
+          if (!alive) return;
+          if (!r.ok) { ticksRef.current.set(h, 'none'); setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' })); continue; }
+          if (j.hours?.have?.includes(h)) { ticksRef.current.set(h, j.ticks || []); pendingSince.current.delete(h); setTickState({ status: 'ok', source: j.sources?.[0] || '' }); }
+          else if (j.hours?.pending?.includes(h)) {
+            if (!pendingSince.current.has(h)) pendingSince.current.set(h, Date.now());
+            if (Date.now() - pendingSince.current.get(h) > 120e3) { ticksRef.current.set(h, 'none'); setTickState((x) => (x.status === 'ok' ? x : { status: 'timeout', source: 'atas' })); continue; }
+            ticksRef.current.set(h, 'pending'); waiting = true;
+            setTickState((x) => (x.status === 'ok' ? x : { status: 'pending', source: 'atas' }));
+          } else { ticksRef.current.set(h, 'none'); if (!j.canFetch) setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' })); }
+        } catch { if (alive) ticksRef.current.set(h, 'none'); }
+      }
+      barTicks.current = new Map();
+      setTickVer((v) => v + 1);
+      if (waiting && alive) timer = setTimeout(load, 4000);
+    };
+    load();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [tickWanted, tickHour, sym]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tickActive = tickWanted && (tickState.status === 'ok' || tickState.status === 'pending');
   const hoverX = useRef(null);
 
   // ---------------------------------------------------------------- chart
@@ -697,13 +765,24 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     const r = replayRef.current;
     const hide = r.mode === 'on' || (bt && r.mode === 'pick'); // a backtest never shows bars past the replay
     const end = hide ? Math.min(r.idx, rows.length - 1) : rows.length - 1;
-    const vis = hide ? rows.slice(0, end + 1) : rows;
+    let vis = hide ? rows.slice(0, end + 1) : rows;
+    let tickUntil = null;
+    if (hide && r.sub > 0 && r.subAt === end + 1) { // tick replay: the bar being built
+      const tk = ticksForBar(end + 1);
+      if (Array.isArray(tk) && tk.length) {
+        const part = tk.slice(0, r.sub);
+        let hi = -Infinity, lo = Infinity, vol = 0;
+        for (const t of part) { if (t[1] > hi) hi = t[1]; if (t[1] < lo) lo = t[1]; vol += t[2]; }
+        vis = [...vis, [rows[end + 1][0], part[0][1], hi, lo, part[part.length - 1][1], vol]];
+        tickUntil = Math.floor(part[part.length - 1][0] / 1000);
+      }
+    }
     const bars = aggregate(vis, a.iv);
     feed(a.series, bars);
     for (const x of a.inds) feed(x.s, x.f(bars));
     a.bars = bars;
     a.barTimes = bars.map((b) => b.time);
-    const until = hide ? rows[end][0] + srcIv - 1 : Infinity;
+    const until = tickUntil ?? (hide ? rows[end][0] + srcIv - 1 : Infinity);
     const ex = showExec ? buildExecutions(symTrades, a.barTimes, a.toBar, until) : { markers: [], lines: [] };
     a.shownMarkers = ex.markers;
     a.markers.setMarkers(ex.markers.map((m) => ({ time: m.time, position: m.side === 'buy' ? 'atPriceBottom' : 'atPriceTop', price: m.price, shape: m.side === 'buy' ? 'arrowUp' : 'arrowDown', color: m.side === 'buy' ? a.c.buy : a.c.sell, text: m.qty > 1 ? String(m.qty) : '', size: 1 })));
@@ -733,7 +812,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   }
   const renderRef = useRef(render);
   renderRef.current = render;
-  useEffect(() => { renderRef.current(); }, [replay.idx, replay.mode]);
+  useEffect(() => { renderRef.current(); }, [replay.idx, replay.mode, replay.sub]);
 
   // earlier days arrived: rows moved along by `added`, so the replay position follows and the view stays put
   useEffect(() => {
@@ -749,7 +828,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     const before = a.bars.length;
     replayRef.current = { ...replayRef.current, idx: replayRef.current.idx + k };
     if (lastIdx.current >= 0) lastIdx.current += k;
-    setReplay((r) => ({ ...r, idx: r.idx + k }));
+    setReplay((r) => ({ ...r, idx: r.idx + k, subAt: r.subAt >= 0 ? r.subAt + k : r.subAt }));
     renderRef.current();
     const moved = a.bars.length - before;
     if (range && moved > 0) { try { a.chart.timeScale().setVisibleLogicalRange({ from: range.from + moved, to: range.to + moved }); } catch { /* */ } }
@@ -805,7 +884,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
         const starts = sessionsIn(R, sessionStart(from), to, sessionStart);
         for (let k = 0; k < starts.length; k++) {
           const s0 = starts[k], s1 = starts[k + 1] ?? s0 + 86400;
-          const p = profileFor(vdata, s0, s1, indNow.vpsess.n);
+          const p = profileFor(vdata, s0, s1);
           if (!p) continue;
           // from the session's first bar (not its 6 PM open, which may be before the data) to its last
           let i0 = 0, lo2 = 0, hi2 = R.length;
@@ -820,7 +899,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       }
       if (R.length && indNow.vpvr?.on) {
         const from = fromLocal(v.fromX(0)), to = fromLocal(v.fromX(v.w)) + 60;
-        const p = profileFor(vdata, from, to, indNow.vpvr.n);
+        const p = profileFor(vdata, from, to);
         if (p) drawProfile(ctx, p, v, v.w, v.w * 0.22, 'right', vdata.c, fmtP, 0, true, 0.38);
       }
       if (!hiddenRef.current) for (const d of drawingsRef.current) paint(ctx, d, v, d.id === selRef.current, fmtP, tick, api.current.iv, vdata);
@@ -904,7 +983,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       let idx = rows.findIndex((row) => barTime(row[0], srcIv) > t) - 1;
       if (idx < 0) idx = rows.length - 1;
       if (bt) { btRestartRef.current(Math.max(0, Math.min(idx, r.idx))); return; } // a backtest restarts from that bar (never ahead of where it was)
-      setReplay((s) => ({ ...s, mode: 'on', idx: Math.max(0, idx), playing: false }));
+      setReplay((s) => ({ ...s, mode: 'on', idx: Math.max(0, idx), playing: false, sub: 0, subAt: -1 }));
       requestAnimationFrame(() => requestAnimationFrame(focusReplay));
     };
     const move = (e) => {
@@ -995,12 +1074,12 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
 
   // ---------------------------------------------------------------- replay playback
   useEffect(() => {
-    if (replay.mode !== 'on' || !replay.playing) return undefined;
+    if (replay.mode !== 'on' || !replay.playing || tickActive) return undefined;
     const id = setInterval(() => {
       setReplay((s) => (s.idx >= rows.length - 1 ? { ...s, playing: false } : { ...s, idx: s.idx + 1 }));
     }, 1000 / replay.speed);
     return () => clearInterval(id);
-  }, [replay.mode, replay.playing, replay.speed, rows.length]);
+  }, [replay.mode, replay.playing, replay.speed, rows.length, tickActive]);
   const execTimes = useMemo(() => {
     const ts = [];
     for (const t of symTrades) for (const f of (t.fills?.length ? t.fills : [t])) for (const iso of [f.entry, f.exit]) if (iso) ts.push(Math.floor(new Date(iso).getTime() / 1000));
@@ -1012,11 +1091,17 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     const first = execTimes[0];
     let idx = 0;
     if (where === 'trade' && first) { idx = rows.findIndex((r) => r[0] >= first - 30 * 60); if (idx < 0) idx = 0; }
-    setReplay((s) => ({ ...s, mode: 'on', idx, playing: false }));
+    setReplay((s) => ({ ...s, mode: 'on', idx, playing: false, sub: 0, subAt: -1 }));
     requestAnimationFrame(() => requestAnimationFrame(focusReplay));
   };
   const stopReplay = () => { setReplay((s) => ({ ...s, mode: 'off', playing: false })); requestAnimationFrame(() => requestAnimationFrame(() => api.current.fit?.())); };
-  const stepTo = (idx) => setReplay((s) => ({ ...s, idx: Math.max(bt ? s.idx : 0, Math.min(rows.length - 1, idx)), playing: false }));
+  const stepTo = (idx) => {
+    const s0 = replayRef.current;
+    const to = Math.max(bt ? s0.idx : 0, Math.min(rows.length - 1, idx));
+    // a backtest moving ahead with ticks plays the stretch through, so every order sees every tick
+    if (bt && tickActive && to > s0.idx && rows[to]) { advanceRef.current((rows[to][0] + srcIv) * 1000 - 1); setReplay((s) => ({ ...s, playing: false })); return; }
+    setReplay((s) => (to === s.idx ? { ...s, playing: false } : { ...s, idx: to, playing: false, sub: 0, subAt: -1 }));
+  };
   const nextExec = () => {
     const now = rows[replay.idx]?.[0] ?? 0;
     const t = execTimes.find((x) => x > now + srcIv - 1);
@@ -1040,7 +1125,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       let k = rows.length - 1;
       while (k > 0 && rows[k][0] > btTime.current) k--;
       lastIdx.current = k;
-      setReplay((r) => ({ ...r, idx: k }));
+      setReplay((r) => ({ ...r, idx: k, sub: 0, subAt: -1 }));
       return;
     }
     const [hh, mm] = String(bt.startTime || '').split(':').map(Number);
@@ -1049,7 +1134,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     if (idx < 0) idx = rows.length - 1;
     idx = Math.max(0, idx - 1); // the bar before the start time is the last one you see
     lastIdx.current = idx;
-    setReplay((r) => ({ ...r, mode: 'on', idx, playing: false }));
+    setReplay((r) => ({ ...r, mode: 'on', idx, playing: false, sub: 0, subAt: -1 }));
     requestAnimationFrame(() => requestAnimationFrame(focusReplay));
   }, [rec, bt]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { lastIdx.current = -1; btTime.current = 0; setReplay((r) => ({ ...r, mode: 'off', playing: false })); }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1060,24 +1145,31 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     setFlash({ text: `${why ? `${why} · ` : ''}${t.direction} ${t.qty} closed ${t.pnl >= 0 ? '+' : ''}${fmtMoney(t.pnl)}`, good: t.pnl >= 0, at: Date.now() });
   };
   useEffect(() => { if (!flash) return undefined; const id = setTimeout(() => setFlash(null), 3500); return () => clearTimeout(id); }, [flash]);
+  /** What a bar (or a tick) did to the position and the working orders. */
+  function applyStep(r) {
+    if (r.pos !== posRef.current) setPos(r.pos);
+    if (r.orders.length !== ordersRef.current.length) setOrders(r.orders);
+    for (const c of r.closed) record(c.closed, c.why === 'stop' ? 'Stopped out' : c.why === 'target' ? 'Target hit' : 'Order filled');
+    if (r.filled.length && !r.closed.length) { const f = r.filled[r.filled.length - 1]; setFlash({ text: `${f.order.side > 0 ? 'Bought' : 'Sold'} ${f.order.qty} @ ${fmtP(f.price)} (${f.order.type})`, good: true, at: Date.now() }); }
+  }
   // each new bar the replay shows is checked against the stop and target
   useEffect(() => {
     if (!bt || replay.mode !== 'on' || lastIdx.current < 0) return;
     const to = replay.idx;
     for (let i = lastIdx.current + 1; i <= to && i < rows.length; i++) {
       if (!posRef.current && !ordersRef.current.length) continue;
-      const r = stepOrders(posRef.current, ordersRef.current, rows[i], srcIv, bracketsFor);
-      if (r.pos !== posRef.current) setPos(r.pos);
-      if (r.orders.length !== ordersRef.current.length) setOrders(r.orders);
-      for (const c of r.closed) record(c.closed, c.why === 'stop' ? 'Stopped out' : c.why === 'target' ? 'Target hit' : 'Order filled');
-      if (r.filled.length && !r.closed.length) { const f = r.filled[r.filled.length - 1]; setFlash({ text: `${f.order.side > 0 ? 'Bought' : 'Sold'} ${f.order.qty} @ ${fmtP(f.price)} (${f.order.type})`, good: true, at: Date.now() }); }
+      if (tickedTimes.current.has(rows[i][0])) continue; // played tick by tick: its orders are done
+      applyStep(stepOrders(posRef.current, ordersRef.current, rows[i], srcIv, bracketsFor));
     }
     lastIdx.current = Math.max(lastIdx.current, to);
   }, [replay.idx, replay.mode]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { drawPosLines(); }, [pos, orders]); // eslint-disable-line react-hooks/exhaustive-deps
   const nowBar = rows[replay.idx];
-  const lastPrice = nowBar ? nowBar[4] : null;
-  const barEnd = nowBar ? nowBar[0] + srcIv - 1 : 0;
+  const curSub = replay.subAt === replay.idx + 1 ? replay.sub : 0;
+  const partTicks = curSub > 0 ? ticksForBar(replay.idx + 1) : null;
+  const lastTick = Array.isArray(partTicks) && partTicks.length ? partTicks[Math.min(curSub, partTicks.length) - 1] : null;
+  const lastPrice = lastTick ? lastTick[1] : nowBar ? nowBar[4] : null;
+  const barEnd = lastTick ? Math.floor(lastTick[0] / 1000) : nowBar ? nowBar[0] + srcIv - 1 : 0;
   const roundTick = (p) => Number((Math.round(p / tickSize) * tickSize).toFixed(Math.max(prec, 2)));
   const orderRef = useRef(order);
   orderRef.current = order;
@@ -1108,6 +1200,83 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const setOrderField = (patch) => { const next = { ...order, ...patch }; setOrder(next); setSetting('btOrder', { qty: next.qty, sl: next.sl, tp: next.tp, brk: next.brk }); };
   const onClose = () => { if (bt && posRef.current) closeAll('Closed at the chart’s last bar'); setOrders([]); closeStudio(); };
   const nextDay = () => { if (posRef.current) closeAll('Closed at the end of the day'); setOrders([]); bt.onDay(nextWeekday(date)); };
+  /**
+   * Tick replay: show everything that traded up to market time `ms` — ticks of the next bar one by one (each checked
+   * against the position and orders), finished bars, and whole bars where there are no ticks.
+   * Returns { waiting (ticks still on their way), at (ms reached), end (no more bars) }.
+   */
+  const advance = (ms) => {
+    const r0 = replayRef.current;
+    let idx = r0.idx, s = r0.subAt === r0.idx + 1 ? r0.sub : 0, changed = false, waiting = false, at = ms;
+    for (let guard = 0; guard < 500000; guard++) {
+      const next = rows[idx + 1];
+      if (!next) break;
+      const tk = ticksForBar(idx + 1);
+      if (Array.isArray(tk) && tk.length) {
+        if (s < tk.length) {
+          if (tk[s][0] > ms) break;
+          const t = tk[s];
+          if (bt && (posRef.current || ordersRef.current.length)) applyStep(stepOrders(posRef.current, ordersRef.current, [Math.floor(t[0] / 1000), t[1], t[1], t[1], t[1], t[2]], 1, bracketsFor));
+          s += 1; changed = true; continue;
+        }
+        if ((next[0] + srcIv) * 1000 > ms) break;
+        idx += 1; s = 0; tickedTimes.current.add(next[0]); changed = true; continue;
+      }
+      if (tickWanted && (tk === 'pending' || tk === undefined)) { waiting = true; at = Math.min(ms, next[0] * 1000); break; } // ticks on their way
+      if ((next[0] + srcIv) * 1000 > ms) break;
+      idx += 1; s = 0; changed = true;
+    }
+    if (changed) {
+      replayRef.current = { ...replayRef.current, idx, sub: s, subAt: idx + 1 };
+      setReplay((x) => ({ ...x, idx, sub: s, subAt: idx + 1 }));
+    }
+    return { waiting, at, end: !rows[idx + 1] };
+  };
+  const advanceRef = useRef(advance);
+  advanceRef.current = advance;
+  /** Market time (ms) the replay has reached. */
+  const replayMs = () => {
+    const r = replayRef.current;
+    const tk = r.sub > 0 && r.subAt === r.idx + 1 ? ticksForBar(r.idx + 1) : null;
+    if (Array.isArray(tk) && tk.length) return tk[Math.min(r.sub, tk.length) - 1][0];
+    return rows[r.idx] ? (rows[r.idx][0] + srcIv) * 1000 - 1 : 0;
+  };
+  /** One bar forward: the rest of the next bar's ticks (or the whole bar). */
+  const forwardBar = () => {
+    const r = replayRef.current;
+    const next = rows[r.idx + 1];
+    if (!next) return;
+    if (tickActive && Array.isArray(ticksForBar(r.idx + 1))) { advance((next[0] + srcIv) * 1000); setReplay((x) => ({ ...x, playing: false })); return; }
+    stepTo(r.idx + 1);
+  };
+  const forwardBarRef = useRef(forwardBar);
+  forwardBarRef.current = forwardBar;
+  /** One tick forward. */
+  const forwardTick = () => {
+    const r = replayRef.current;
+    const tk = ticksForBar(r.idx + 1);
+    const s = r.subAt === r.idx + 1 ? r.sub : 0;
+    if (!Array.isArray(tk) || !tk.length) { forwardBar(); return; }
+    advance(s < tk.length ? tk[s][0] : (rows[r.idx + 1][0] + srcIv) * 1000);
+    setReplay((x) => ({ ...x, playing: false }));
+  };
+  // playback on a market clock: `speed` bars a second, or real time
+  useEffect(() => {
+    if (replay.mode !== 'on' || !replay.playing || !tickActive) return undefined;
+    let raf, last = performance.now(), clock = replayMs();
+    const loop = (now) => {
+      const dt = Math.min(0.25, (now - last) / 1000);
+      last = now;
+      const target = clock + dt * replayRef.current.speed * srcIv * 1000;
+      const res = advanceRef.current(target);
+      clock = res.waiting ? res.at : target;
+      if (res.end) { setReplay((x) => ({ ...x, playing: false })); return; }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [replay.mode, replay.playing, tickActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Backtest: restart the replay from an earlier bar (scroll back to reach earlier days). The open position closes first. */
   const btRestart = (idx) => {
     if (!bt || !rows[idx]) return;
@@ -1115,7 +1284,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     setOrders([]);
     lastIdx.current = idx;
     btTime.current = rows[idx][0];
-    setReplay((s) => ({ ...s, mode: 'on', idx, playing: false }));
+    setReplay((s) => ({ ...s, mode: 'on', idx, playing: false, sub: 0, subAt: -1 }));
     requestAnimationFrame(() => requestAnimationFrame(focusReplay));
   };
   const btRestartRef = useRef(btRestart);
@@ -1197,6 +1366,28 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const dayPnl = bt ? dayTrades.reduce((sum, t) => sum + (Number(t.pnl) || 0), 0) : 0;
   const atEnd = replay.mode === 'on' && replay.idx >= rows.length - 1;
 
+  // ---------------------------------------------------------------- replay progress bar
+  const trackRef = useRef(null);
+  const trackDrag = useRef(false);
+  const [trackHover, setTrackHover] = useState(null);
+  const rowAt = (t) => { let lo = 0, hi = rows.length - 1; if (hi < 0) return 0; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (rows[m][0] <= t) lo = m; else hi = m - 1; } return lo; };
+  const trackMarks = useMemo(() => {
+    const n = Math.max(1, rows.length - 1), days = [], exec = [];
+    let last = '';
+    rows.forEach((r, i) => { const d = localIsoOf(r[0]).slice(0, 10); if (last && d !== last) days.push({ at: (i / n) * 100, d }); last = d; });
+    for (const t of execTimes) if (rows.length && t >= rows[0][0] && t <= rows[rows.length - 1][0] + srcIv) exec.push((rowAt(t) / n) * 100);
+    return { days, exec };
+  }, [rows, execTimes]); // eslint-disable-line react-hooks/exhaustive-deps
+  const idxAtX = (clientX) => { const r = trackRef.current.getBoundingClientRect(); return Math.round(Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * Math.max(0, rows.length - 1)); };
+  const hhmmss = (ms) => { const d = new Date(ms); return `${fmtTime12(d.toISOString()).replace(/\s?([AP]M)$/i, '')}:${String(d.getSeconds()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`; };
+  const timeLabel = (i) => { const r = rows[i]; if (!r) return ''; const d = localIsoOf(r[0]).slice(0, 10); return `${d !== date ? `${fmtDate(d)} · ` : ''}${fmtTime12(new Date(r[0] * 1000).toISOString())}`; };
+  const progress = rows.length > 1 ? Math.min(100, ((replay.idx + (curSub && Array.isArray(partTicks) && partTicks.length ? curSub / partTicks.length : 0)) / (rows.length - 1)) * 100) : 0;
+  const tickLabel = { ok: tickState.source === 'databento' ? 'Databento' : tickState.source === 'atas' ? 'ATAS' : 'on', pending: 'waiting for ATAS…', timeout: 'ATAS didn’t answer', none: 'not available', idle: '…' }[tickState.status] || '…';
+  const tickTitle = tickState.status === 'ok' ? `Replaying tick by tick from ${tickLabel}. Click to replay bar by bar.`
+    : tickState.status === 'pending' ? 'Asked ATAS for this hour’s ticks — Journal Sync 1.5 on a chart of this market sends them within a few seconds.'
+      : tickState.status === 'timeout' ? 'ATAS didn’t send ticks. Journal Sync 1.5 (reinstall the add-on) needs to be on a chart of this market, with “Send tick data” on.'
+        : 'No tick data for this day. Tick replay needs Databento (Settings → Price data) or ATAS with Journal Sync 1.5 on a chart of this market. Replaying bar by bar.';
+
   const placeRef = useRef(place);
   placeRef.current = place;
   const closeRef = useRef(closeAll);
@@ -1210,14 +1401,14 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       if (e.altKey && KEYS[e.key.toLowerCase()]) { e.preventDefault(); setTool(KEYS[e.key.toLowerCase()]); return; }
       if (replayRef.current.mode === 'on') {
         if (e.key === ' ') { e.preventDefault(); setReplay((s) => ({ ...s, playing: !s.playing })); return; }
-        if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); setReplay((s) => ({ ...s, idx: Math.min(rows.length - 1, s.idx + 1), playing: false })); return; }
+        if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); forwardBarRef.current(); return; }
         if (e.key === 'ArrowLeft' && e.shiftKey && !bt) { e.preventDefault(); setReplay((s) => ({ ...s, idx: Math.max(0, s.idx - 1), playing: false })); return; }
         if (bt && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
           const k = e.key.toLowerCase();
           if (k === 'b') { e.preventDefault(); placeRef.current(1); return; }
           if (k === 's') { e.preventDefault(); placeRef.current(-1); return; }
           if (k === 'x') { e.preventDefault(); closeRef.current(); return; }
-          if (e.key === 'ArrowRight') { e.preventDefault(); setReplay((s) => ({ ...s, idx: Math.min(rows.length - 1, s.idx + 1), playing: false })); return; }
+          if (e.key === 'ArrowRight') { e.preventDefault(); forwardBarRef.current(); return; }
         }
       }
       if (e.key === 'Escape') {
@@ -1471,22 +1662,38 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
             {!bt && <button className="icon-btn" title="One bar back (Shift+←)" onClick={() => stepTo(replay.idx - 1)}><StepBack size={15} /></button>}
             {bt && <button className="btn sm" title="Restart the replay from an earlier bar — scroll back for earlier days" onClick={() => { setReplay((s) => ({ ...s, mode: 'pick', playing: false })); setTool('cursor'); setSel(null); }}><History size={14} /> <span className="hide-m">Start from a bar</span></button>}
             <button className="btn sm white studio-play" title="Play / pause (Space)" onClick={() => setReplay((s) => ({ ...s, playing: !s.playing && s.idx < rows.length - 1 }))}>{replay.playing ? <Pause size={15} /> : <Play size={15} />}</button>
-            <button className="icon-btn" title={bt ? 'One bar forward (→)' : 'One bar forward (Shift+→)'} onClick={() => stepTo(replay.idx + 1)}><StepForward size={15} /></button>
+            <button className="icon-btn" title={bt ? 'One bar forward (→)' : 'One bar forward (Shift+→)'} onClick={forwardBar}><StepForward size={15} /></button>
+            {tickActive && <button className="icon-btn" title="One tick forward" onClick={forwardTick}><TickStep size={15} /></button>}
             {!bt && <button className="icon-btn" title="Jump to your next execution" disabled={!execTimes.some((t) => t > replayUntil)} onClick={nextExec}><SkipForward size={15} /></button>}
           </div>
           <div className="row gap4 studio-speed">
+            {tickActive && <button className={`chip ${Math.abs(replay.speed - 1 / srcIv) < 1e-9 ? 'on' : ''}`} onClick={() => setReplay((s) => ({ ...s, speed: 1 / srcIv }))} title="As fast as it happened">Real time</button>}
             {SPEEDS.map((x) => <button key={x} className={`chip ${replay.speed === x ? 'on' : ''}`} onClick={() => setReplay((s) => ({ ...s, speed: x }))} title={`${x} bar${x === 1 ? '' : 's'} a second`}>{x}×</button>)}
+            {!candleSource && srcIv <= 60 && <button className={`chip rp-ticks ${tickActive ? 'on' : ''} ${studio.ticks !== false && !tickActive && tickState.status !== 'idle' ? 'off' : ''}`} onClick={() => setStudio({ ticks: studio.ticks === false })} title={studio.ticks === false ? 'Replay tick by tick when a source has the ticks' : tickTitle}><Activity size={12} /> Ticks{studio.ticks !== false ? ` · ${tickLabel}` : ' off'}</button>}
           </div>
-          <input className="studio-scrub" type="range" min={0} max={Math.max(0, rows.length - 1)} value={replay.idx} onChange={(e) => stepTo(Number(e.target.value))} aria-label="Replay position" />
+          <div
+            ref={trackRef} className={`rp-track ${bt ? 'bt' : ''}`} role="slider" tabIndex={0} aria-label="Replay position"
+            aria-valuemin={0} aria-valuemax={Math.max(0, rows.length - 1)} aria-valuenow={replay.idx} aria-valuetext={timeLabel(replay.idx)}
+            onPointerDown={(e) => { if (e.pointerType === 'mouse' && e.button !== 0) return; e.currentTarget.setPointerCapture?.(e.pointerId); trackDrag.current = true; stepTo(idxAtX(e.clientX)); }}
+            onPointerMove={(e) => { const i = idxAtX(e.clientX); setTrackHover({ x: e.clientX - trackRef.current.getBoundingClientRect().left, i }); if (trackDrag.current && !bt) stepTo(i); }}
+            onPointerUp={() => { trackDrag.current = false; }}
+            onPointerLeave={() => { if (!trackDrag.current) setTrackHover(null); }}
+          >
+            <div className="rp-rail"><div className="rp-fill" style={{ width: `${progress}%` }} /></div>
+            {trackMarks.days.map((m) => <i key={m.d} className="rp-day" style={{ left: `${m.at}%` }} title={fmtDate(m.d)} />)}
+            {trackMarks.exec.map((x, k) => <i key={k} className="rp-exec" style={{ left: `${x}%` }} />)}
+            <div className="rp-thumb" style={{ left: `${progress}%` }} />
+            {trackHover && <div className="rp-tip" style={{ left: Math.max(30, Math.min((trackRef.current?.clientWidth || 0) - 30, trackHover.x)) }}>{bt && trackHover.i > replay.idx ? 'Jump ahead to ' : ''}{timeLabel(trackHover.i)}</div>}
+          </div>
           {bt ? (
             <div className="studio-clock">
-              <b>{rows[replay.idx] ? `${localIsoOf(rows[replay.idx][0]).slice(0, 10) !== date ? `${fmtDate(localIsoOf(rows[replay.idx][0]).slice(0, 10))} · ` : ''}${fmtTime12(new Date(rows[replay.idx][0] * 1000).toISOString())}` : ''}</b>
+              <b>{lastTick ? `${localIsoOf(Math.floor(lastTick[0] / 1000)).slice(0, 10) !== date ? `${fmtDate(localIsoOf(Math.floor(lastTick[0] / 1000)).slice(0, 10))} · ` : ''}${hhmmss(lastTick[0])}` : timeLabel(replay.idx)}</b>
               <span className="muted"> · today {dayTrades.length} trade{dayTrades.length === 1 ? '' : 's'} </span>
               <span className={dayPnl >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(dayPnl, { sign: true })}</span>
             </div>
           ) : (
             <div className="studio-clock">
-              <b>{rows[replay.idx] ? `${localIsoOf(rows[replay.idx][0]).slice(0, 10) !== date ? `${fmtDate(localIsoOf(rows[replay.idx][0]).slice(0, 10))} · ` : ''}${fmtTime12(new Date(rows[replay.idx][0] * 1000).toISOString())}` : ''}</b>
+              <b>{lastTick ? `${localIsoOf(Math.floor(lastTick[0] / 1000)).slice(0, 10) !== date ? `${fmtDate(localIsoOf(Math.floor(lastTick[0] / 1000)).slice(0, 10))} · ` : ''}${hhmmss(lastTick[0])}` : timeLabel(replay.idx)}</b>
               {openPos && <span className="muted"> · in a {openPos.direction.toLowerCase()} {openPos.qty > 1 ? `×${openPos.qty} ` : ''}from {fmtP(openPos.entryPrice)}</span>}
               <span className="muted"> · {replayDone.length} closed </span>
               <span className={replayPnl >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(replayPnl, { sign: true })}</span>

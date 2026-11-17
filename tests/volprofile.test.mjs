@@ -7,7 +7,7 @@ const bar = (t, l, h, v, up = true) => [t, up ? l : h, h, l, up ? h : l, v];
 test('volume is spread over each bar’s range; POC, value area and buying share', () => {
   // three bars, tick 1: 100–102 (30 up), 101–101.75 (40 down, one row), 101–103 (30 up)
   const rows = [bar(0, 100, 102, 30), bar(60, 101, 101.75, 40, false), bar(120, 101, 103, 30)];
-  const p = volumeProfile(rows, 0, 1e9, { tick: 1, rows: 100 });
+  const p = volumeProfile(rows, 0, 1e9, { tick: 1 });
   assert.equal(p.step, 1);
   assert.equal(p.lo, 100);
   assert.deepEqual([...p.vol], [10, 10 + 40 + 10, 10 + 10, 10]);
@@ -18,12 +18,12 @@ test('volume is spread over each bar’s range; POC, value area and buying share
   assert.deepEqual([p.val, p.vah], [101, 103]);
 });
 
-test('only the bars in the time range; rows grow to a whole number of ticks; nothing → null', () => {
+test('only the bars in the time range; one row per tick; nothing → null', () => {
   const rows = Array.from({ length: 100 }, (_, i) => bar(i * 60, 1000 + i, 1001 + i, 5));
-  const p = volumeProfile(rows, 10 * 60, 20 * 60, { tick: 0.25, rows: 8 });
+  const p = volumeProfile(rows, 10 * 60, 20 * 60, { tick: 0.25 });
   assert.equal(p.total, 50, 'ten bars');
-  assert.equal(p.step % 0.25, 0);
-  assert.ok(p.n <= 10);
+  assert.equal(p.step, 0.25, 'one row per tick');
+  assert.equal(p.n, 10 / 0.25 + 1, '1010 to 1020 in quarter points');
   assert.equal(volumeProfile(rows, 1e6, 2e6, { tick: 1 }), null);
   assert.equal(volumeProfile([], 0, 1, {}), null);
 });

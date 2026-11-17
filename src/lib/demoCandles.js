@@ -108,3 +108,22 @@ export function demoHistory(symbol, fromDate, toDate) {
   out.n = out.t.length;
   return out;
 }
+
+/** Made-up ticks inside 1-minute bars: open → nearer extreme → other extreme → close, with small wiggles. */
+export function demoTicks(bars, symbol) {
+  const tick = TICK[rootOf(symbol)] || 0.25;
+  const out = [];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (const [t, o, h, l, c, v] of bars) {
+    const n = 12 + Math.floor(rnd() * 24);
+    const path = o - l < h - o ? [o, l, h, c] : [o, h, l, c];
+    for (let k = 0; k < n; k++) {
+      const f = k / (n - 1), seg = Math.min(2, Math.floor(f * 3)), g = f * 3 - seg;
+      let p = path[seg] + (path[seg + 1] - path[seg]) * g + (rnd() - 0.5) * tick * 2;
+      p = Math.max(l, Math.min(h, Math.round(p / tick) * tick));
+      out.push([t * 1000 + Math.floor((k / n) * 60000), p, Math.max(1, Math.round((v / n) * (0.5 + rnd()))), rnd() < 0.5 ? 1 : -1]);
+    }
+  }
+  return out;
+}
