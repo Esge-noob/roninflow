@@ -557,9 +557,9 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
           if (j.hours?.have?.includes(h)) { ticksRef.current.set(h, j.ticks || []); pendingSince.current.delete(h); setTickState({ status: 'ok', source: j.sources?.[0] || '' }); }
           else if (j.hours?.pending?.includes(h)) {
             if (!pendingSince.current.has(h)) pendingSince.current.set(h, Date.now());
-            if (Date.now() - pendingSince.current.get(h) > 120e3) { ticksRef.current.set(h, 'none'); setTickState((x) => (x.status === 'ok' ? x : { status: 'timeout', source: 'atas' })); continue; }
+            if (Date.now() - pendingSince.current.get(h) > 200e3) { ticksRef.current.set(h, 'none'); setTickState((x) => (x.status === 'ok' ? x : { status: 'timeout', source: 'atas', addon: j.addon })); continue; }
             ticksRef.current.set(h, 'pending'); waiting = true;
-            setTickState((x) => (x.status === 'ok' ? x : { status: 'pending', source: 'atas' }));
+            setTickState((x) => (x.status === 'ok' ? x : { status: 'pending', source: 'atas', addon: j.addon }));
           } else { ticksRef.current.set(h, 'none'); if (!j.canFetch) setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' })); }
         } catch { if (alive) ticksRef.current.set(h, 'none'); }
       }
@@ -1383,9 +1383,10 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const timeLabel = (i) => { const r = rows[i]; if (!r) return ''; const d = localIsoOf(r[0]).slice(0, 10); return `${d !== date ? `${fmtDate(d)} · ` : ''}${fmtTime12(new Date(r[0] * 1000).toISOString())}`; };
   const progress = rows.length > 1 ? Math.min(100, ((replay.idx + (curSub && Array.isArray(partTicks) && partTicks.length ? curSub / partTicks.length : 0)) / (rows.length - 1)) * 100) : 0;
   const tickLabel = { ok: tickState.source === 'databento' ? 'Databento' : tickState.source === 'atas' ? 'ATAS' : 'on', pending: 'waiting for ATAS…', timeout: 'ATAS didn’t answer', none: 'not available', idle: '…' }[tickState.status] || '…';
+  const addonSays = tickState.addon ? ` Journal Sync says (${tickState.addon.ago}s ago, ${tickState.addon.symbol}): ${tickState.addon.state}.` : ' Journal Sync hasn’t reported on ticks yet — it needs version 1.5.1 or newer.';
   const tickTitle = tickState.status === 'ok' ? `Replaying tick by tick from ${tickLabel}. Click to replay bar by bar.`
-    : tickState.status === 'pending' ? 'Asked ATAS for this hour’s ticks — Journal Sync 1.5 on a chart of this market sends them within a few seconds.'
-      : tickState.status === 'timeout' ? 'ATAS didn’t send ticks. Journal Sync 1.5 (reinstall the add-on) needs to be on a chart of this market, with “Send tick data” on.'
+    : tickState.status === 'pending' ? `Asked ATAS for this hour’s ticks — Journal Sync on a chart of this market sends them.${addonSays}`
+      : tickState.status === 'timeout' ? `ATAS didn’t send ticks.${addonSays} Replaying bar by bar.`
         : 'No tick data for this day. Tick replay needs Databento (Settings → Price data) or ATAS with Journal Sync 1.5 on a chart of this market. Replaying bar by bar.';
 
   const placeRef = useRef(place);

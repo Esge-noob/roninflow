@@ -27,7 +27,7 @@ namespace TradeJournal
     [Description("Sends closed trades from every connected account to RoninFlow (http://localhost:5173, or set Journal URL + Token for a journal on another computer).")]
     public class JournalSync : Indicator
     {
-        private const string SyncVersion = "1.5.0";
+        private const string SyncVersion = "1.5.1";
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
         private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -48,6 +48,9 @@ namespace TradeJournal
         private long _tickFrom, _tickTo;
         private DateTime _tickAskedAt = DateTime.MinValue;
         private DateTime _lastTickAsk = DateTime.MinValue;
+        private CumulativeTradesRequest? _tickToIssue;   // made on ATAS's calculation thread (OnCalculate), or after 8 s
+        private DateTime _tickQueuedAt = DateTime.MinValue;
+        private string _tickState = "idle";              // reported to RoninFlow, shown on its Ticks button
 
         [Display(Name = "Journal URL", GroupName = "Connection", Order = 10)]
         public string Endpoint { get; set; } = "http://localhost:5173/api/atas";
@@ -79,6 +82,9 @@ namespace TradeJournal
 
         protected override void OnInitialize()
         {
+            // ATAS holds back trade-history requests from an indicator it counts as hidden unless its alerts are on.
+            // Journal Sync draws nothing, so switch them on (it never raises an alert). By name, so older ATAS builds compile.
+            try { GetType().GetProperty("AlertsEnabled")?.SetValue(this, true); } catch { }
             TradingStatisticsProvider.RawStatisticsSourceChanged -= OnStatisticsSourceChanged;
             TradingStatisticsProvider.StatisticsRebuilt -= OnStatisticsRebuilt;
             TradingStatisticsProvider.RawStatisticsSourceChanged += OnStatisticsSourceChanged;
@@ -102,6 +108,7 @@ namespace TradeJournal
 
         protected override void OnCalculate(int bar, decimal value)
         {
+            IssueTickRequest();
             // Nothing to draw. Each finished candle (the one before the current bar) is queued as price data, so the
             // journal's execution charts can use your own feed instead of an outside data provider.
             if (bar < 1 || (!SendBars && !SendHistory))
@@ -411,18 +418,44 @@ namespace TradeJournal
         // RoninFlow asks for one hour of this chart's market at a time; ATAS answers with its trade history
         // (OnCumulativeTradesResponse), and every tick of every trade goes back as [ms, price, size, side].
 
+        private void IssueTickRequest()
+        {
+            var request = _tickToIssue;
+            if (request == null)
+                return;
+            _tickToIssue = null;
+            try
+            {
+                _tickRequest = request;
+                _tickAskedAt = DateTime.UtcNow;
+                _tickState = "asked ATAS for " + DateTimeOffset.FromUnixTimeSeconds(_tickFrom).UtcDateTime.ToString("yyyy-MM-dd HH:mm") + " UTC";
+                RequestForCumulativeTrades(request);
+            }
+            catch (Exception e)
+            {
+                _tickRequest = null;
+                _tickState = "ATAS refused the request: " + e.Message;
+            }
+        }
+
         private async Task RequestTicksIfAsked(CancellationToken token)
         {
-            if (_tickRequest != null && DateTime.UtcNow - _tickAskedAt < TimeSpan.FromMinutes(3))
-                return; // still waiting for ATAS's answer
-            _tickRequest = null;
+            if (_tickToIssue != null && DateTime.UtcNow - _tickQueuedAt > TimeSpan.FromSeconds(8))
+                IssueTickRequest(); // no new data on the chart (market closed): ask from here
+            if (_tickRequest != null && DateTime.UtcNow - _tickAskedAt > TimeSpan.FromMinutes(3))
+            {
+                _tickRequest = null;
+                _tickState = "ATAS didn't answer within 3 minutes";
+            }
+            var busy = _tickRequest != null || _tickToIssue != null;
             var symbol = InstrumentInfo?.Instrument ?? "";
             if (string.IsNullOrEmpty(symbol))
                 return;
             string answer;
             try
             {
-                var ask = new HttpRequestMessage(HttpMethod.Get, BaseUrl() + "/api/candles/ticks/want?source=atas&symbol=" + Uri.EscapeDataString(symbol));
+                var ask = new HttpRequestMessage(HttpMethod.Get, BaseUrl() + "/api/candles/ticks/want?source=atas&symbol=" + Uri.EscapeDataString(symbol)
+                    + "&busy=" + (busy ? "1" : "0") + "&state=" + Uri.EscapeDataString(_tickState));
                 if (!string.IsNullOrWhiteSpace(Token))
                     ask.Headers.TryAddWithoutValidation("Authorization", "Bearer " + Token.Trim());
                 using var reply = await Http.SendAsync(ask, token);
@@ -452,31 +485,33 @@ namespace TradeJournal
             {
                 return;
             }
-            if (to <= from || to - from > 6 * 3600)
+            if (busy || to <= from || to - from > 6 * 3600)
                 return;
             try
             {
-                var request = new CumulativeTradesRequest(
+                _tickFrom = from;
+                _tickTo = to;
+                _tickQueuedAt = DateTime.UtcNow;
+                _tickState = "queued " + DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime.ToString("yyyy-MM-dd HH:mm") + " UTC";
+                _tickToIssue = new CumulativeTradesRequest(
                     DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime,
                     DateTimeOffset.FromUnixTimeSeconds(to).UtcDateTime,
                     0, int.MaxValue);
-                _tickFrom = from;
-                _tickTo = to;
-                _tickAskedAt = DateTime.UtcNow;
-                _tickRequest = request;
-                RequestForCumulativeTrades(request);
             }
-            catch
+            catch (Exception e)
             {
-                _tickRequest = null; // this ATAS version can't: RoninFlow replays with bars
+                _tickToIssue = null;
+                _tickState = "couldn't make the request: " + e.Message;
             }
         }
 
         protected override void OnCumulativeTradesResponse(CumulativeTradesRequest request, IEnumerable<CumulativeTrade> cumulativeTrades)
         {
             var mine = _tickRequest;
-            if (mine == null || (!ReferenceEquals(request, mine) && request.RequestId != mine.RequestId))
+            if (mine == null)
                 return;
+            if (!ReferenceEquals(request, mine) && request.RequestId != mine.RequestId && request.BeginTime != mine.BeginTime)
+                return; // another indicator's request
             var symbol = InstrumentInfo?.Instrument ?? "";
             long from = _tickFrom, to = _tickTo;
             var ticks = new List<double[]>();
@@ -500,16 +535,17 @@ namespace TradeJournal
             {
                 // keep what was read
             }
+            _tickState = "ATAS answered: " + ticks.Count + " ticks, sending";
             var token = _cts?.Token ?? CancellationToken.None;
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    await PostTicks(symbol, from, to, ticks, token);
+                    _tickState = await PostTicks(symbol, from, to, ticks, token) ? "sent " + ticks.Count + " ticks" : "RoninFlow didn't take the ticks";
                 }
-                catch
+                catch (Exception e)
                 {
-                    // never let tick data affect the platform
+                    _tickState = "sending ticks failed: " + e.Message; // never let tick data affect the platform
                 }
                 finally
                 {
@@ -518,7 +554,7 @@ namespace TradeJournal
             });
         }
 
-        private async Task PostTicks(string symbol, long from, long to, List<double[]> ticks, CancellationToken token)
+        private async Task<bool> PostTicks(string symbol, long from, long to, List<double[]> ticks, CancellationToken token)
         {
             ticks.Sort((a, b) => a[0].CompareTo(b[0]));
             var url = BaseUrl() + "/api/candles/ticks/ingest";
@@ -529,8 +565,9 @@ namespace TradeJournal
                 using var content = new StringContent(JsonSerializer.Serialize(payload, Json), Encoding.UTF8, "application/json");
                 using var response = await Send(url, content, token);
                 if (!response.IsSuccessStatusCode)
-                    return; // RoninFlow asks again
+                    return false; // RoninFlow asks again
             }
+            return true;
         }
 
         /// <summary>POST, with the token when one is set (a journal on another computer needs it).</summary>

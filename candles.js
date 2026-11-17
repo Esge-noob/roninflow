@@ -945,11 +945,14 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         if (!tickWant[k]) tickWant[k] = { root, h, at: Date.now(), asked: 0 };
       } else none.push(h);
     }
-    return { ticks: out, hours: { have, pending, none }, sources: [...sources], canFetch: !!(dbKey || atas) };
+    return { ticks: out, hours: { have, pending, none }, sources: [...sources], canFetch: !!(dbKey || atas), addon: atas && addonTick ? { ...addonTick, ago: Math.round((Date.now() - addonTick.at) / 1000) } : null };
   }
   /** The ATAS indicator asks which hour of ticks to send for its chart's market (oldest request first, one at a time). */
-  function tickAsk(source, symbol) {
+  let addonTick = null; // what the ATAS indicator last said about ticks (shown on the replay's Ticks button)
+  function tickAsk(source, symbol, { state, busy } = {}) {
     if (srcId(source) !== 'atas') return { want: false };
+    if (state) addonTick = { state: String(state).slice(0, 200), symbol: String(symbol).slice(0, 40), at: Date.now() };
+    if (busy) return { want: false }; // still working on the last hour
     const root = rootOf(symbol);
     const mine = Object.values(tickWant).filter((w) => (w.root === root || TWIN[w.root] === root) && Date.now() - w.at < 30 * 60e3);
     for (const w of Object.values(tickWant)) if (Date.now() - w.at >= 30 * 60e3) delete tickWant[`${w.root}|${w.h}`]; // nobody's waiting any more
@@ -983,7 +986,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         const body = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; if (t.length > 60e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
         return send(res, 200, { ok: true, ticks: storeTicks(body) });
       }
-      if (u.pathname === '/api/candles/ticks/want') return send(res, 200, tickAsk(u.searchParams.get('source') || 'atas', u.searchParams.get('symbol') || ''));
+      if (u.pathname === '/api/candles/ticks/want') return send(res, 200, tickAsk(u.searchParams.get('source') || 'atas', u.searchParams.get('symbol') || '', { state: u.searchParams.get('state'), busy: u.searchParams.get('busy') === '1' }));
       if (u.pathname === '/api/candles/ticks') {
         const from = Math.floor(Number(u.searchParams.get('from'))), to = Math.floor(Number(u.searchParams.get('to')));
         if (!u.searchParams.get('symbol') || !Number.isFinite(from) || !Number.isFinite(to) || to <= from) return send(res, 400, { error: 'symbol, from and to (unix seconds) are needed' });
