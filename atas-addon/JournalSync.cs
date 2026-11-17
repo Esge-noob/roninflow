@@ -486,7 +486,7 @@ namespace TradeJournal
                 {
                     if (trade?.Ticks == null)
                         continue;
-                    var side = trade.Direction == TradeDirection.Buy ? 1 : trade.Direction == TradeDirection.Sell ? -1 : 0;
+                    var side = trade.Direction == ATAS.Indicators.TradeDirection.Buy ? 1 : trade.Direction == ATAS.Indicators.TradeDirection.Sell ? -1 : 0;
                     foreach (var tick in trade.Ticks)
                     {
                         if (tick == null)
