@@ -50,7 +50,8 @@ const KEYS = { t: 'trend', h: 'hline', v: 'vline', r: 'rect', f: 'fib', m: 'meas
 const SWATCHES = ['#4da3e5', '#2bc48a', '#e5484d', '#e8b043', '#a78bfa', '#f472b6', '#e5e7eb', '#94a3b8'];
 const DEFAULT_COLOR = { trend: '#4da3e5', ray: '#4da3e5', hline: '#e8b043', hray: '#e8b043', vline: '#94a3b8', rect: '#a78bfa', fib: '#e8b043', measure: '#4da3e5', long: '#2bc48a', short: '#e5484d', brush: '#f472b6', text: '#e5e7eb', vprofile: '#e8b043' };
 const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-const SPEEDS = [1, 2, 5, 10, 30, 60];
+const SPEEDS = [1, 2, 5, 10, 30, 60]; // bars a second
+const TICK_SPEEDS = [1, 2, 5, 10, 30, 60]; // with ticks: times real time (1× = as it happened)
 
 const DEFAULT_IND = {
   ema1: { on: true, n: 9 }, ema2: { on: true, n: 21 }, sma: { on: false, n: 50 }, vwap: { on: true },
@@ -508,7 +509,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   magnetRef.current = magnet;
 
   // ---------------------------------------------------------------- replay
-  const [replay, setReplay] = useState({ mode: 'off', idx: 0, playing: false, speed: 5, sub: 0, subAt: -1 });
+  const [replay, setReplay] = useState({ mode: 'off', idx: 0, playing: false, speed: 5, tickSpeed: 2, sub: 0, subAt: -1 });
   const replayRef = useRef(replay);
   replayRef.current = replay;
 
@@ -1289,7 +1290,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     const loop = (now) => {
       const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      const target = clock + dt * replayRef.current.speed * srcIv * 1000;
+      const target = clock + dt * (replayRef.current.tickSpeed || 1) * 1000; // times real time
       const res = advanceRef.current(target);
       clock = res.waiting ? res.at : target;
       if (res.end) { setReplay((x) => ({ ...x, playing: false })); return; }
@@ -1690,8 +1691,9 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
             {!bt && <button className="icon-btn" title="Jump to your next execution" disabled={!execTimes.some((t) => t > replayUntil)} onClick={nextExec}><SkipForward size={15} /></button>}
           </div>
           <div className="row gap4 studio-speed">
-            {tickActive && <button className={`chip ${Math.abs(replay.speed - 1 / srcIv) < 1e-9 ? 'on' : ''}`} onClick={() => setReplay((s) => ({ ...s, speed: 1 / srcIv }))} title="As fast as it happened">Real time</button>}
-            {SPEEDS.map((x) => <button key={x} className={`chip ${replay.speed === x ? 'on' : ''}`} onClick={() => setReplay((s) => ({ ...s, speed: x }))} title={`${x} bar${x === 1 ? '' : 's'} a second`}>{x}×</button>)}
+            {tickActive
+              ? TICK_SPEEDS.map((x) => <button key={x} className={`chip ${replay.tickSpeed === x ? 'on' : ''}`} onClick={() => setReplay((s) => ({ ...s, tickSpeed: x }))} title={x === 1 ? 'Real time — as fast as it happened' : `${x} times real time (a minute in ${+(60 / x).toFixed(1)} s)`}>{x}×</button>)
+              : SPEEDS.map((x) => <button key={x} className={`chip ${replay.speed === x ? 'on' : ''}`} onClick={() => setReplay((s) => ({ ...s, speed: x }))} title={`${x} bar${x === 1 ? '' : 's'} a second`}>{x}×</button>)}
             {!candleSource && srcIv <= 60 && <button className={`chip rp-ticks ${tickActive ? 'on' : ''} ${studio.ticks !== false && !tickActive && tickState.status !== 'idle' ? 'off' : ''}`} onClick={() => setStudio({ ticks: studio.ticks === false })} title={studio.ticks === false ? 'Replay tick by tick when a source has the ticks' : tickTitle}><Activity size={12} /> Ticks{studio.ticks !== false ? ` · ${tickLabel}` : ' off'}</button>}
           </div>
           <div
