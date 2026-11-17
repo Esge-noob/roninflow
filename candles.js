@@ -7,6 +7,8 @@
 //        → { items: [{ symbol, contract, from, to }] }  or lines "symbol|contract|from|to" (newest day first)
 //        MetaTrader and Sierra Chart can't make web requests: the same list is written to price-wanted.txt in their
 //        drop folders, and they drop bars back as <name>.bars.jsonl (one ingest body per line).
+//   GET  /api/candles?…&want=1 (a backtest) also asks the add-ons for that day when no 1-minute bars are saved for it:
+//        it goes to the top of /api/candles/wanted for an hour or until an add-on answers (price-requested.json).
 //   GET  /api/candles/config  · POST /api/candles/config { yahoo, addon?, addonSource?, useDatabento?, usePolygon?, databentoKey?, polygonKey? }
 //   GET  /api/candles/lib     → TradingView Lightweight Charts (downloaded once, then served from data/vendor)
 //
@@ -114,6 +116,34 @@ async function polygon(key, ticker, from, to) {
 }
 
 const isFutures = (symbol) => !/(-PERP|-SPOT|-SWAP|USDT|USDC|\/|:)/i.test(String(symbol)) && (ROOTS.includes(rootOf(symbol)) || /^[A-Z0-9]{1,4}[FGHJKMNQUVXZ]\d{1,2}$/.test(String(symbol).toUpperCase()));
+
+// CME equity-index futures (quarterly): the front month rolls 8 days before the third Friday of Mar / Jun / Sep / Dec.
+const QUARTERLY = new Set(['ES', 'MES', 'NQ', 'MNQ', 'YM', 'MYM', 'RTY', 'M2K']);
+const MONTH_CODES = 'FGHJKMNQUVXZ';
+const p2 = (n) => String(n).padStart(2, '0');
+export function frontQuarter(date) {
+  let [y, m] = date.split('-').map(Number);
+  for (let k = 0; k < 6; k++) {
+    const qm = Math.ceil(m / 3) * 3;
+    const first = new Date(Date.UTC(y, qm - 1, 1));
+    const third = 1 + ((5 - first.getUTCDay() + 7) % 7) + 14;
+    const roll = new Date(Date.UTC(y, qm - 1, third - 8)).toISOString().slice(0, 10);
+    if (date < roll) return { y, m: qm };
+    m = qm + 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return { y, m };
+}
+/** `contract` (as your platform names it, last traded on `seen`) moved to the contract that was front month on `date`.
+ *  Monthly contracts (energy, metals…) can't be worked out here: the same contract is used within ~25 days, else null. */
+export function contractFor(contract, root, date, seen = date) {
+  if (!QUARTERLY.has(root)) return Math.abs(Date.parse(date) - Date.parse(seen)) <= 25 * 86400e3 ? contract : null;
+  const { y, m } = frontQuarter(date);
+  const nt = contract.replace(new RegExp(`^(${root}\\s+)\\d{2}-\\d{2}(.*)$`), (_, a, rest) => `${a}${p2(m)}-${p2(y % 100)}${rest}`); // "MNQ 12-25"
+  if (nt !== contract) return nt;
+  const cme = contract.replace(new RegExp(`^(${root})[FGHJKMNQUVXZ](\\d{1,4})(.*)$`), (_, a, yy, rest) => `${a}${MONTH_CODES[m - 1]}${yy.length === 1 ? y % 10 : yy.length === 2 ? p2(y % 100) : y}${rest}`); // "MNQZ25", "MNQZ5", "MNQZ25.CME"…
+  return cme !== contract ? cme : Math.abs(Date.parse(date) - Date.parse(seen)) <= 25 * 86400e3 ? contract : null;
+}
 
 export function createCandleHandler(dataDir, { readTrades, readConnTrades, log = () => {}, vault, tokenOk, dropDirs } = {}) {
   const cacheDir = path.join(dataDir, 'candles');
@@ -231,7 +261,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     };
     try { for (const t of (readTrades?.() || [])) if (t?.entry && !t.deleted) add(t, String(t.entry).slice(0, 10)); } catch { /* journal not readable yet */ }
     try { for (const t of (readConnTrades?.() || [])) { const e = Date.parse(t?.entry); if (Number.isFinite(e)) add(t, localDate(Math.floor(e / 1000), tz)); } } catch { /* inbox not ready */ }
-    const items = [];
+    const items = requestedItems(source, now); // a backtest is waiting on these
     for (const [key, d] of [...days].sort((a, b) => (a[1].date < b[1].date ? 1 : -1))) {
       const { from, to } = dayWindow(d.date, tz);
       if (from > now) continue;
@@ -247,6 +277,44 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     }
     wantCache.set(ck, { at: now, items });
     return items;
+  }
+  // ---------- days a backtest asked for (any date, not just days you traded) ----------
+  const reqFile = path.join(dataDir, 'price-requested.json');
+  let requested = {};
+  try { requested = JSON.parse(fs.readFileSync(reqFile, 'utf8')) || {}; } catch { /* none yet */ }
+  const saveRequested = () => { try { fs.mkdirSync(dataDir, { recursive: true }); fs.writeFileSync(reqFile, JSON.stringify(requested)); } catch (e) { log('[candles] could not save price-requested.json', e.message); } };
+  function requestDay(symbol, date, tz) {
+    const key = `${rootOf(symbol)}|${date}`;
+    if (requested[key] && Date.now() - requested[key].at < 10 * 60e3) return;
+    requested[key] = { symbol: rootOf(symbol), date, tz, at: Date.now() };
+    saveRequested();
+    wantCache.clear();
+    if (!dropDirs) setTimeout(writeWantedFiles, 500).unref?.();
+  }
+  /** The contract an add-on should ask its platform for on `date`, from the newest contract of that root it has traded. */
+  function contractOn(source, root, date) {
+    let best = null;
+    const see = (t, d) => { if (t?.contract && rootOf(t.symbol || t.contract) === root && String(t.source || '').toLowerCase() === source && (!best || d > best.d)) best = { c: String(t.contract), d }; };
+    try { for (const t of (readTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    try { for (const t of (readConnTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    if (!best) return null;
+    return contractFor(best.c, root, date, best.d);
+  }
+  function requestedItems(source, now) {
+    const out = [];
+    let changed = false;
+    for (const [key, r] of Object.entries(requested)) {
+      if (Date.now() - r.at > 3600e3) { delete requested[key]; changed = true; continue; }
+      const contract = contractOn(source, r.symbol, r.date);
+      if (!contract) continue;
+      const { from, to } = dayWindow(r.date, validTz(r.tz) ? r.tz : Intl.DateTimeFormat().resolvedOptions().timeZone);
+      if (from > now) continue;
+      const end = Math.min(to, now);
+      if (coveredTo(`${source}|${r.symbol}`, from) >= end) continue;
+      out.push({ symbol: r.symbol, contract, from, to: end });
+    }
+    if (changed) saveRequested();
+    return out;
   }
   const wantedLines = (items) => items.map((i) => [i.symbol, i.contract, i.from, i.to].map((v) => String(v).replace(/[|\r\n]/g, ' ')).join('|')).join('\n') + (items.length ? '\n' : '');
   // MetaTrader / Sierra Chart: the list goes into their drop folders as price-wanted.txt
@@ -270,7 +338,16 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (!g?.symbol) continue;
       const source = g.source || body.source;
       if (Array.isArray(g.bars)) n += storeBars(g.symbol, g.bars, source);
-      if (g.from !== undefined && g.to !== undefined) markCovered(source, g.symbol, g.from, g.to);
+      if (g.from !== undefined && g.to !== undefined) {
+        markCovered(source, g.symbol, g.from, g.to);
+        let changed = false;
+        for (const [key, r] of Object.entries(requested)) {
+          if (r.symbol !== rootOf(g.symbol)) continue;
+          const w = dayWindow(r.date, validTz(r.tz) ? r.tz : Intl.DateTimeFormat().resolvedOptions().timeZone);
+          if (Number(g.from) < w.to && Number(g.to) > w.from) { delete requested[key]; changed = true; }
+        }
+        if (changed) saveRequested();
+      }
     }
     return n;
   }
@@ -438,7 +515,10 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const date = u.searchParams.get('date');
       const tz = u.searchParams.get('tz') || Intl.DateTimeFormat().resolvedOptions().timeZone;
       if (!symbol || !/^\d{4}-\d{2}-\d{2}$/.test(date || '') || !validTz(tz)) return send(res, 400, { error: 'symbol, date (YYYY-MM-DD) and tz are needed' });
-      const rec = await get(symbol, date, tz, { force: u.searchParams.get('refresh') === '1' });
+      const want = u.searchParams.get('want') === '1' && cfg.addon !== false;
+      let rec;
+      try { rec = await get(symbol, date, tz, { force: u.searchParams.get('refresh') === '1' }); } catch (e) { if (want) requestDay(symbol, date, tz); throw e; }
+      if (want && !(rec.interval === '1m' && rec.candles?.length >= 200 && /add-on|Databento|Polygon/.test(rec.source || ''))) requestDay(symbol, date, tz);
       return send(res, 200, rec);
     } catch (e) {
       return send(res, e.code === 'NO_SOURCE' ? 424 : 502, { error: e.message || 'Couldn’t load prices', code: e.code });

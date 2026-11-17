@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  LayoutDashboard, FileText, Bot, Book, ClipboardCheck, Target, Users, Bell, PanelLeft, Eye, EyeOff, SunMoon,
+  LayoutDashboard, FileText, Bot, Book, ClipboardCheck, Target, FlaskConical, Users, Bell, PanelLeft, Eye, EyeOff, SunMoon,
   ChevronsUpDown, Download, Upload, RefreshCw, Settings, ChevronRight, Sparkles, X, ShieldCheck, Smartphone, Menu, Coins, HandCoins, Palette, Cable,
   Languages, Globe,
 } from 'lucide-react';
@@ -58,6 +58,7 @@ const NAV = [
   { id: 'diary', label: 'Daily Diary', icon: Book },
   { id: 'review', label: 'Review', icon: ClipboardCheck, path: 'review/weekly' },
   { id: 'strategy', label: 'Strategy', icon: Target },
+  { id: 'backtest', label: 'Backtesting', icon: FlaskConical },
   { id: 'macro', label: 'Macro', icon: Globe, path: 'macro/calendar' },
   { id: 'risk', label: 'Risk Management', icon: ShieldCheck },
   { id: 'accounts', label: 'Accounts', icon: Users },

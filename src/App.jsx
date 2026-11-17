@@ -20,6 +20,7 @@ import Payouts from './views/Payouts';
 import Connections from './views/Connections';
 import EconCalendar from './views/EconCalendar';
 import Cot from './views/Cot';
+import Backtest from './views/Backtest';
 
 function Router() {
   const route = useRoute();
@@ -53,6 +54,10 @@ function Router() {
     case 'strategy':
       crumbs = sub ? [{ label: 'Strategy', href: '#/strategy' }, { label: 'Details' }] : [{ label: 'Strategy' }];
       view = <Strategy key={sub || 'index'} sub={sub} />;
+      break;
+    case 'backtest':
+      crumbs = sub && sub !== 'whatif' ? [{ label: 'Backtesting', href: '#/backtest' }, { label: 'Session' }] : [{ label: 'Backtesting' }];
+      view = <Backtest key={sub || 'index'} sub={sub} />;
       break;
     case 'risk':
       crumbs = [{ label: 'Risk Management' }];

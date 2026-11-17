@@ -186,3 +186,21 @@ test('Databento and Polygon can be switched off without removing the key', async
   assert.equal(off.usePolygon, false);
   assert.equal((await call('POST', '/api/candles/config', { yahoo: true })).body.useDatabento, false, 'kept when other settings change');
 });
+
+test('a backtest can ask the add-ons for any day: the front-month contract goes to the top of the list until answered', async () => {
+  const now = Math.floor(Date.parse('2026-11-16T20:00:00Z') / 1000);
+  const { h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }] });
+  const call = (url) => new Promise((resolve) => {
+    const res = { statusCode: 200, headers: {}, setHeader(k, v) { this.headers[k] = v; }, end(b) { resolve({ status: this.statusCode, body: JSON.parse(b || '{}') }); } };
+    h({ method: 'GET', url, headers: {} }, res);
+  });
+  const r = await call(`/api/candles?symbol=MNQ&date=2026-05-04&tz=${encodeURIComponent(TZ)}&want=1`);
+  assert.equal(r.status, 424, 'no price source set up in this test');
+  const items = h.wanted('ninjatrader', { tz: TZ, now });
+  assert.equal(items[0].contract, 'MNQ 06-26', 'the June contract was front month in early May');
+  assert.equal(items[0].from, dayWindow('2026-05-04', TZ).from);
+  assert.equal(items.length, 2, 'then the trade day');
+  assert.deepEqual(h.wanted('quantower', { tz: TZ, now }), [], 'an add-on that never traded MNQ has no contract to ask for');
+  h.ingestBars({ source: 'ninjatrader', symbol: 'MNQ', from: items[0].from, to: items[0].to, bars: [] });
+  assert.equal(h.wanted('ninjatrader', { tz: TZ, now }).length, 1, 'answered (even with nothing): no longer asked for');
+});
