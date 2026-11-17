@@ -8,13 +8,14 @@ import {
   MousePointer2, Slash, MoveUpRight, Minus, ChevronsRight, SeparatorVertical, Square, AlignVerticalSpaceAround, Ruler,
   CircleArrowUp, CircleArrowDown, Brush, Type, Magnet, Eye, EyeOff, Trash2, Undo2, Camera, Maximize, Maximize2, Minimize, X,
   Palette, Play, Pause, StepForward, StepBack, SkipBack, SkipForward, History, Layers, Check, ChevronDown, RefreshCw, Crosshair,
-  ChevronRight, ChevronLeft, ShieldCheck, Calendar,
+  ChevronRight, ChevronLeft, ShieldCheck, Calendar, AlignStartVertical,
 } from 'lucide-react';
 import { useStore } from '../store/store';
 import { IS_VIEWER } from '../lib/shareMode';
 import { fmtMoney, fmtTime12, fmtDate, todayKey } from '../lib/stats';
 import { Popover } from './ui';
 import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, barTime, aggregate, sessionStart, fromLocal, toLocal } from '../lib/bars';
+import { volumeProfile, sessionsIn } from '../lib/volprofile';
 import { sma, ema, vwap, bollinger, rsi, macd } from '../lib/indicators';
 import { loadLib, chartColors, buildExecutions, TICKS, rootOf, decimals, alpha, ChartColors } from './ExecChart';
 import { marketOrder, flatten, stepOrders, toTrade, posQty, posAvg, openPnl, nextWeekday, localIso as localIsoOf } from '../lib/backtest';
@@ -32,6 +33,7 @@ const TOOLS = [
     { id: 'rect', icon: Square, label: 'Rectangle', key: 'Alt+R' },
     { id: 'fib', icon: AlignVerticalSpaceAround, label: 'Fib retracement', key: 'Alt+F' },
     { id: 'measure', icon: Ruler, label: 'Measure', key: 'Alt+M' },
+    { id: 'vprofile', icon: AlignStartVertical, label: 'Fixed range volume profile' },
   ],
   [
     { id: 'long', icon: CircleArrowUp, label: 'Long position' },
@@ -46,18 +48,71 @@ const TOOL_BY_ID = Object.fromEntries(TOOLS.flat().map((t) => [t.id, t]));
 const ONE_POINT = new Set(['hline', 'hray', 'vline', 'text']);
 const KEYS = { t: 'trend', h: 'hline', v: 'vline', r: 'rect', f: 'fib', m: 'measure' };
 const SWATCHES = ['#4da3e5', '#2bc48a', '#e5484d', '#e8b043', '#a78bfa', '#f472b6', '#e5e7eb', '#94a3b8'];
-const DEFAULT_COLOR = { trend: '#4da3e5', ray: '#4da3e5', hline: '#e8b043', hray: '#e8b043', vline: '#94a3b8', rect: '#a78bfa', fib: '#e8b043', measure: '#4da3e5', long: '#2bc48a', short: '#e5484d', brush: '#f472b6', text: '#e5e7eb' };
+const DEFAULT_COLOR = { trend: '#4da3e5', ray: '#4da3e5', hline: '#e8b043', hray: '#e8b043', vline: '#94a3b8', rect: '#a78bfa', fib: '#e8b043', measure: '#4da3e5', long: '#2bc48a', short: '#e5484d', brush: '#f472b6', text: '#e5e7eb', vprofile: '#e8b043' };
 const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
 const SPEEDS = [1, 2, 5, 10, 30, 60];
 
 const DEFAULT_IND = {
   ema1: { on: true, n: 9 }, ema2: { on: true, n: 21 }, sma: { on: false, n: 50 }, vwap: { on: true },
   bb: { on: false, n: 20, k: 2 }, volume: { on: true }, rsi: { on: false, n: 14 }, macd: { on: false },
+  vpvr: { on: false, n: 70 }, vpsess: { on: false, n: 40 },
 };
 const IND_INFO = [
   ['ema1', 'EMA', '#f5a623', 'n'], ['ema2', 'EMA', '#4da3e5', 'n'], ['sma', 'SMA', '#c084fc', 'n'], ['vwap', 'VWAP', '#e5e7eb'],
   ['bb', 'Bollinger Bands', '#64748b', 'n'], ['volume', 'Volume'], ['rsi', 'RSI', '#a78bfa', 'n'], ['macd', 'MACD (12, 26, 9)'],
+  ['vpvr', 'Volume profile (visible range)', '#e8b043', 'n'], ['vpsess', 'Session volume profile', '#e8b043', 'n'],
 ];
+
+// ---------- volume profile drawing (indicator and the fixed-range tool) ----------
+const vpCache = new Map(); // profiles are recomputed only when their range or data changes
+function profileFor(data, from, to, rowsWanted) {
+  const end = Math.min(to, data.until + 1);
+  const key = `${data.key}|${from}|${end}|${rowsWanted}`;
+  if (vpCache.has(key)) return vpCache.get(key);
+  const p = end > from ? volumeProfile(data.rows, from, end, { tick: data.tick, rows: rowsWanted }) : null;
+  if (vpCache.size > 400) vpCache.clear();
+  vpCache.set(key, p);
+  return p;
+}
+/**
+ * One profile on the overlay: bars from `x` growing right (side 'left') or from `x` growing left (side 'right'), longest
+ * = `width` px. Value area brighter, POC line across `lineTo` (x), VAH / VAL dashed.
+ */
+function drawProfile(ctx, p, v, x, width, side, c, fmtP, lineTo, showLabels = true, strong = 0.42) {
+  const dir = side === 'right' ? -1 : 1;
+  for (let r = 0; r < p.n; r++) {
+    if (!p.vol[r]) continue;
+    const yTop = v.toY(p.lo + (r + 1) * p.step), yBot = v.toY(p.lo + r * p.step);
+    if (yTop == null || yBot == null) continue;
+    const h = Math.max(1, yBot - yTop - (yBot - yTop > 4 ? 1 : 0));
+    const len = (p.vol[r] / p.max) * width;
+    const upLen = len * (p.up[r] / p.vol[r]);
+    const inVa = r >= p.vaLo && r <= p.vaHi;
+    ctx.fillStyle = alpha(c.up, inVa ? strong : strong * 0.4);
+    ctx.fillRect(dir > 0 ? x : x - upLen, yTop, upLen, h);
+    ctx.fillStyle = alpha(c.down, inVa ? strong : strong * 0.4);
+    ctx.fillRect(dir > 0 ? x + upLen : x - len, yTop, len - upLen, h);
+  }
+  const yPoc = v.toY(p.poc), yVah = v.toY(p.vah), yVal = v.toY(p.val);
+  const x0 = Math.min(x, lineTo), x1 = Math.max(x, lineTo);
+  ctx.lineWidth = 1;
+  if (yVah != null && yVal != null) {
+    ctx.strokeStyle = alpha(c.text, 0.45); ctx.setLineDash([4, 3]);
+    for (const y of [yVah, yVal]) { ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); }
+    ctx.setLineDash([]);
+  }
+  if (yPoc != null) {
+    ctx.strokeStyle = '#e8b043'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x0, yPoc); ctx.lineTo(x1, yPoc); ctx.stroke();
+    if (showLabels) {
+      const lx = side === 'right' ? x1 - 2 : x1 + 2;
+      label(ctx, `POC ${fmtP(p.poc)}`, lx, yPoc, '#e8b043', '#000', side === 'right' ? 'right' : 'left');
+      if (yVah != null && Math.abs(yVah - yPoc) > 16) label(ctx, `VAH ${fmtP(p.vah)}`, lx, yVah, alpha(c.text, 0.25), c.text, side === 'right' ? 'right' : 'left');
+      if (yVal != null && Math.abs(yVal - yPoc) > 16) label(ctx, `VAL ${fmtP(p.val)}`, lx, yVal, alpha(c.text, 0.25), c.text, side === 'right' ? 'right' : 'left');
+    }
+  }
+}
+const vpBox = new WeakMap(); // the fixed-range profile's on-screen box, for clicking it
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const dist = (x1, y1, x2, y2) => Math.hypot(x1 - x2, y1 - y2);
@@ -123,6 +178,7 @@ function hitDrawing(d, v, x, y) {
     case 'hray': return x >= P[0].x - near && Math.abs(y - P[0].y) < near ? 'body' : null;
     case 'vline': return Math.abs(x - P[0].x) < near ? 'body' : null;
     case 'rect': case 'measure': case 'fib': return inBox(P[0], P[1]) ? 'body' : null;
+    case 'vprofile': { const b = vpBox.get(d); return b && x >= b.x0 - 2 && x <= b.x1 + 2 && y >= b.y0 - 2 && y <= b.y1 + 2 ? 'body' : null; }
     case 'long': case 'short': return x >= Math.min(P[0].x, P[1].x) && x <= Math.max(P[0].x, P[1].x) && y >= Math.min(P[1].y, P[2].y) && y <= Math.max(P[1].y, P[2].y) ? 'body' : null;
     case 'brush': for (let i = 1; i < P.length; i++) if (segDist(x, y, P[i - 1].x, P[i - 1].y, P[i].x, P[i].y) < near) return 'body'; return null;
     case 'text': { const b = textBox(d); const [lx, ly] = rot(x - P[0].x, y - P[0].y, -(d.angle || 0)); return lx >= b.x0 && lx <= b.x1 && ly >= b.y0 && ly <= b.y1 ? 'body' : null; }
@@ -142,7 +198,7 @@ function label(ctx, text, x, y, bg, fg = '#fff', align = 'left') {
 }
 
 /** Draws one drawing on the overlay canvas. */
-function paint(ctx, d, v, selected, fmtP, tick, iv) {
+function paint(ctx, d, v, selected, fmtP, tick, iv, data) {
   const P = d.p.map((q) => ({ x: v.toX(q.t), y: v.toY(q.p) }));
   if (P.some((q) => q.x == null || q.y == null || !Number.isFinite(q.x) || !Number.isFinite(q.y))) return;
   const col = d.color || DEFAULT_COLOR[d.type];
@@ -152,6 +208,19 @@ function paint(ctx, d, v, selected, fmtP, tick, iv) {
   ctx.setLineDash([]);
   const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
   switch (d.type) {
+    case 'vprofile': {
+      const x0 = Math.min(P[0].x, P[1].x), x1 = Math.max(P[0].x, P[1].x);
+      const t0 = fromLocal(Math.min(d.p[0].t, d.p[1].t)), t1 = fromLocal(Math.max(d.p[0].t, d.p[1].t));
+      const prof = data?.rows?.length ? profileFor(data, t0, t1 + 60, d.rows || 0) : null;
+      ctx.strokeStyle = alpha(col, selected ? 0.9 : 0.35); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      if (!prof) { ctx.strokeRect(x0, Math.min(P[0].y, P[1].y), x1 - x0, Math.abs(P[1].y - P[0].y)); ctx.setLineDash([]); vpBox.set(d, { x0, x1, y0: Math.min(P[0].y, P[1].y), y1: Math.max(P[0].y, P[1].y) }); break; }
+      const yHi = v.toY(prof.lo + prof.n * prof.step), yLo = v.toY(prof.lo);
+      ctx.strokeRect(x0, yHi, x1 - x0, yLo - yHi);
+      ctx.setLineDash([]);
+      drawProfile(ctx, prof, v, x0, Math.max(20, (x1 - x0) * 0.7), 'left', data.c, fmtP, x1, true);
+      vpBox.set(d, { x0, x1, y0: yHi, y1: yLo });
+      break;
+    }
     case 'trend': line(P[0].x, P[0].y, P[1].x, P[1].y); break;
     case 'ray': { const [ex, ey] = rayEnd(P[0].x, P[0].y, P[1].x, P[1].y, v.w, v.h); line(P[0].x, P[0].y, ex, ey); break; }
     case 'hline': line(0, P[0].y, v.w, P[0].y); label(ctx, fmtP(d.p[0].p), v.w - 2, P[0].y, col, '#000', 'right'); break;
@@ -287,6 +356,8 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const setStudio = (patch) => setSetting('studio', { ...(state.settings.studio || {}), ...patch });
   const tf = TIMEFRAMES.includes(studio.tf) ? studio.tf : TIMEFRAMES.includes(state.settings.execTf) ? state.settings.execTf : '1m';
   const ind = useMemo(() => { const o = {}; for (const k of Object.keys(DEFAULT_IND)) o[k] = { ...DEFAULT_IND[k], ...(studio.ind?.[k] || {}) }; return o; }, [studio.ind]);
+  const indRef = useRef(ind);
+  indRef.current = ind;
   const indKey = JSON.stringify(ind);
   const magnet = !!studio.magnet;
   const showExec = studio.exec !== false;
@@ -373,6 +444,8 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       return { ...cur, key, candles: [...add, ...old], back, empty, busy: false, done, added: add.length, n: (cur.n || 0) + 1 };
     });
   };
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const loadEarlierRef = useRef(loadEarlier);
   loadEarlierRef.current = loadEarlier;
   // backtest: a day without bars yet may be on its way from your platform add-on — look again for a few minutes
@@ -722,8 +795,36 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       if (!v) return;
       ctx.save();
       ctx.beginPath(); ctx.rect(0, 0, v.w, v.h); ctx.clip();
-      if (!hiddenRef.current) for (const d of drawingsRef.current) paint(ctx, d, v, d.id === selRef.current, fmtP, tick, api.current.iv);
-      if (draft.current) paint(ctx, draft.current, v, true, fmtP, tick, api.current.iv);
+      // volume profile: what's on the chart up to the replay position (never later bars)
+      const R = rowsRef.current, rp = replayRef.current;
+      const until = R.length ? ((rp.mode === 'on' || (bt && rp.mode === 'pick')) && R[rp.idx] ? R[rp.idx][0] : R[R.length - 1][0]) : 0;
+      const vdata = { rows: R, until, tick: tick || 0.01, c: api.current.c || chartColors(), key: `${R.length}|${R[0]?.[0]}|${R[R.length - 1]?.[0]}` };
+      const indNow = indRef.current;
+      if (R.length && indNow.vpsess?.on) {
+        const from = fromLocal(v.fromX(0)), to = Math.min(fromLocal(v.fromX(v.w)), until + 60);
+        const starts = sessionsIn(R, sessionStart(from), to, sessionStart);
+        for (let k = 0; k < starts.length; k++) {
+          const s0 = starts[k], s1 = starts[k + 1] ?? s0 + 86400;
+          const p = profileFor(vdata, s0, s1, indNow.vpsess.n);
+          if (!p) continue;
+          // from the session's first bar (not its 6 PM open, which may be before the data) to its last
+          let i0 = 0, lo2 = 0, hi2 = R.length;
+          while (lo2 < hi2) { const m = (lo2 + hi2) >> 1; if (R[m][0] < s0) lo2 = m + 1; else hi2 = m; }
+          i0 = lo2;
+          if (!R[i0]) continue;
+          const lastT = Math.min(s1, until + 60) - 60;
+          const xa = v.toX(toLocal(R[i0][0])), xb = v.toX(toLocal(Math.max(R[i0][0], lastT)));
+          if (xa == null || xb == null || xb < 0 || xa > v.w) continue;
+          drawProfile(ctx, p, v, xa, Math.max(16, (xb - xa) * 0.3), 'left', vdata.c, fmtP, xb, xb - xa > 160, 0.3);
+        }
+      }
+      if (R.length && indNow.vpvr?.on) {
+        const from = fromLocal(v.fromX(0)), to = fromLocal(v.fromX(v.w)) + 60;
+        const p = profileFor(vdata, from, to, indNow.vpvr.n);
+        if (p) drawProfile(ctx, p, v, v.w, v.w * 0.22, 'right', vdata.c, fmtP, 0, true, 0.38);
+      }
+      if (!hiddenRef.current) for (const d of drawingsRef.current) paint(ctx, d, v, d.id === selRef.current, fmtP, tick, api.current.iv, vdata);
+      if (draft.current) paint(ctx, draft.current, v, true, fmtP, tick, api.current.iv, vdata);
       if (replayRef.current.mode === 'pick' && hoverX.current != null) {
         ctx.fillStyle = 'rgba(0,0,0,0.35)';
         ctx.fillRect(hoverX.current, 0, v.w - hoverX.current, v.h);
@@ -1199,7 +1300,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
                   <input type="checkbox" className="cbx" checked={ind[k].on} onChange={(e) => setInd(k, { on: e.target.checked })} />
                   {color && <i style={{ background: color }} />}
                   <span className="grow">{name}</span>
-                  {param && <input type="number" className="input" min={2} max={400} value={ind[k].n} onChange={(e) => setInd(k, { n: Math.max(2, Math.min(400, Number(e.target.value) || DEFAULT_IND[k].n)) })} title="Length" />}
+                  {param && <input type="number" className="input" min={2} max={400} value={ind[k].n} onChange={(e) => setInd(k, { n: Math.max(2, Math.min(400, Number(e.target.value) || DEFAULT_IND[k].n)) })} title={k.startsWith('vp') ? 'Price rows (more = finer)' : 'Length'} />}
                 </label>
               ))}
             </div>
