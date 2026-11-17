@@ -2150,3 +2150,4 @@ a.ruin-chip { cursor: pointer; }
 .ronin.small .ronin-weak b { overflow: hidden; text-overflow: ellipsis; }
 .ronin.small .ronin-weak b { min-width: 0; white-space: nowrap; }
 .dgrid.mobile .gw.gw-fit .gw-body, .dgrid.mobile .gw.gw-fit .gw-body > *, .dgrid.mobile .gw.gw-fit .wbody { height: auto; flex: none; overflow: visible; }
+.studio-edit { max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }

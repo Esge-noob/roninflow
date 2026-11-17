@@ -105,12 +105,29 @@ export function Popover({ trigger, children, align = 'left', width, className = 
     window.addEventListener('scroll', place, true);
     return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [open, portal, width, align, up]);
+  // in-place: nudge it sideways (and narrow it) so it never runs off the screen, e.g. on a phone
+  const inRef = useRef(null);
+  useLayoutEffect(() => {
+    const el = inRef.current;
+    if (!open || portal || !el) return undefined;
+    const fit = () => {
+      el.style.transform = ''; el.style.maxWidth = `${window.innerWidth - 16}px`;
+      const r = el.getBoundingClientRect();
+      const dx = r.right > window.innerWidth - 8 ? window.innerWidth - 8 - r.right : 0;
+      const dx2 = r.left + dx < 8 ? 8 - (r.left + dx) : 0;
+      if (dx + dx2) el.style.transform = `translateX(${dx + dx2}px)`;
+      if (!up && r.top < window.innerHeight) el.style.maxHeight = `${Math.max(160, window.innerHeight - r.top - 12)}px`;
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [open, portal, up]);
   const body = typeof children === 'function' ? children(() => setOpen(false)) : children;
   return (
     <div ref={ref} style={{ position: 'relative', display: block ? 'flex' : 'inline-flex', width: block ? '100%' : undefined }} className={className}>
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
       {open && !portal && (
-        <div className="pop" style={{ [up ? 'bottom' : 'top']: 'calc(100% + 6px)', [align]: 0, width }}>{body}</div>
+        <div ref={(n) => { inRef.current = n; popRef.current = n; }} className="pop" style={{ [up ? 'bottom' : 'top']: 'calc(100% + 6px)', [align]: 0, width, overflowY: 'auto' }}>{body}</div>
       )}
       {open && portal && pos && createPortal(
         <div ref={popRef} className="pop pop-fixed" style={{ position: 'fixed', ...pos, overflowY: 'auto' }}>{body}</div>,
