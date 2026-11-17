@@ -104,7 +104,7 @@ npm test        # importer, pairing and connector tests
 npm run build   # production build into dist/
 ```
 
-Releases: push a tag like `v1.2.0` — GitHub Actions (`.github/workflows/release.yml`) runs the tests, builds the
+Releases: bump `"version"` in `package.json` and push to main (or push a tag like `v1.2.0`) — GitHub Actions (`.github/workflows/release.yml`) runs the tests, builds the
 Docker image (ghcr.io) and the Windows installer, and publishes the release. Set `"repository"` in `package.json`
 so installed copies can check for updates.
 

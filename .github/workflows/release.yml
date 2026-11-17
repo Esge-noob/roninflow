@@ -1,4 +1,5 @@
 # Builds and publishes a release when you push a version tag (e.g. git tag v1.0.0 && git push --tags),
+# when a push to main brings a package.json version that has no tag yet (the tag is created here),
 # or when started by hand from the Actions tab.
 #   • tests + production build
 #   • Docker image → ghcr.io/coreyheyman/roninflow:<version> and :latest (amd64 + arm64)
@@ -9,6 +10,8 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths: ['package.json', '.github/workflows/release.yml']
   workflow_dispatch:
 
 permissions:
@@ -20,7 +23,25 @@ env:
   NODE_WIN: 'v22.20.0'
 
 jobs:
+  # a push to main only releases a version that hasn't been released yet
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.g.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: g
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ] && git ls-remote --exit-code --tags origin "refs/tags/v$V" >/dev/null; then
+            echo "v$V is already released — nothing to do"; echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -133,10 +154,10 @@ jobs:
           path: out/*.tar.gz
 
   release:
-    needs: [build, docker, windows, unix]
+    needs: [gate, build, docker, windows, unix]
     runs-on: ubuntu-latest
-    # a tag push, or started by hand from the Actions tab (then the tag v<package.json version> is created here)
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # a tag push, a new version pushed to main, or started by hand (then the tag v<package.json version> is created here)
+    if: needs.gate.outputs.go == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
