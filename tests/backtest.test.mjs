@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { marketOrder, flatten, stepBar, toTrade, posQty, posAvg, openPnl, runWhatIf, activeRules, nextWeekday, pointValueOf, localIso } from '../src/lib/backtest.js';
+import { marketOrder, flatten, stepBar, stepOrders, toTrade, posQty, posAvg, openPnl, runWhatIf, activeRules, nextWeekday, pointValueOf, localIso } from '../src/lib/backtest.js';
 
 const T0 = Math.floor(new Date('2026-11-13T06:30:00').getTime() / 1000);
 const opts = { symbol: 'MNQ', pv: 2, feePerContract: 1 };
@@ -93,4 +93,31 @@ test('what-if: filters by weekday, time, side, strategy, symbol and tag', () => 
   assert.deepEqual(Object.keys(r.byRule).sort(), ['days', 'hours', 'side', 'skipStrategies', 'skipSymbols', 'skipTags'].sort());
   assert.deepEqual(activeRules({ days: [1, 2, 3, 4, 5] }), []);
   assert.equal(runWhatIf(trades, {}).kept.length, 6); // weekdays only by default (all of these are)
+});
+
+test('working orders: limits and stops fill where price reaches them, gaps fill at the open, brackets attach, OCO cancels', () => {
+  const brk = (side, px) => ({ stop: px - side * 2, target: px + side * 4 });
+  // buy limit 99 and sell stop 98: the bar drops to 98.5 — only the limit fills, at 99, with its bracket
+  let r = stepOrders(null, [{ id: 'a', side: 1, type: 'limit', price: 99, qty: 2 }, { id: 'b', side: -1, type: 'stop', price: 98, qty: 1 }], [T0, 100, 100.5, 98.5, 99.5, 1], 60, brk);
+  assert.deepEqual(r.filled.map((f) => [f.order.id, f.price]), [['a', 99]]);
+  assert.deepEqual([r.pos.dir, posQty(r.pos), r.pos.stop, r.pos.target], [1, 2, 97, 103]);
+  assert.deepEqual(r.orders.map((x) => x.id), ['b']);
+  // a gap: buy stop at 101, the bar opens at 102 → filled at 102 (the worse price)
+  r = stepOrders(null, [{ id: 'c', side: 1, type: 'stop', price: 101, qty: 1 }], [T0, 102, 103, 101.5, 102.5, 1]);
+  assert.equal(r.filled[0].price, 102);
+  // a sell limit while long closes the position (a manual take-profit)
+  const { pos } = marketOrder(null, 1, 1, 100, T0);
+  r = stepOrders(pos, [{ id: 'd', side: -1, type: 'limit', price: 103, qty: 1 }], [T0 + 60, 101, 103.5, 100.5, 103, 1]);
+  assert.equal(r.pos, null);
+  assert.equal(toTrade(r.closed[0].closed, { symbol: 'X', pv: 1 }).pnl, 3);
+  // OCO: both sides of a breakout bracket — the first reached fills, the other is cancelled
+  r = stepOrders(null, [{ id: 'up', side: 1, type: 'stop', price: 101, qty: 1, oco: 'g' }, { id: 'dn', side: -1, type: 'stop', price: 99, qty: 1, oco: 'g' }], [T0, 100, 101.5, 98.5, 101, 1]);
+  assert.equal(r.filled.length, 1);
+  assert.equal(r.filled[0].order.id, 'up', 'nearer the open first');
+  assert.deepEqual(r.orders, []);
+  // filled and stopped in the same bar: the worse case
+  r = stepOrders(null, [{ id: 'e', side: 1, type: 'limit', price: 99, qty: 1 }], [T0, 100, 100, 96, 97, 1], 60, brk);
+  assert.equal(r.pos, null);
+  assert.equal(r.closed[0].why, 'stop');
+  assert.equal(toTrade(r.closed[0].closed, { symbol: 'X', pv: 1 }).pnl, -2);
 });

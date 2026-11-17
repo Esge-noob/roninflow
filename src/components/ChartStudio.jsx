@@ -17,7 +17,7 @@ import { Popover } from './ui';
 import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, barTime, aggregate, sessionStart, fromLocal, toLocal } from '../lib/bars';
 import { sma, ema, vwap, bollinger, rsi, macd } from '../lib/indicators';
 import { loadLib, chartColors, buildExecutions, TICKS, rootOf, decimals, alpha, ChartColors } from './ExecChart';
-import { marketOrder, flatten, stepBar, toTrade, posQty, posAvg, openPnl, nextWeekday, localIso as localIsoOf } from '../lib/backtest';
+import { marketOrder, flatten, stepOrders, toTrade, posQty, posAvg, openPnl, nextWeekday, localIso as localIsoOf } from '../lib/backtest';
 
 const TOOLS = [
   [{ id: 'cursor', icon: MousePointer2, label: 'Cursor', key: 'Esc' }],
@@ -265,7 +265,11 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const [pos, setPosState] = useState(null);
   const posRef = useRef(null);
   const setPos = (p) => { posRef.current = p; setPosState(p); };
-  const [order, setOrder] = useState(() => ({ qty: 1, sl: '', tp: '', ...(state.settings.btOrder || {}) }));
+  const [order, setOrder] = useState(() => ({ qty: 1, sl: '', tp: '', brk: true, ...(state.settings.btOrder || {}) }));
+  // working limit / stop orders (backtest): { id, side, type: 'limit' | 'stop', price, qty }
+  const [orders, setOrdersState] = useState([]);
+  const ordersRef = useRef([]);
+  const setOrders = (o) => { ordersRef.current = o; setOrdersState(o); };
   const [flash, setFlash] = useState(null);
   const trades = useMemo(() => {
     if (!bt || !pos) return tradesIn;
@@ -642,12 +646,16 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     if (a.posLinesOn !== a.series) { a.posLines = []; a.posLinesOn = a.series; }
     for (const l of a.posLines) { try { a.series.removePriceLine(l); } catch { /* chart rebuilt */ } }
     a.posLines = [];
+    a.tagLines = new Map();
+    if (!bt) return;
+    const add = (key, price, color, style = 2) => { const l = a.series.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title: '' }); a.posLines.push(l); a.tagLines.set(key, l); };
     const p = posRef.current;
-    if (!bt || !p || !posQty(p)) return;
-    const add = (price, color, title, style = 2) => a.posLines.push(a.series.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title }));
-    add(posAvg(p), a.c.text, `${p.dir > 0 ? 'Long' : 'Short'} ${posQty(p)}`, 0);
-    if (p.stop != null) add(p.stop, a.c.loss, 'Stop');
-    if (p.target != null) add(p.target, a.c.win, 'Target');
+    if (p && posQty(p)) {
+      add('pos', posAvg(p), a.c.text, 0);
+      if (p.stop != null) add('sl', p.stop, a.c.loss);
+      if (p.target != null) add('tp', p.target, a.c.win);
+    }
+    for (const o of ordersRef.current) add(o.id, o.price, o.side > 0 ? a.c.buy : a.c.sell, 1);
   }
   const renderRef = useRef(render);
   renderRef.current = render;
@@ -694,6 +702,22 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       const ctx = cv.getContext('2d');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
+      const tg = tagsRef.current, a = api.current;
+      if (tg && a.series && v) {
+        let psw = 0;
+        try { psw = a.chart.priceScale('right').width(); } catch { /* */ }
+        for (const el of tg.children) {
+          const dragging = tagDrag.current?.key === el.dataset.key;
+          const price = dragging ? tagDrag.current.price : Number(el.dataset.price);
+          const y = a.series.priceToCoordinate(price);
+          if (y == null || y < 0 || y > v.h) { el.style.visibility = 'hidden'; continue; }
+          el.style.visibility = '';
+          el.style.transform = `translateY(${Math.round(y - 11)}px)`;
+          el.style.right = `${psw + 8}px`;
+          const px = el.querySelector('.ot-px');
+          if (px && dragging) px.textContent = fmtP(price);
+        }
+      }
       if (!v) return;
       ctx.save();
       ctx.beginPath(); ctx.rect(0, 0, v.w, v.h); ctx.clip();
@@ -933,29 +957,115 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     if (!bt || replay.mode !== 'on' || lastIdx.current < 0) return;
     const to = replay.idx;
     for (let i = lastIdx.current + 1; i <= to && i < rows.length; i++) {
-      const r = stepBar(posRef.current, rows[i], srcIv);
-      if (r.closed) { setPos(r.pos); record(r.closed, r.hit === 'stop' ? 'Stopped out' : 'Target hit'); }
+      if (!posRef.current && !ordersRef.current.length) continue;
+      const r = stepOrders(posRef.current, ordersRef.current, rows[i], srcIv, bracketsFor);
+      if (r.pos !== posRef.current) setPos(r.pos);
+      if (r.orders.length !== ordersRef.current.length) setOrders(r.orders);
+      for (const c of r.closed) record(c.closed, c.why === 'stop' ? 'Stopped out' : c.why === 'target' ? 'Target hit' : 'Order filled');
+      if (r.filled.length && !r.closed.length) { const f = r.filled[r.filled.length - 1]; setFlash({ text: `${f.order.side > 0 ? 'Bought' : 'Sold'} ${f.order.qty} @ ${fmtP(f.price)} (${f.order.type})`, good: true, at: Date.now() }); }
     }
     lastIdx.current = Math.max(lastIdx.current, to);
   }, [replay.idx, replay.mode]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { drawPosLines(); }, [pos]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { drawPosLines(); }, [pos, orders]); // eslint-disable-line react-hooks/exhaustive-deps
   const nowBar = rows[replay.idx];
   const lastPrice = nowBar ? nowBar[4] : null;
   const barEnd = nowBar ? nowBar[0] + srcIv - 1 : 0;
-  const place = (side) => {
-    if (!bt || replay.mode !== 'on' || lastPrice == null) return;
-    const sl = Number(order.sl) > 0 ? Number(order.sl) : null, tp = Number(order.tp) > 0 ? Number(order.tp) : null;
-    const round = (p) => Math.round(p / tickSize) * tickSize;
-    const brackets = { stop: sl ? round(lastPrice - side * sl * tickSize) : null, target: tp ? round(lastPrice + side * tp * tickSize) : null };
-    const r = marketOrder(posRef.current, side, order.qty, lastPrice, barEnd, brackets);
+  const roundTick = (p) => Number((Math.round(p / tickSize) * tickSize).toFixed(Math.max(prec, 2)));
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  /** SL / TP (ticks from the fill) for a position an order opens, when SL/TP is on. */
+  function bracketsFor(side, px) {
+    const o = orderRef.current;
+    if (!o.brk) return {};
+    const sl = Number(o.sl) > 0 ? Number(o.sl) : null, tp = Number(o.tp) > 0 ? Number(o.tp) : null;
+    return { stop: sl ? roundTick(px - side * sl * tickSize) : null, target: tp ? roundTick(px + side * tp * tickSize) : null };
+  }
+  const canTrade = !!bt && replay.mode === 'on' && lastPrice != null;
+  /** Market order at the last price. */
+  const place = (side, qty = order.qty) => {
+    if (!canTrade) return;
+    const r = marketOrder(posRef.current, side, qty, lastPrice, barEnd, bracketsFor(side, lastPrice));
     setPos(r.pos);
     record(r.closed);
   };
+  /** A working limit or stop order; it fills on a later bar that reaches its price. */
+  const addOrder = (side, type, price, qty = order.qty) => {
+    if (!canTrade || !Number.isFinite(price)) return;
+    setOrders([...ordersRef.current, { id: uid(), side, type, price: roundTick(price), qty: Math.max(1, Math.floor(Number(qty) || 1)) }]);
+  };
+  const cancelOrders = (keep) => setOrders(ordersRef.current.filter(keep));
   const closeAll = (why) => { if (!bt || !posRef.current || lastPrice == null) return; const r = flatten(posRef.current, lastPrice, barEnd); setPos(null); record(r.closed, why); };
-  const breakEven = () => { const p = posRef.current; if (p) setPos({ ...p, stop: Math.round(posAvg(p) / tickSize) * tickSize }); };
-  const setOrderField = (patch) => { const next = { ...order, ...patch }; setOrder(next); setSetting('btOrder', { qty: next.qty, sl: next.sl, tp: next.tp }); };
-  const onClose = () => { if (bt && posRef.current) closeAll('Closed at the chart’s last bar'); closeStudio(); };
-  const nextDay = () => { if (posRef.current) closeAll('Closed at the end of the day'); bt.onDay(nextWeekday(date)); };
+  const reverse = () => { const p = posRef.current; if (canTrade && p && posQty(p)) place(-p.dir, posQty(p) * 2); };
+  const breakEven = () => { const p = posRef.current; if (p) setPos({ ...p, stop: roundTick(posAvg(p)) }); };
+  const setOrderField = (patch) => { const next = { ...order, ...patch }; setOrder(next); setSetting('btOrder', { qty: next.qty, sl: next.sl, tp: next.tp, brk: next.brk }); };
+  const onClose = () => { if (bt && posRef.current) closeAll('Closed at the chart’s last bar'); setOrders([]); closeStudio(); };
+  const nextDay = () => { if (posRef.current) closeAll('Closed at the end of the day'); setOrders([]); bt.onDay(nextWeekday(date)); };
+  const lastPriceRef = useRef(lastPrice);
+  lastPriceRef.current = lastPrice;
+  const tagsRef = useRef(null);
+  const ghostRef = useRef(null);
+  const tagDrag = useRef(null);
+  /** Order / stop / target tags on the chart: drag to move the price, × to cancel. */
+  const tags = !bt ? [] : [
+    ...(pos && posQty(pos) ? [
+      { key: 'pos', price: posAvg(pos), cls: pos.dir > 0 ? 'buy' : 'sell', label: `${pos.dir > 0 ? 'Long' : 'Short'} ${posQty(pos)}`, money: lastPrice != null ? openPnl(pos, lastPrice, bt.pv) : null, x: () => closeAll(), xTitle: 'Close the position at market' },
+      ...(pos.stop != null ? [{ key: 'sl', price: pos.stop, cls: 'sl', label: 'SL', money: (pos.stop - posAvg(pos)) * pos.dir * posQty(pos) * bt.pv, drag: true, x: () => setPos({ ...posRef.current, stop: null }), xTitle: 'Remove the stop' }] : []),
+      ...(pos.target != null ? [{ key: 'tp', price: pos.target, cls: 'tp', label: 'TP', money: (pos.target - posAvg(pos)) * pos.dir * posQty(pos) * bt.pv, drag: true, x: () => setPos({ ...posRef.current, target: null }), xTitle: 'Remove the target' }] : []),
+    ] : []),
+    ...orders.map((o) => ({ key: o.id, price: o.price, cls: o.side > 0 ? 'buy' : 'sell', label: `${o.side > 0 ? 'Buy' : 'Sell'} ${o.type === 'limit' ? 'LMT' : 'STP'} ${o.qty}`, drag: true, x: () => cancelOrders((x) => x.id !== o.id), xTitle: 'Cancel the order' })),
+  ];
+  const startTagDrag = (e, tag) => {
+    if (!tag.drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = box.current.getBoundingClientRect();
+    tagDrag.current = { key: tag.key, price: tag.price, moved: false };
+    const mv = (ev) => {
+      const a = api.current;
+      const p = a.series?.coordinateToPrice(ev.clientY - r.top);
+      if (p == null || !tagDrag.current) return;
+      tagDrag.current.price = roundTick(p); tagDrag.current.moved = true;
+      a.tagLines?.get(tag.key)?.applyOptions({ price: tagDrag.current.price });
+    };
+    const upf = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', upf);
+      const d = tagDrag.current; tagDrag.current = null;
+      if (!d?.moved) return;
+      if (tag.key === 'sl') setPos({ ...posRef.current, stop: d.price });
+      else if (tag.key === 'tp') setPos({ ...posRef.current, target: d.price });
+      else setOrders(ordersRef.current.map((o) => (o.id === tag.key ? { ...o, price: d.price } : o)));
+    };
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', upf);
+  };
+  /** Drag a Buy / Sell LMT or STP button onto the chart: the order goes where you drop it. */
+  const startOrderDrag = (e, side, type) => {
+    if (!canTrade || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY;
+    let moved = false, drop = null;
+    const g = ghostRef.current;
+    const mv = (ev) => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;
+      moved = true;
+      const v = view();
+      const r = box.current.getBoundingClientRect();
+      const x = ev.clientX - r.left, y = ev.clientY - r.top;
+      drop = v && x >= 0 && x <= v.w && y >= 0 && y <= v.h ? roundTick(api.current.series.coordinateToPrice(y)) : null;
+      if (!g) return;
+      if (drop == null) { g.style.display = 'none'; return; }
+      const now = lastPriceRef.current;
+      const instant = type === 'limit' ? (side > 0 ? drop >= now : drop <= now) : (side > 0 ? drop <= now : drop >= now);
+      g.style.display = 'block'; g.style.top = `${y}px`; g.style.width = `${v.w}px`;
+      g.className = `studio-ghost ${side > 0 ? 'buy' : 'sell'}`;
+      g.firstChild.textContent = `${side > 0 ? 'Buy' : 'Sell'} ${type === 'limit' ? 'LMT' : 'STP'} ${orderRef.current.qty} @ ${fmtP(drop)}${instant ? ` · on the ${side > 0 === (type === 'limit') ? 'high' : 'low'} side of the price — fills on the next bar` : ''}`;
+    };
+    const upf = () => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', upf);
+      if (g) g.style.display = 'none';
+      if (!moved) { setFlash({ text: 'Drag the button onto the chart, to the price you want the order at', good: true, at: Date.now() }); return; }
+      if (drop != null) addOrder(side, type, drop);
+    };
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', upf);
+  };
   const dayTrades = tradesIn;
   const dayPnl = bt ? dayTrades.reduce((sum, t) => sum + (Number(t.pnl) || 0), 0) : 0;
   const atEnd = replay.mode === 'on' && replay.idx >= rows.length - 1;
@@ -1105,6 +1215,19 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
               </div>
             )}
           <canvas ref={overlay} className="studio-overlay" />
+          {bt && (
+            <div ref={tagsRef} className="studio-otags">
+              {tags.map((t) => (
+                <div key={t.key} data-key={t.key} data-price={t.price} className={`otag ${t.cls} ${t.drag ? 'drag' : ''}`} onPointerDown={(e) => startTagDrag(e, t)} title={t.drag ? 'Drag to move' : undefined}>
+                  <b>{t.label}</b>
+                  <span className="ot-px">{fmtP(t.price)}</span>
+                  {t.money != null && <span className={t.money >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(t.money, { sign: true })}</span>}
+                  <button className="ot-x" title={t.xTitle} onPointerDown={(e) => e.stopPropagation()} onClick={t.x}><X size={11} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          {bt && <div ref={ghostRef} className="studio-ghost" style={{ display: 'none' }}><span /></div>}
           <div ref={tipRef} className="ec-tip" />
           {selected && (
             <div className="studio-edit" onPointerDown={(e) => e.stopPropagation()}>
@@ -1151,6 +1274,50 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
           )}
           {rec.status === 'ok' && !rows.length && <div className="ec-msg muted">No {sym} prices for this day.{bt ? ' If your platform add-on is running it has been asked for them — this checks again every 20 seconds. Or skip to the next day.' : ''}{bt && <button className="btn" style={{ marginTop: 8 }} onClick={nextDay}>Next day <ChevronRight size={14} /></button>}</div>}
         </div>
+        {bt && (
+          <aside className="studio-trade" aria-label="Order entry">
+            <div className={`st-pos ${pos ? (pos.dir > 0 ? 'long' : 'short') : ''}`}>
+              {pos && posQty(pos) ? (
+                <>
+                  <b>{pos.dir > 0 ? 'Long' : 'Short'} {posQty(pos)} @ {fmtP(posAvg(pos))}</b>
+                  <span className={openPnl(pos, lastPrice ?? posAvg(pos), bt.pv) >= 0 ? "pos" : "neg"}>{state.settings.privacy ? "•••" : fmtMoney(openPnl(pos, lastPrice ?? posAvg(pos), bt.pv), { sign: true })}</span>
+                </>
+              ) : <span className="muted">Flat{orders.length ? ` · ${orders.length} working` : ''}</span>}
+            </div>
+            <div className="st-label">Qty</div>
+            <div className="st-qty">
+              <input type="number" className="input" min={1} max={999} value={order.qty} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur(); } }} onChange={(e) => setOrderField({ qty: Math.max(1, Math.min(999, Math.floor(Number(e.target.value) || 1))) })} aria-label="Contracts" />
+              {[1, 2, 5, 10].map((q) => <button key={q} className={`chip ${order.qty === q ? 'on' : ''}`} onClick={() => setOrderField({ qty: q })}>{q}</button>)}
+            </div>
+            <div className="st-grid">
+              <button className="st-btn buy" disabled={!canTrade} onClick={() => place(1)} title="Buy at market (B)">Buy MKT</button>
+              <button className="st-btn sell" disabled={!canTrade} onClick={() => place(-1)} title="Sell at market (S)">Sell MKT</button>
+              <button className="st-btn buy soft" disabled={!canTrade} onClick={() => addOrder(1, 'limit', lastPrice - tickSize)} title="Buy limit one tick under the last price (joins the bid)">Buy Bid</button>
+              <button className="st-btn sell soft" disabled={!canTrade} onClick={() => addOrder(-1, 'limit', lastPrice + tickSize)} title="Sell limit one tick over the last price (joins the ask)">Sell Ask</button>
+            </div>
+            <div className="st-label">Drag onto the chart</div>
+            <div className="st-grid">
+              {[[1, 'limit', 'Buy LMT'], [-1, 'limit', 'Sell LMT'], [1, 'stop', 'Buy STP'], [-1, 'stop', 'Sell STP']].map(([side, type, label]) => (
+                <button key={label} className={`st-btn st-drag ${side > 0 ? 'buy' : 'sell'} soft`} disabled={!canTrade} onPointerDown={(e) => startOrderDrag(e, side, type)} title={`Drag onto the chart to place a ${side > 0 ? 'buy' : 'sell'} ${type} order at that price`}>{label}</button>
+              ))}
+            </div>
+            <div className="st-grid">
+              <button className="st-btn" disabled={!orders.some((o) => o.side > 0)} onClick={() => cancelOrders((o) => o.side < 0)}>Canc. Bids</button>
+              <button className="st-btn" disabled={!orders.some((o) => o.side < 0)} onClick={() => cancelOrders((o) => o.side > 0)}>Canc. Asks</button>
+              <button className="st-btn" disabled={!orders.length} onClick={() => setOrders([])}>Cancel All</button>
+              <button className="st-btn" disabled={!canTrade || !pos} onClick={reverse} title="Close and open the other way, same size">Reverse</button>
+            </div>
+            <button className="st-btn wide" disabled={!pos} onClick={breakEven} title="Move the stop to your average price"><ShieldCheck size={13} /> Breakeven</button>
+            <button className="st-btn wide close" disabled={!canTrade || !pos} onClick={() => closeAll()} title="Close the position at market (X)">Close</button>
+            <div className="st-brk">
+              <label className="st-switch"><span>SL/TP</span><input type="checkbox" checked={!!order.brk} onChange={(e) => setOrderField({ brk: e.target.checked })} /><i /></label>
+              <label title={`Profit target, in ticks from the fill (one tick = ${tickSize})`}><span>TP</span><input type="number" className="input" min={0} placeholder="—" disabled={!order.brk} value={order.tp} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur(); } }} onChange={(e) => setOrderField({ tp: e.target.value })} /><em>ticks</em></label>
+              <label title={`Stop loss, in ticks from the fill (one tick = ${tickSize})`}><span>SL</span><input type="number" className="input" min={0} placeholder="—" disabled={!order.brk} value={order.sl} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur(); } }} onChange={(e) => setOrderField({ sl: e.target.value })} /><em>ticks</em></label>
+            </div>
+            {!canTrade && <div className="st-note muted">Orders open once the replay is running.</div>}
+            {canTrade && <div className="st-note muted">Drag order, stop and target tags on the chart to move them.</div>}
+          </aside>
+        )}
       </div>
 
       {colorsOpen && <ChartColors onClose={() => setColorsOpen(false)} />}
@@ -1179,23 +1346,6 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
               {openPos && <span className="muted"> · in a {openPos.direction.toLowerCase()} {openPos.qty > 1 ? `×${openPos.qty} ` : ''}from {fmtP(openPos.entryPrice)}</span>}
               <span className="muted"> · {replayDone.length} closed </span>
               <span className={replayPnl >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(replayPnl, { sign: true })}</span>
-            </div>
-          )}
-          {bt && (
-            <div className="studio-order">
-              <label title="Contracts">Qty <input type="number" className="input" min={1} max={999} value={order.qty} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur(); } }} onChange={(e) => setOrderField({ qty: Math.max(1, Math.min(999, Math.floor(Number(e.target.value) || 1))) })} /></label>
-              <label title={`Stop loss, in ticks from your fill (one tick = ${tickSize}). Empty = no stop.`}>Stop <input type="number" className="input" min={0} placeholder="ticks" value={order.sl} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur(); } }} onChange={(e) => setOrderField({ sl: e.target.value })} /></label>
-              <label title={`Profit target, in ticks from your fill (one tick = ${tickSize}). Empty = no target.`}>Target <input type="number" className="input" min={0} placeholder="ticks" value={order.tp} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur(); } }} onChange={(e) => setOrderField({ tp: e.target.value })} /></label>
-              <button className="btn sm studio-buy" onClick={() => place(1)} title="Buy at market (B)">Buy {lastPrice != null ? fmtP(lastPrice) : ''}</button>
-              <button className="btn sm studio-sell" onClick={() => place(-1)} title="Sell at market (S)">Sell</button>
-              {pos && (
-                <span className="studio-posinfo">
-                  <b className={pos.dir > 0 ? 'pos' : 'neg'}>{pos.dir > 0 ? 'Long' : 'Short'} {posQty(pos)}</b> @ {fmtP(posAvg(pos))}
-                  {' '}<span className={openPnl(pos, lastPrice, bt.pv) >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(openPnl(pos, lastPrice, bt.pv), { sign: true })}</span>
-                  {pos.stop != null && Math.abs(pos.stop - posAvg(pos)) > tickSize / 2 && <button className="btn xs" onClick={breakEven} title="Move the stop to your average price"><ShieldCheck size={12} /> B/E</button>}
-                  <button className="btn xs" onClick={() => closeAll()} title="Close the position at market (X)">Close</button>
-                </span>
-              )}
             </div>
           )}
         </div>

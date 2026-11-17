@@ -107,6 +107,52 @@ export function stepBar(pos, bar, barSec = 60) {
   return { pos, closed: null, hit: null };
 }
 
+/*
+ * Working orders: { id, side: 1 | -1, type: 'limit' | 'stop', price, qty }
+ *   buy limit fills when price trades at or below it, buy stop at or above it (sells the other way round). A bar that
+ *   opens past the level fills at the open (a gap) — a limit gets the better price, a stop the worse one.
+ */
+const trips = (ord, h, l) => (ord.type === 'limit' ? (ord.side > 0 ? l <= ord.price : h >= ord.price) : (ord.side > 0 ? h >= ord.price : l <= ord.price));
+const fillAt = (ord, o) => (ord.type === 'limit' ? (ord.side > 0 ? Math.min(o, ord.price) : Math.max(o, ord.price)) : (ord.side > 0 ? Math.max(o, ord.price) : Math.min(o, ord.price)));
+
+/**
+ * One new bar against the position's stop and target and the working orders.
+ *   1. the open position's stop / target (a bar reaching both counts as the stop)
+ *   2. working orders the bar reached, in the order price got to them from the open; one filling cancels the rest of
+ *      its OCO group (`oco`)
+ *   3. a position opened by an order inside this bar is stopped out in it too if the bar went past its stop (we can't
+ *      see inside the bar, so the worse case is assumed)
+ * `bracketsFor(side, price)` gives { stop, target } for a position an order opens.
+ * Returns { pos, orders (still working), filled: [{ order, price }], closed: [{ closed, why }] }.
+ */
+export function stepOrders(pos, orders, bar, barSec = 60, bracketsFor = () => ({})) {
+  const [t, o, h, l] = bar;
+  const at = t + Math.min(30, Math.max(1, Math.floor(barSec / 2)));
+  const closed = [], filled = [];
+  const first = stepBar(pos, bar, barSec);
+  if (first.closed) closed.push({ closed: first.closed, why: first.hit });
+  pos = first.pos;
+  let left = [...(orders || [])];
+  const reached = left.filter((ord) => trips(ord, h, l)).sort((a, b) => Math.abs(fillAt(a, o) - o) - Math.abs(fillAt(b, o) - o));
+  for (const ord of reached) {
+    if (!left.includes(ord)) continue; // its OCO partner filled first
+    left = left.filter((x) => x !== ord && !(ord.oco && x.oco === ord.oco));
+    const px = fillAt(ord, o);
+    const have = posQty(pos);
+    const opens = !have || pos.dir === ord.side || ord.qty > have;
+    const m = marketOrder(pos, ord.side, ord.qty, px, at, opens ? bracketsFor(ord.side, px) : {});
+    if (m.closed) closed.push({ closed: m.closed, why: 'order' });
+    pos = m.pos;
+    filled.push({ order: ord, price: px });
+  }
+  if (filled.length && pos && posQty(pos) && pos.stop != null && (pos.dir > 0 ? l <= pos.stop : h >= pos.stop)) {
+    const f = flatten(pos, pos.stop, at);
+    closed.push({ closed: f.closed, why: 'stop' });
+    pos = null;
+  }
+  return { pos, orders: left, filled, closed };
+}
+
 /** Stats-friendly summary of a backtest session. */
 export function sessionDays(session) {
   const days = new Set((session.trades || []).map((t) => String(t.entry).slice(0, 10)));
