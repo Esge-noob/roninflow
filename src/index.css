@@ -2007,6 +2007,9 @@ a.ruin-chip { cursor: pointer; }
 .studio-top .btn.sm.on, .studio-top .btn.on { border-color: var(--primary); color: var(--fg); background: color-mix(in srgb, var(--primary) 16%, transparent); }
 .studio-syms { flex-wrap: wrap; }
 .studio-date { font-size: 12.5px; white-space: nowrap; }
+.studio-datebtn { gap: 6px; }
+.studio-datepop { display: grid; gap: 8px; padding: 10px; }
+.studio-datepop .input { height: 30px; }
 .studio-main { flex: 1; min-height: 0; display: flex; }
 .studio-tools { width: 46px; flex: none; border-right: 1px solid var(--border); background: var(--panel); overflow-y: auto; padding: 6px 0; display: flex; flex-direction: column; gap: 4px; }
 .studio-group { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0; border-bottom: 1px solid var(--border); }

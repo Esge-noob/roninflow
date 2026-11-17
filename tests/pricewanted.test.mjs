@@ -293,3 +293,26 @@ test('ATAS chart history: a full-size chart (ES) feeds a micro’s download (MES
   const s = h.history.continuous('MES', '2026-06-02', '2026-06-30');
   assert.ok(s.t.length > 500 && s.c[0] === 6000);
 });
+
+test('a backtest on the full-size contract asks the platform you trade the micro on (and says what to do when nothing has arrived)', async () => {
+  const now = Math.floor(Date.parse('2026-11-16T20:00:00Z') / 1000);
+  const { dir, h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }] });
+  // NinjaTrader has sent bars before, so it counts as a connected platform
+  h.ingestBars({ source: 'ninjatrader', symbol: 'MNQ', bars: bars(Date.parse('2026-11-13T15:00:00Z') / 1000, 10) });
+  const call = (url) => new Promise((resolve) => {
+    const res = { statusCode: 200, headers: {}, setHeader(k, v) { this.headers[k] = v; }, end(b) { resolve({ status: this.statusCode, body: JSON.parse(b || '{}') }); } };
+    h({ method: 'GET', url, headers: {} }, res);
+  });
+  const r = await call(`/api/candles?symbol=NQ&date=2026-05-04&tz=${encodeURIComponent(TZ)}&want=1`);
+  assert.equal(r.status, 424);
+  assert.equal(r.body.code, 'NO_DATA', 'not “no price source” — NinjaTrader is connected');
+  assert.match(r.body.error, /NinjaTrader can fetch them/);
+  const items = h.wanted('ninjatrader', { tz: TZ, now });
+  assert.equal(items[0].contract, 'NQ 06-26', 'named like your MNQ contracts, for NQ');
+  // ATAS can't fetch on request: the message says how to get the day instead
+  h.ingestBars({ source: 'atas', symbol: 'ES', bars: bars(Date.parse('2026-11-13T15:00:00Z') / 1000, 10) });
+  const a = await call(`/api/candles?symbol=MES&date=2026-05-04&tz=${encodeURIComponent(TZ)}`);
+  assert.match(a.body.error, /ATAS can’t fetch a day on request/);
+  assert.match(a.body.error, /MES \(or ES\)/);
+  void dir;
+});

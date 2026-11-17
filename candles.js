@@ -39,6 +39,7 @@ export function rootOf(symbol) {
   const s = String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   return ROOTS.find((r) => s.startsWith(r)) || s.replace(/[FGHJKMNQUVXZ]\d{1,2}$/, '') || s;
 }
+const PLATFORM = { ninjatrader: 'NinjaTrader', quantower: 'Quantower', sierrachart: 'Sierra Chart', metatrader: 'MetaTrader', ctrader: 'cTrader', atas: 'ATAS', tradovate: 'Tradovate', rithmic: 'Rithmic' };
 const MICRO = { MES: 'ES', MNQ: 'NQ', MYM: 'YM', M2K: 'RTY', MCL: 'CL', MGC: 'GC', SIL: 'SI', QM: 'CL', QG: 'NG', M6E: '6E', M6B: '6B', M6A: '6A' };
 const TWIN = { ...MICRO, ...Object.fromEntries(Object.entries(MICRO).filter(([k]) => k !== 'QM' && k !== 'QG').map(([m, f]) => [f, m])) };
 export const yahooSymbol = (symbol) => `${rootOf(symbol)}=F`;
@@ -175,6 +176,12 @@ export function contractFor(contract, root, date, seen = date) {
   const cmeRe = new RegExp(`^(${root})[FGHJKMNQUVXZ](\\d{1,4})(.*)$`); // "MNQZ25", "MNQZ5", "MNQZ25.CME"…
   if (cmeRe.test(contract)) return contract.replace(cmeRe, (_, a, yy, rest) => `${a}${MONTH_CODES[m - 1]}${yy.length === 1 ? y % 10 : yy.length === 2 ? p2(y % 100) : y}${rest}`);
   return near;
+}
+
+/** A contract name moved to its micro / full-size twin: "MES 12-26" → "ES 12-26", "MNQZ6" → "NQZ6" (null if the name doesn't start with the root). */
+export function renameRoot(contract, from, to) {
+  const c = String(contract || '');
+  return c.toUpperCase().startsWith(from) ? to + c.slice(from.length) : null;
 }
 
 export function createCandleHandler(dataDir, { readTrades, readConnTrades, log = () => {}, vault, tokenOk, dropDirs } = {}) {
@@ -327,12 +334,17 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   }
   /** The contract an add-on should ask its platform for on `date`, from the newest contract of that root it has traded. */
   function contractOn(source, root, date) {
-    let best = null;
-    const see = (t, d) => { if (t?.contract && rootOf(t.symbol || t.contract) === root && String(t.source || '').toLowerCase() === source && (!best || d > best.d)) best = { c: String(t.contract), d }; };
-    try { for (const t of (readTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
-    try { for (const t of (readConnTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
-    if (!best) return null;
-    return contractFor(best.c, root, date, best.d);
+    for (const r of [root, TWIN[root]].filter(Boolean)) {
+      let best = null;
+      const see = (t, d) => { if (t?.contract && rootOf(t.symbol || t.contract) === r && String(t.source || '').toLowerCase() === source && (!best || d > best.d)) best = { c: String(t.contract), d }; };
+      try { for (const t of (readTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+      try { for (const t of (readConnTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+      if (!best) continue;
+      // only traded the micro (or the full-size): the platform names the other one the same way ("MES 12-26" → "ES 12-26")
+      const c = r === root ? best.c : renameRoot(best.c, r, root);
+      if (c) return contractFor(c, root, date, best.d);
+    }
+    return null;
   }
   function requestedItems(source, now) {
     const out = [];
@@ -373,6 +385,10 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     };
     try { for (const t of (readTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
     try { for (const t of (readConnTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    if (!best && TWIN[root] && !latestContract.twin) { // a history download for ES when you only trade MES (or the other way round)
+      latestContract.twin = true;
+      try { const tw = latestContract(TWIN[root], prefer); const c = tw && renameRoot(tw.c, TWIN[root], root); if (c) best = { ...tw, c }; } finally { latestContract.twin = false; }
+    }
     return best;
   }
   const storedBars = (source, root, from, to) => barsFrom(source, root, from, to).length;
@@ -684,6 +700,19 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   const readCache = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 
   /** Candles for one symbol and diary day, from the cache when it's final. */
+  /** Why there are no prices for a day — with a platform connected that's "not sent yet", not "nothing set up". */
+  function noData(symbol, date) {
+    const root = rootOf(symbol);
+    const platforms = cfg.addon === false ? [] : addonSources().map((x) => x.id).filter((id) => !cfg.addonSource || cfg.addonSource === 'any' || id === cfg.addonSource);
+    if (!platforms.length) return Object.assign(new Error('No price source is set up for charts yet — choose one in Settings → Price data.'), { code: 'NO_SOURCE' });
+    const fetchers = platforms.filter((id) => id !== 'atas' && contractOn(id, root, date)).map((id) => PLATFORM[id] || id);
+    const twin = TWIN[root] ? ` (or ${TWIN[root]})` : '';
+    const parts = [`No ${root} bars from your platform for ${date} yet.`];
+    if (fetchers.length) parts.push(`${fetchers.join(' and ')} can fetch them: keep it open with the RoninFlow add-on running, and they arrive within a minute or two.`);
+    if (platforms.includes('atas')) parts.push(`ATAS can’t fetch a day on request: download its history (Backtesting → Automated → Download history), or open a 1-minute ${root}${twin} chart that reaches back to this day with Journal Sync on it.`);
+    else if (!fetchers.length) parts.push(`Take one ${root} trade (sim is fine) with your platform’s add-on running, so RoninFlow learns its contract names and can ask for days like this.`);
+    return Object.assign(new Error(parts.join(' ')), { code: 'NO_DATA' });
+  }
   async function get(symbol, date, tz, { force, noPaid } = {}) { // noPaid: skip Databento / Polygon (a shared view's visitor shouldn't run up your bill)
     const ysym = yahooSymbol(symbol);
     const file = cachePath(ysym, date);
@@ -736,7 +765,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (!cfg.yahoo) {
         if (addonRec) return addonRec;
         if (cached) return { ...cached, stale: true };
-        throw lastErr || Object.assign(new Error('No price source is set up for charts yet — choose one in Settings → Price data.'), { code: 'NO_SOURCE' });
+        throw lastErr || noData(symbol, date);
       }
       for (const [interval, max] of INTERVALS) {
         if ((now - from) / DAY > max) continue;
@@ -750,7 +779,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       }
       if (addonRec) return addonRec;
       if (cached) return { ...cached, stale: true };
-      throw lastErr || new Error('No price data for that day');
+      throw lastErr || noData(symbol, date);
     })().finally(() => inflight.delete(key));
     inflight.set(key, job);
     return job;
@@ -895,7 +924,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (want && !(rec.interval === '1m' && rec.candles?.length >= 200 && /add-on|Databento|Polygon/.test(rec.source || ''))) requestDay(symbol, date, tz);
       return send(res, 200, rec);
     } catch (e) {
-      return send(res, e.code === 'NO_SOURCE' ? 424 : 502, { error: e.message || 'Couldn’t load prices', code: e.code });
+      return send(res, e.code === 'NO_SOURCE' || e.code === 'NO_DATA' ? 424 : 502, { error: e.message || 'Couldn’t load prices', code: e.code });
     }
   };
   handler.ingestBars = ingestBars;

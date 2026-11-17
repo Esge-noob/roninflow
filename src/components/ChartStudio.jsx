@@ -8,11 +8,11 @@ import {
   MousePointer2, Slash, MoveUpRight, Minus, ChevronsRight, SeparatorVertical, Square, AlignVerticalSpaceAround, Ruler,
   CircleArrowUp, CircleArrowDown, Brush, Type, Magnet, Eye, EyeOff, Trash2, Undo2, Camera, Maximize, Maximize2, Minimize, X,
   Palette, Play, Pause, StepForward, StepBack, SkipBack, SkipForward, History, Layers, Check, ChevronDown, RefreshCw, Crosshair,
-  ChevronRight, ShieldCheck,
+  ChevronRight, ChevronLeft, ShieldCheck, Calendar,
 } from 'lucide-react';
 import { useStore } from '../store/store';
 import { IS_VIEWER } from '../lib/shareMode';
-import { fmtMoney, fmtTime12, fmtDate } from '../lib/stats';
+import { fmtMoney, fmtTime12, fmtDate, todayKey } from '../lib/stats';
 import { Popover } from './ui';
 import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, barTime, aggregate, sessionStart, fromLocal, toLocal } from '../lib/bars';
 import { sma, ema, vwap, bollinger, rsi, macd } from '../lib/indicators';
@@ -354,7 +354,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       const x = new Date(`${date}T12:00:00`); x.setDate(x.getDate() - span - back);
       if (x.getDay() !== 6) days.push(`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`);
     }
-    const recs = await Promise.all(days.map((d) => fetchDay(d).catch(() => null)));
+    const recs = await Promise.all(days.map((d) => fetchDay(d, { want: !!bt }).catch(() => null))); // a backtest asks add-ons for days they can fetch
     let empty = h.empty, done = '';
     const got = new Map();
     for (const r of recs) { // newest day first
@@ -622,14 +622,15 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     const a = api.current;
     if (!a.chart || !rows.length) return;
     const r = replayRef.current;
-    const end = r.mode === 'on' ? Math.min(r.idx, rows.length - 1) : rows.length - 1;
-    const vis = r.mode === 'on' ? rows.slice(0, end + 1) : rows;
+    const hide = r.mode === 'on' || (bt && r.mode === 'pick'); // a backtest never shows bars past the replay
+    const end = hide ? Math.min(r.idx, rows.length - 1) : rows.length - 1;
+    const vis = hide ? rows.slice(0, end + 1) : rows;
     const bars = aggregate(vis, a.iv);
     feed(a.series, bars);
     for (const x of a.inds) feed(x.s, x.f(bars));
     a.bars = bars;
     a.barTimes = bars.map((b) => b.time);
-    const until = r.mode === 'on' ? rows[end][0] + srcIv - 1 : Infinity;
+    const until = hide ? rows[end][0] + srcIv - 1 : Infinity;
     const ex = showExec ? buildExecutions(symTrades, a.barTimes, a.toBar, until) : { markers: [], lines: [] };
     a.shownMarkers = ex.markers;
     a.markers.setMarkers(ex.markers.map((m) => ({ time: m.time, position: m.side === 'buy' ? 'atPriceBottom' : 'atPriceTop', price: m.price, shape: m.side === 'buy' ? 'arrowUp' : 'arrowDown', color: m.side === 'buy' ? a.c.buy : a.c.sell, text: m.qty > 1 ? String(m.qty) : '', size: 1 })));
@@ -761,15 +762,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       const { x, y } = local(e);
       if (x < 0 || y < 0 || x > v.w || y > v.h) return; // price / time scales: the chart handles those
       const r = replayRef.current;
-      if (r.mode === 'pick') {
-        handling = true; block(e);
-        const t = v.fromX(x);
-        let idx = rows.findIndex((row) => barTime(row[0], srcIv) > t) - 1;
-        if (idx < 0) idx = rows.length - 1;
-        setReplay((s) => ({ ...s, mode: 'on', idx: Math.max(0, idx), playing: false }));
-        requestAnimationFrame(() => requestAnimationFrame(focusReplay));
-        return;
-      }
+      if (r.mode === 'pick') { pickStart = { x, y }; return; } // a click picks the bar; a drag scrolls the chart (to earlier days)
       const t = toolRef.current;
       if (t !== 'cursor') {
         handling = true; block(e);
@@ -801,10 +794,23 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       }
       if (selRef.current) setSel(null);
     };
+    let pickStart = null;
+    const pickAt = (x) => {
+      const v = view();
+      const r = replayRef.current;
+      if (!v || r.mode !== 'pick') return;
+      const t = v.fromX(x);
+      let idx = rows.findIndex((row) => barTime(row[0], srcIv) > t) - 1;
+      if (idx < 0) idx = rows.length - 1;
+      if (bt) { btRestartRef.current(Math.max(0, Math.min(idx, r.idx))); return; } // a backtest restarts from that bar (never ahead of where it was)
+      setReplay((s) => ({ ...s, mode: 'on', idx: Math.max(0, idx), playing: false }));
+      requestAnimationFrame(() => requestAnimationFrame(focusReplay));
+    };
     const move = (e) => {
       const v = view();
       if (!v || !box.current) return;
       const { x, y } = local(e);
+      if (pickStart && dist(x, y, pickStart.x, pickStart.y) > 5) pickStart = null; // dragging: scrolling, not picking
       if (replayRef.current.mode === 'pick') { hoverX.current = x >= 0 && x <= v.w ? x : null; el.style.cursor = 'col-resize'; return; }
       const d = draft.current;
       if (d && (drag.current?.create || d.placing)) {
@@ -857,6 +863,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
       el.style.cursor = over === null ? '' : over === 'body' ? 'move' : over === 'rot' ? 'alias' : over === 'size' ? 'nwse-resize' : 'grab';
     };
     const up = () => {
+      if (pickStart) { const x0 = pickStart.x; pickStart = null; pickAt(x0); return; }
       const g = drag.current;
       if (g?.create) {
         drag.current = null;
@@ -1000,6 +1007,25 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const setOrderField = (patch) => { const next = { ...order, ...patch }; setOrder(next); setSetting('btOrder', { qty: next.qty, sl: next.sl, tp: next.tp, brk: next.brk }); };
   const onClose = () => { if (bt && posRef.current) closeAll('Closed at the chart’s last bar'); setOrders([]); closeStudio(); };
   const nextDay = () => { if (posRef.current) closeAll('Closed at the end of the day'); setOrders([]); bt.onDay(nextWeekday(date)); };
+  /** Backtest: restart the replay from an earlier bar (scroll back to reach earlier days). The open position closes first. */
+  const btRestart = (idx) => {
+    if (!bt || !rows[idx]) return;
+    if (posRef.current) closeAll('Closed — replay restarted');
+    setOrders([]);
+    lastIdx.current = idx;
+    btTime.current = rows[idx][0];
+    setReplay((s) => ({ ...s, mode: 'on', idx, playing: false }));
+    requestAnimationFrame(() => requestAnimationFrame(focusReplay));
+  };
+  const btRestartRef = useRef(btRestart);
+  btRestartRef.current = btRestart;
+  /** Backtest: go to another day. */
+  const goToDay = (d) => {
+    if (!bt || !/^\d{4}-\d{2}-\d{2}$/.test(d || '') || d === date) return;
+    if (posRef.current) closeAll('Closed — moved to another day');
+    setOrders([]);
+    bt.onDay(d);
+  };
   const lastPriceRef = useRef(lastPrice);
   lastPriceRef.current = lastPrice;
   const tagsRef = useRef(null);
@@ -1097,7 +1123,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
         e.preventDefault();
         if (draft.current || toolRef.current !== 'cursor') setTool('cursor');
         else if (selRef.current) setSel(null);
-        else if (replayRef.current.mode === 'pick') setReplay((s) => ({ ...s, mode: 'off' }));
+        else if (replayRef.current.mode === 'pick') setReplay((s) => ({ ...s, mode: bt ? 'on' : 'off' }));
         else if (document.fullscreenElement) document.exitFullscreen?.();
         else onClose();
       }
@@ -1143,7 +1169,23 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
         <div className="row gap6 studio-syms">
           {symbols.map(({ s, c }) => <button key={s} className={`chip ${s === sym ? 'on' : ''}`} onClick={() => { setSym(s); setReplay((r) => ({ ...r, mode: 'off', playing: false })); setSel(null); }}>{s} <span className="muted" style={{ marginLeft: 4 }}>{c}</span></button>)}
         </div>
-        <span className="muted studio-date">{fmtDate(date)}</span>
+        {bt ? (
+          <Popover align="left" width={250} trigger={({ toggle, open }) => <button className={`btn sm studio-datebtn ${open ? 'on' : ''}`} onClick={toggle} title="Go to another day"><Calendar size={13} /> {fmtDate(date)} <ChevronDown size={12} /></button>}>
+            {(close) => (
+              <div className="studio-datepop">
+                <form className="row gap6" onSubmit={(e) => { e.preventDefault(); const v = e.currentTarget.elements.day.value; if (v && v <= todayKey()) { goToDay(v); close(); } }}>
+                  <input name="day" type="date" className="input grow" defaultValue={date} max={todayKey()} autoFocus onKeyDown={(e) => { if (e.key === 'Escape') e.stopPropagation(); }} aria-label="Day to replay" />
+                  <button type="submit" className="btn sm white">Go</button>
+                </form>
+                <div className="row gap6">
+                  <button className="btn xs" onClick={() => { goToDay(nextWeekday(date, -1)); close(); }}><ChevronLeft size={12} /> Previous day</button>
+                  <button className="btn xs" disabled={nextWeekday(date) > todayKey()} onClick={() => { goToDay(nextWeekday(date)); close(); }}>Next day <ChevronRight size={12} /></button>
+                </div>
+                <div className="muted" style={{ fontSize: 11.5 }}>{pos ? 'Your open position closes at the current price first.' : 'Prices for that day load from your platform or data feed.'}</div>
+              </div>
+            )}
+          </Popover>
+        ) : <span className="muted studio-date">{fmtDate(date)}</span>}
         {bt && <span className="badge neutral studio-btlabel" title="Backtest session">{bt.label || 'Backtest'}</span>}
         <div className="grow" />
         <Popover align="right" width={140} trigger={({ toggle, open }) => <button className={`btn sm ${open ? 'on' : ''}`} onClick={toggle} title="Timeframe">{ivSec(tf) < srcIv ? tfLabel(rec.interval) : tf} <ChevronDown size={12} /></button>}>
@@ -1259,7 +1301,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
           )}
           {bt && flash && <div className={`studio-hint studio-flash ${flash.good ? 'good' : 'bad'}`}>{flash.text}</div>}
           {bt && atEnd && !flash && <div className="studio-hint">End of this day’s prices <button className="btn xs" onClick={nextDay}>Next day <ChevronRight size={12} /></button></div>}
-          {replay.mode === 'pick' && <div className="studio-hint">Click on the chart where the replay should start <button className="btn xs" onClick={() => setReplay((s) => ({ ...s, mode: 'off' }))}>Cancel</button></div>}
+          {replay.mode === 'pick' && <div className="studio-hint">{bt ? `Click the bar to restart from — scroll left for earlier days${pos ? '. Your open position closes first' : ''}` : 'Click on the chart where the replay should start'} <button className="btn xs" onClick={() => setReplay((s) => ({ ...s, mode: bt ? 'on' : 'off' }))}>Cancel</button></div>}
           {tool !== 'cursor' && !replay.mode.startsWith('p') && <div className="studio-hint subtle">{TOOL_BY_ID[tool].label}: {ONE_POINT.has(tool) ? 'click to place' : tool === 'brush' ? 'drag to draw' : 'drag, or click two points'} · Esc to cancel</div>}
           {rec.status === 'loading' && <div className="ec-msg muted">Loading {sym} candles…</div>}
           {rec.status === 'error' && (
@@ -1326,6 +1368,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
           <div className="row gap4">
             {!bt && <button className="icon-btn" title="Back to the start" onClick={() => stepTo(0)}><SkipBack size={15} /></button>}
             {!bt && <button className="icon-btn" title="One bar back (Shift+←)" onClick={() => stepTo(replay.idx - 1)}><StepBack size={15} /></button>}
+            {bt && <button className="btn sm" title="Restart the replay from an earlier bar — scroll back for earlier days" onClick={() => { setReplay((s) => ({ ...s, mode: 'pick', playing: false })); setTool('cursor'); setSel(null); }}><History size={14} /> <span className="hide-m">Start from a bar</span></button>}
             <button className="btn sm white studio-play" title="Play / pause (Space)" onClick={() => setReplay((s) => ({ ...s, playing: !s.playing && s.idx < rows.length - 1 }))}>{replay.playing ? <Pause size={15} /> : <Play size={15} />}</button>
             <button className="icon-btn" title={bt ? 'One bar forward (→)' : 'One bar forward (Shift+→)'} onClick={() => stepTo(replay.idx + 1)}><StepForward size={15} /></button>
             {!bt && <button className="icon-btn" title="Jump to your next execution" disabled={!execTimes.some((t) => t > replayUntil)} onClick={nextExec}><SkipForward size={15} /></button>}
@@ -1336,13 +1379,13 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
           <input className="studio-scrub" type="range" min={0} max={Math.max(0, rows.length - 1)} value={replay.idx} onChange={(e) => stepTo(Number(e.target.value))} aria-label="Replay position" />
           {bt ? (
             <div className="studio-clock">
-              <b>{rows[replay.idx] ? fmtTime12(new Date(rows[replay.idx][0] * 1000).toISOString()) : ''}</b>
+              <b>{rows[replay.idx] ? `${localIsoOf(rows[replay.idx][0]).slice(0, 10) !== date ? `${fmtDate(localIsoOf(rows[replay.idx][0]).slice(0, 10))} · ` : ''}${fmtTime12(new Date(rows[replay.idx][0] * 1000).toISOString())}` : ''}</b>
               <span className="muted"> · today {dayTrades.length} trade{dayTrades.length === 1 ? '' : 's'} </span>
               <span className={dayPnl >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(dayPnl, { sign: true })}</span>
             </div>
           ) : (
             <div className="studio-clock">
-              <b>{rows[replay.idx] ? fmtTime12(new Date(rows[replay.idx][0] * 1000).toISOString()) : ''}</b>
+              <b>{rows[replay.idx] ? `${localIsoOf(rows[replay.idx][0]).slice(0, 10) !== date ? `${fmtDate(localIsoOf(rows[replay.idx][0]).slice(0, 10))} · ` : ''}${fmtTime12(new Date(rows[replay.idx][0] * 1000).toISOString())}` : ''}</b>
               {openPos && <span className="muted"> · in a {openPos.direction.toLowerCase()} {openPos.qty > 1 ? `×${openPos.qty} ` : ''}from {fmtP(openPos.entryPrice)}</span>}
               <span className="muted"> · {replayDone.length} closed </span>
               <span className={replayPnl >= 0 ? 'pos' : 'neg'}>{state.settings.privacy ? '•••' : fmtMoney(replayPnl, { sign: true })}</span>
