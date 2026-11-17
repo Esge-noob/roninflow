@@ -43,6 +43,7 @@ export function installDemoFetch() {
       if (url.startsWith('/api/candles/history/bars')) return import('./demoCandles').then(({ demoHistory }) => reply(200, demoHistory(q.get('symbol'), q.get('from') < '2025-01-01' ? '2025-01-01' : q.get('from'), q.get('to') > last ? last : q.get('to'))));
       return reply(200, { job: { status: 'done', reason: 'demo', oldest: '2025-01-06', done: 98, bars: 0 }, coverage: { days: 480, first: '2025-01-01', last }, contract: { source: 'demo', c: q.get('symbol') } });
     }
+    if (url.startsWith('/api/macro/')) return import('./macroDemo').then(({ demoMacro }) => reply(200, demoMacro(url))); // sample macro data
     if (url.startsWith('/api/candles')) return reply(404, { error: 'Not available in the demo.' });
     return reply(404, { error: 'Not available in the demo — this needs RoninFlow running on your computer.' });
   };

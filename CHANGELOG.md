@@ -2,6 +2,20 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.8.0
+
+- **Backtesting** (new sidebar page), three ways:
+  - **Replay sessions:** trade any day as if it were live in the full-screen chart. An order panel like your platform's — market, Buy Bid / Sell Ask, limit and stop orders, Cancel Bids / Asks / All, Reverse, Breakeven, Close, and SL / TP brackets in ticks. **Drag a Buy / Sell LMT or STP button onto the chart** to place the order where you drop it; drag order, stop and target tags to move them, × to cancel. Working orders fill where price reaches them (gaps at the open; a fill and its stop in the same bar count as stopped). Pick any date from the date at the top left, or **Start from a bar** — scroll back for earlier days and click where the replay should restart. Each session keeps its trades and stats, and sessions can be compared.
+  - **What-if:** your real trades re-run with the rules you meant to follow — max trades or losing trades a day, daily loss limit or profit target, max loss per trade, a time window, weekdays, longs / shorts only, skipping strategies, symbols or tags — with the new equity curve next to the real one and what each rule changed.
+  - **Automated:** strategies from a rule builder (or code) run over your platform's full 1-minute history. **Download history** asks the add-on for it a week at a time (ATAS sends its charts' history instead; an ES chart serves MES), joined and back-adjusted at contract rolls. Market, stop and limit entries, trailing stop, breakeven, risk-based position size, commission and slippage, entry window and flat-by time. Results: a TradingView-style performance summary (all / long / short), monthly table, drawdown chart, trades with MAE / MFE and CSV export (click one to see it on the chart). Against overfitting: a locked out-of-sample period, a parameter sweep that ranks settings by their neighbours (robust, not lucky), walk-forward, Monte Carlo, a +1-tick slippage test, a random-entry baseline and a luck test. Checked trade-for-trade against an independent backtester.
+- **Tick-by-tick replay:** when a source has the ticks, replays move trade by trade — the bar builds up and orders fill at traded prices. Speeds are real time to 60×, plus a one-tick step. Ticks come from **ATAS** (Journal Sync 1.5: fetched from ATAS's trade history for the hour you're replaying), **NinjaTrader**, **Quantower**, **MetaTrader 5**, **cTrader**, **Sierra Chart** (update the add-on), **Databento** or **Polygon**. The Ticks button shows where they come from; without them the replay goes bar by bar.
+- **Volume profile:** for the visible range or each session (Indicators), and a **fixed-range volume profile** drawing tool — one row per tick, buying / selling, value area, POC / VAH / VAL. It never uses bars past the replay position.
+- **Charts:** scroll left to load earlier days; a nicer replay progress bar (day boundaries, your executions, hover time); symbols that don't fit above the execution chart go in a "+N" menu; days whose saved bars are hourly switch to 1-minute bars once your platform has them.
+- **Sharing:** links and snapshot files include the execution charts (a link loads prices for its own trades' days, never from a paid source; a snapshot carries them inside).
+- **Live demo:** backtesting (replay with ticks, what-if and automated), every chart, the Macro pages (adding COT markets, earlier releases of calendar events) and snapshot files now work in the demo too.
+- **Price data:** micro and full-size contracts (MES / ES, MNQ / NQ…) count as one market for history downloads and day requests; a day with no prices says what to do for your platform instead of "no price source".
+- Phones: pop-ups stay on screen, and the dashboard calendar sizes to its content. The home-server copy keeps working when public sharing (Funnel) is on, and reaching the private app over Funnel shows a friendly page instead of "Not found".
+
 ## 1.7.0
 
 - **Full-screen charts:** the expand button on any execution chart opens it full screen with TradingView-style tools.

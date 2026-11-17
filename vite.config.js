@@ -10,4 +10,6 @@ export default defineConfig({
   // Fixed port so the ATAS add-on always knows where to send trades.
   server: { port: 5173, strictPort: true, watch: { ignored: ['**/atas-addon/**', '**/data/**', '**/logs/**'] } },
   preview: { port: 5173, strictPort: true },
+  // one script file: a snapshot (share → file) inlines it, so nothing may load separately later
+  build: { rolldownOptions: { output: { codeSplitting: false } } },
 })

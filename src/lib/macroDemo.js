@@ -66,10 +66,24 @@ const MARKETS = [
   ['GC', 'Gold', 'Metals', 5e5, 0.45], ['SI', 'Silver', 'Metals', 1.6e5, 0.3], ['HG', 'Copper', 'Metals', 2.1e5, 0.08],
   ['CL', 'Crude Oil (WTI)', 'Energy', 1.7e6, 0.1], ['NG', 'Natural Gas', 'Energy', 1.5e6, -0.22], ['BTC', 'Bitcoin', 'Crypto', 2.8e4, 0.12], ['ZC', 'Corn', 'Grains', 1.5e6, -0.18],
 ];
-function cot() {
+// markets the demo lets you add (RoninFlow on your computer lists all ~400 in the CFTC report)
+const EXTRA = [
+  ['PL', 'PLATINUM - NEW YORK MERCANTILE EXCHANGE', 7e4, 0.2], ['PA', 'PALLADIUM - NEW YORK MERCANTILE EXCHANGE', 2e4, -0.25],
+  ['ZW', 'WHEAT-SRW - CHICAGO BOARD OF TRADE', 4e5, -0.3], ['ZS', 'SOYBEANS - CHICAGO BOARD OF TRADE', 8e5, 0.05], ['LE', 'LIVE CATTLE - CHICAGO MERCANTILE EXCHANGE', 3.5e5, 0.4],
+  ['HE', 'LEAN HOGS - CHICAGO MERCANTILE EXCHANGE', 2.8e5, 0.1], ['SB', 'SUGAR NO. 11 - ICE FUTURES U.S.', 9e5, -0.15], ['KC', 'COFFEE C - ICE FUTURES U.S.', 2e5, 0.35],
+  ['CC', 'COCOA - ICE FUTURES U.S.', 1.6e5, 0.2], ['CT', 'COTTON NO. 2 - ICE FUTURES U.S.', 2.4e5, -0.2], ['6C', 'CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE', 1.7e5, -0.3],
+  ['6S', 'SWISS FRANC - CHICAGO MERCANTILE EXCHANGE', 6e4, -0.1], ['6M', 'MEXICAN PESO - CHICAGO MERCANTILE EXCHANGE', 2.2e5, 0.45], ['6N', 'NZ DOLLAR - CHICAGO MERCANTILE EXCHANGE', 5e4, -0.3],
+  ['VX', 'VIX FUTURES - CBOE FUTURES EXCHANGE', 3.5e5, -0.35], ['ZT', 'UST 2Y NOTE - CHICAGO BOARD OF TRADE', 4e6, -0.1], ['ZF', 'UST 5Y NOTE - CHICAGO BOARD OF TRADE', 6e6, -0.2],
+  ['ETH', 'ETHER CASH SETTLED - CHICAGO MERCANTILE EXCHANGE', 1.4e4, 0.1], ['HO', 'NY HARBOR ULSD - NEW YORK MERCANTILE EXCHANGE', 3.2e5, 0.05], ['RB', 'GASOLINE RBOB - NEW YORK MERCANTILE EXCHANGE', 3.4e5, 0.15],
+].map(([key, name, oi0, bias], k) => ({ key, name, oi0, bias, code: `DX${String(k).padStart(3, '0')}` }));
+function cotMarkets() { return { markets: EXTRA.map(({ code, name }) => ({ code, name: `${name} (sample)` })).sort((a, b) => a.name.localeCompare(b.name)) }; }
+
+function cot(extraCodes = []) {
   const weeks = 160;
   const last = new Date(); last.setUTCDate(last.getUTCDate() - ((last.getUTCDay() + 5) % 7) - (last.getUTCDay() >= 5 ? 0 : 7)); // last Tuesday with a released report
-  const markets = MARKETS.map(([key, label, group, oi0, bias], k) => {
+  const extras = extraCodes.map((c) => EXTRA.find((x) => x.code === c)).filter(Boolean);
+  const list = [...MARKETS.map(([key, label, group, oi0, bias]) => ({ key, label, group, oi0, bias })), ...extras.map((x) => ({ key: x.code, label: x.name.split(' - ')[0], group: 'Yours', oi0: x.oi0, bias: x.bias, code: x.code, name: `${x.name} (sample)`, extra: true }))];
+  const markets = list.map(({ key, label, group, oi0, bias, code, name, extra }, k) => {
     let net = bias * oi0 * 0.6, oi = oi0;
     const rows = [];
     for (let w = weeks - 1; w >= 0; w--) {
@@ -82,15 +96,25 @@ function cot() {
       const cl = Math.round(oi * 0.5 - net * 0.8), cs = Math.round(oi * 0.5 + net * 0.2);
       rows.push([d, Math.round(oi), Math.max(0, sl), Math.max(0, ss), Math.max(0, cl), Math.max(0, cs), Math.round(oi * 0.08 + small), Math.round(oi * 0.08 - small)]);
     }
-    return { key, label, group, code: `DEMO${k}`, name: `${label.toUpperCase()} — sample data`, rows };
+    return { key, label, group, code: code || `DEMO${k}`, name: name || `${label.toUpperCase()} — sample data`, rows, ...(extra ? { extra: true } : {}) };
   });
   const reportDate = markets[0].rows[markets[0].rows.length - 1][0];
   return { markets, reportDate, nextRelease: new Date(Date.parse(`${reportDate}T20:30:00Z`) + 10 * DAY).toISOString(), updatedAt: Date.now(), source: 'Sample data (demo) — RoninFlow on your computer loads the real CFTC report' };
 }
 
+/** Earlier releases of one event (the same made-up numbers the calendar shows for those weeks). */
+function history(ccy, title) {
+  const now = Date.now();
+  const all = calendar(new Date(now - 400 * DAY).toISOString().slice(0, 10), new Date(now).toISOString().slice(0, 10)).events;
+  return { events: all.filter((e) => e.ccy === ccy && e.title === title && Date.parse(e.t) < now).slice(-12) };
+}
+
 export function demoMacro(url) {
   const u = new URL(url, 'http://x');
+  if (u.pathname.endsWith('/calendar/history')) return history(u.searchParams.get('ccy'), u.searchParams.get('title'));
   if (u.pathname.endsWith('/calendar')) return calendar(u.searchParams.get('from'), u.searchParams.get('to'));
-  if (u.pathname.endsWith('/cot')) return cot();
+  if (u.pathname.endsWith('/cot/markets')) return cotMarkets();
+  if (u.pathname.endsWith('/cot')) return cot((u.searchParams.get('extra') || '').split(',').filter(Boolean));
+  if (u.pathname.endsWith('/refresh')) return { ok: true };
   return {};
 }

@@ -34,7 +34,6 @@ const scopeText = (l) => (l.scope?.kind === 'page' ? l.scope.label || 'A page' :
 
 export function ShareButton({ route }) {
   const [open, setOpen] = useState(false);
-  if (IS_DEMO) return null;
   return (
     <>
       <button className="btn sm share-btn" onClick={() => setOpen(true)} title="Share a view-only link or snapshot of your journal"><Share2 size={14} /> <span className="hide-m">Share</span></button>
@@ -91,6 +90,19 @@ export default function ShareDialog({ route, onClose }) {
   };
   const snapshot = async () => {
     setBusy('snap');
+    if (IS_DEMO) { // no server on the demo site: the file is put together in this browser
+      try {
+        const { demoSnapshot } = await import('../lib/demoSnapshot');
+        const { html, name } = await demoSnapshot(state, scope, label, hideMoney);
+        const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+        const a = Object.assign(document.createElement('a'), { href: url, download: name });
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toast('Snapshot downloaded — open it in any browser');
+      } catch (e) { toast(e.message); }
+      setBusy('');
+      return;
+    }
     try {
       const r = await fetch('/api/shares/snapshot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope, label, hideMoney, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       if (!r.ok) throw new Error('Couldn’t build the snapshot');
@@ -118,7 +130,8 @@ export default function ShareDialog({ route, onClose }) {
     <Modal open onClose={onClose} width={640}>
       <ModalHead title="Share your journal" sub="A view-only link or file — account numbers are hidden and nothing can be changed" onClose={onClose} />
       <div className="modal-body share-body">
-        {!server && <div className="share-warn">Sharing needs RoninFlow running on your computer (the app, Docker or a home server).</div>}
+        {!server && !IS_DEMO && <div className="share-warn">Sharing needs RoninFlow running on your computer (the app, Docker or a home server).</div>}
+        {IS_DEMO && <div className="share-warn">In the demo you can download a snapshot file. Live links are served by RoninFlow on your computer (or home server), so they aren’t available here.</div>}
 
         <div className="field"><label className="label">What to share</label>
           <div className="share-what">
@@ -169,7 +182,7 @@ export default function ShareDialog({ route, onClose }) {
 
         <section className="share-sec">
           <div className="share-sec-h"><Download size={15} /> <b>Snapshot file</b><span className="muted">— one file that opens in any browser, even when this computer is off; frozen as it is now, execution charts included</span></div>
-          <button className="btn" disabled={!server || busy === 'snap'} onClick={snapshot}><Download size={14} /> {busy === 'snap' ? 'Building…' : `Download ${scope.kind === 'page' ? 'this page' : 'the whole journal'} as a file`}</button>
+          <button className="btn" disabled={(!server && !IS_DEMO) || busy === 'snap'} onClick={snapshot}><Download size={14} /> {busy === 'snap' ? 'Building…' : `Download ${scope.kind === 'page' ? 'this page' : 'the whole journal'} as a file`}</button>
         </section>
 
         {links.length > 0 && (

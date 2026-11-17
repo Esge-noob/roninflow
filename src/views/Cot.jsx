@@ -124,7 +124,7 @@ function AddMarket({ have, onAdd }) {
   const [q, setQ] = useState('');
   const [err, setErr] = useState(null);
   const load = () => {
-    if (list || IS_DEMO) return;
+    if (list) return;
     fetch('/api/macro/cot/markets').then((r) => r.json()).then((j) => (j.markets ? setList(j.markets) : setErr(j.error || 'Couldn’t load the list'))).catch((e) => setErr(e.message));
   };
   const needle = q.trim().toLowerCase();
@@ -133,7 +133,7 @@ function AddMarket({ have, onAdd }) {
     <Popover align="right" width={380} trigger={({ toggle }) => <button className="btn sm" onClick={() => { load(); toggle(); }}><Plus size={14} /> Add market</button>}>
       {(close) => (
         <div className="cot-add">
-          {IS_DEMO ? <div className="muted" style={{ padding: 10, fontSize: 13 }}>In RoninFlow on your computer you can add any of the ~400 markets in the CFTC report.</div> : (
+          {(
             <>
               <label className="ec-search" style={{ margin: 6 }}><Search size={15} /><input className="input" autoFocus placeholder="Search all CFTC markets" value={q} onChange={(e) => setQ(e.target.value)} /></label>
               <div className="cot-add-list">
@@ -141,6 +141,7 @@ function AddMarket({ have, onAdd }) {
                 {!list && !err && <div className="muted" style={{ padding: 10 }}>Loading…</div>}
                 {found.map((m) => <button key={m.code} className="pop-item" onClick={() => { onAdd(m.code); close(); }}><span className="grow truncate" title={m.name}>{m.name}</span><span className="muted mono">{m.code}</span></button>)}
                 {list && !found.length && <div className="muted" style={{ padding: 10, fontSize: 13 }}>No match.</div>}
+                {IS_DEMO && list && <div className="muted" style={{ padding: '6px 10px', fontSize: 12 }}>Sample markets in the demo — RoninFlow on your computer lists all ~400 in the CFTC report.</div>}
               </div>
             </>
           )}
