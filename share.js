@@ -2,7 +2,8 @@
 //
 // Nothing private leaves the journal: shared data is built from an allow-list (new fields stay private by default),
 // account numbers become "Account 1, 2…", and payouts, notebook, AI chats, connections and personal details are left
-// out. A link can cover the whole journal or one page; a page with its own dates (a review, a diary day) only
+// out. Execution charts come along: a link loads prices for its own trades' days, a snapshot carries them.
+// A link can cover the whole journal or one page; a page with its own dates (a review, a diary day) only
 // carries the data for those dates. Links can expire and be revoked; views are counted.
 //
 // Public visitors arrive through Tailscale Funnel (marked with the Tailscale-Funnel-Request header) or any other
@@ -196,6 +197,85 @@ export function embedImages(imgDir, data, budget = 40e6) {
   return out;
 }
 
+// ---------- execution charts (prices for the shared trades' days) ----------
+// A shared view draws its diary and trade charts from prices too. It may only load prices for the symbols it shows,
+// on the days around its trades (the 1h / 4h / 1d views also read up to 35 days before) — so a link can't be used as
+// a price feed. Prices come from your saved data, your platform add-on and Yahoo (if on); never a paid source.
+const CHART_BEFORE = 36, CHART_AFTER = 1;
+const dayOf = (iso) => String(iso || '').slice(0, 10);
+/** symbol → set of trade days, for a view-only journal. */
+export function chartDays(data) {
+  const m = new Map();
+  for (const t of data?.trades || []) {
+    const d = dayOf(t?.entry);
+    if (!t?.symbol || !/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+    if (!m.has(t.symbol)) m.set(t.symbol, new Set());
+    m.get(t.symbol).add(d);
+  }
+  return m;
+}
+/** May this shared journal load prices for `symbol` on `date`? */
+export function chartAllowed(data, symbol, date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return false;
+  const days = chartDays(data).get(symbol);
+  if (!days) return false;
+  for (let i = -CHART_AFTER; i <= CHART_BEFORE; i++) if (days.has(addDays(date, i))) return true;
+  return false;
+}
+const validTz = (tz) => { try { Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; } };
+
+/** Public: …/candles?symbol&date&tz (prices for a shared chart) and …/lib (the chart library). */
+export async function sendShareChart(res, candles, data, what, url) {
+  if (!candles?.get) return send(res, 424, { error: 'Charts aren’t available here.' });
+  try {
+    if (what === 'lib') {
+      const buf = await candles.lib();
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=604800');
+      return res.end(buf);
+    }
+    const q = new URL(url, 'http://x').searchParams;
+    const symbol = q.get('symbol') || '', date = q.get('date') || '', tz = q.get('tz') || 'UTC';
+    if (!validTz(tz) || !chartAllowed(data, symbol, date)) return send(res, 404, { error: 'This shared view has no chart for that day.' });
+    const rec = await candles.get(symbol, date, tz, { noPaid: true });
+    return send(res, 200, rec, { 'X-Robots-Tag': 'noindex' });
+  } catch (e) {
+    return send(res, 424, { error: e?.message || 'No prices for that day.' });
+  }
+}
+
+/**
+ * Prices for a snapshot file: each traded symbol on each trade day (newest first), within `budget` bytes. A page of
+ * a week or less also gets the 35 days before each trade day, so its 1h / 4h / 1d views fill in.
+ */
+export async function embedCharts(candles, data, scope, tz, budget = 25e6) {
+  const out = {};
+  if (!candles?.get || !validTz(tz)) return out;
+  const short = scope?.kind === 'page' && scope.from && scope.to && addDays(scope.from, 7) > scope.to;
+  const want = [];
+  for (const [symbol, days] of chartDays(data)) for (const d of days) want.push([symbol, d, 0]);
+  want.sort((a, b) => (a[1] < b[1] ? 1 : -1));
+  if (short) {
+    const have = new Set(want.map(([s, d]) => `${s}|${d}`));
+    for (const [symbol, d] of [...want]) for (let i = 1; i < CHART_BEFORE; i++) { const x = addDays(d, -i); if (new Date(`${x}T12:00:00Z`).getUTCDay() === 6 || have.has(`${symbol}|${x}`)) continue; have.add(`${symbol}|${x}`); want.push([symbol, x, i]); }
+  }
+  let used = 0;
+  const until = Date.now() + 90000; // a day that isn't saved yet is fetched (Yahoo); don't keep the download waiting
+  for (const [symbol, d] of want) {
+    if (Date.now() > until) break;
+    let rec;
+    try { rec = await candles.get(symbol, d, tz, { noPaid: true }); } catch { continue; }
+    if (!rec?.candles?.length) continue;
+    const slim = { symbol: rec.symbol, date: d, tz, from: rec.from, to: rec.to, interval: rec.interval, source: rec.source, final: true, candles: rec.candles };
+    const size = JSON.stringify(slim).length;
+    if (used + size > budget) continue;
+    used += size;
+    out[`${symbol}|${d}`] = slim;
+  }
+  return out;
+}
+
 // ---------- HTTP ----------
 const send = (res, code, obj, headers = {}) => {
   res.statusCode = code;
@@ -209,7 +289,7 @@ const readBody = (req) => new Promise((resolve) => { let b = ''; req.on('data', 
 /** Files the shared page needs to load (the app's code and styles, fonts, icons). */
 export const isShareAsset = (url) => /^\/(assets\/[\w.-]+|favicon\.svg|icons\/[\w.-]+\.png)(\?.*)?$/.test(url);
 
-export function createShareHandler({ dataDir, distDir, port, readState }) {
+export function createShareHandler({ dataDir, distDir, port, readState, candles }) {
   const store = createShareStore(dataDir);
   const meta = (link, extra = {}) => ({ token: link?.token, scope: link?.scope || { kind: 'all' }, label: link?.label || '', hideMoney: !!link?.hideMoney, createdAt: link?.createdAt || new Date().toISOString(), ...extra });
 
@@ -220,6 +300,7 @@ export function createShareHandler({ dataDir, distDir, port, readState }) {
     const link = tokenOk(token) ? store.get(token) : null;
     if (!isLive(link)) return send(res, 404, { error: link?.revoked ? 'revoked' : link ? 'expired' : 'not_found' });
     if (what === 'image') return sendShareImage(res, imgDir, sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }), id);
+    if (what === 'candles' || what === 'lib') return sendShareChart(res, candles, sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }), what, req.url);
     store.viewed(token);
     const by = readState()?.user?.name;
     return send(res, 200, { meta: meta(link, { sharedBy: by ? String(by).split(/\s+/)[0] : '' }), state: sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }) }, { 'X-Robots-Tag': 'noindex' });
@@ -238,7 +319,10 @@ export function createShareHandler({ dataDir, distDir, port, readState }) {
         const scope = cleanScope(b.scope);
         const by = readState()?.user?.name;
         const data = sanitizeState(readState(), scope, { hideMoney: !!b.hideMoney });
-        const html = buildSnapshot(distDir, data, meta(null, { scope, label: String(b.label || '').slice(0, 80), hideMoney: !!b.hideMoney, snapshot: true, sharedBy: by ? String(by).split(/\s+/)[0] : '', images: embedImages(imgDir, data) }));
+        const charts = b.charts === false ? {} : await embedCharts(candles, data, scope, typeof b.tz === 'string' ? b.tz : 'UTC');
+        let chartLib = null;
+        if (Object.keys(charts).length) try { chartLib = String(await candles.lib()); } catch { /* no internet and never downloaded: the charts say so */ }
+        const html = buildSnapshot(distDir, data, meta(null, { scope, label: String(b.label || '').slice(0, 80), hideMoney: !!b.hideMoney, snapshot: true, sharedBy: by ? String(by).split(/\s+/)[0] : '', images: embedImages(imgDir, data), charts, chartLib }));
         const name = `roninflow-${(scope.kind === 'page' ? scope.label || 'page' : 'journal').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${new Date().toISOString().slice(0, 10)}.html`;
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');

@@ -116,10 +116,10 @@ const vaultApi = async (req, res) => {
 const macroApi = createMacroHandler(DATA_DIR, { log }); // economic calendar + COT report (Macro pages)
 // view-only share links (/s/<token>) and snapshot files
 const readState = () => { const j = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'journal.json'), 'utf8')); return j.state || j; };
-const shareApi = createShareHandler({ dataDir: DATA_DIR, distDir: DIST, port: PORT, readState });
 const connectApi = createConnectHandler(DATA_DIR, { log, vault });
 const candleApi = createCandleHandler(DATA_DIR, { readTrades, readConnTrades: () => connectApi.recentTrades(), log, vault, tokenOk: (req) => connectApi.tokenOk(req, isLocalPc(req)) });
 connectApi.barsSink = (body) => candleApi.ingestBars(body);
+const shareApi = createShareHandler({ dataDir: DATA_DIR, distDir: DIST, port: PORT, readState, candles: candleApi });
 const netApi = createNetHandler({ config, port: PORT, mode: 'server', onLanChange: (on) => setImmediate(() => bind(on)) });
 
 // ---------- home-server standby copy ----------
@@ -174,7 +174,7 @@ function handle(req, res) {
     // Visitors through Tailscale Funnel (public internet) may only ever reach these routes.
     const funnelReq = !!req.headers['tailscale-funnel-request'];
     if (req.method === 'GET' || req.method === 'HEAD') {
-      if (/^\/api\/share\/[\w-]+\/(state|image\/[\w-]+)(\?|$)/.test(req.url)) return shareApi.publicApi(req, res);
+      if (/^\/api\/share\/[\w-]+\/(state|lib|candles|image\/[\w-]+)(\?|$)/.test(req.url)) return shareApi.publicApi(req, res);
       if (/^\/s\/[\w-]+\/?(\?.*)?$/.test(req.url)) { res.setHeader('X-Robots-Tag', 'noindex'); req.url = '/index.html'; return serveStatic(req, res); }
       if (isShareAsset(req.url) && (funnelReq || !isLocalPc(req))) return serveStatic(req, res);
     }

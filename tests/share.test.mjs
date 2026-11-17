@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { sanitizeState, periodStart, createShareStore, isLive, tokenOk, isShareAsset, buildSnapshot } from '../share.js';
+import { sanitizeState, periodStart, createShareStore, isLive, tokenOk, isShareAsset, buildSnapshot, chartAllowed, embedCharts, sendShareChart } from '../share.js';
 
 const journal = () => ({
   version: 1,
@@ -115,4 +115,41 @@ test('snapshot: one file with the app inlined and the view-only journal embedded
   assert.equal((html.match(/<\/script>/g) || []).length, 2); // only the two real closing tags
   assert.ok(html.includes('window.__RF_SNAPSHOT__='));
   assert.ok(html.includes('<title>Week 1 · RoninFlow (view only)</title>'));
+});
+
+test('execution charts: a share loads prices only for its own symbols, around its trade days, never from a paid source', async () => {
+  const data = { trades: [{ symbol: 'MESZ6', entry: '2026-11-13T06:45:00' }, { symbol: 'MNQZ6', entry: '2026-11-10T07:00:00' }] };
+  assert.ok(chartAllowed(data, 'MESZ6', '2026-11-13'));
+  assert.ok(chartAllowed(data, 'MESZ6', '2026-11-14'), 'a day after, for time zones');
+  assert.ok(chartAllowed(data, 'MESZ6', '2026-10-09'), 'the 1d view reads 35 days back');
+  assert.ok(!chartAllowed(data, 'MESZ6', '2026-11-16'));
+  assert.ok(!chartAllowed(data, 'MESZ6', '2026-09-01'));
+  assert.ok(!chartAllowed(data, 'ESZ6', '2026-11-13'), 'a symbol the share doesn’t show');
+  assert.ok(!chartAllowed(data, 'MESZ6', '../x'));
+
+  const asked = [];
+  const candles = {
+    get: async (symbol, date, tz, opts) => { asked.push([symbol, date, opts]); return { symbol, date, interval: '1m', source: 'x', candles: [[1, 2, 3, 1, 2, 5]] }; },
+    lib: async () => Buffer.from('lib'),
+  };
+  const res = () => { const r = { headers: {}, setHeader: (k, v) => { r.headers[k] = v; }, end: (b) => { r.body = String(b); } }; return r; };
+  const ok = res();
+  await sendShareChart(ok, candles, data, 'candles', '/api/share/t/candles?symbol=MESZ6&date=2026-11-13&tz=America%2FLos_Angeles');
+  assert.equal(ok.statusCode, 200);
+  assert.equal(JSON.parse(ok.body).candles.length, 1);
+  assert.deepEqual(asked[0][2], { noPaid: true });
+  const no = res();
+  await sendShareChart(no, candles, data, 'candles', '/api/share/t/candles?symbol=ESZ6&date=2026-11-13&tz=UTC');
+  assert.equal(no.statusCode, 404);
+  assert.equal(asked.length, 1, 'refused before looking anything up');
+
+  // a snapshot: every trade day; a short page also carries the days before for the 1h / 4h / 1d views
+  asked.length = 0;
+  const all = await embedCharts(candles, data, { kind: 'all' }, 'America/Los_Angeles');
+  assert.deepEqual(Object.keys(all).sort(), ['MESZ6|2026-11-13', 'MNQZ6|2026-11-10']);
+  const day = await embedCharts(candles, { trades: [data.trades[0]] }, { kind: 'page', from: '2026-11-13', to: '2026-11-13' }, 'America/Los_Angeles');
+  assert.ok(Object.keys(day).length > 25 && day['MESZ6|2026-11-12'] && !day['MESZ6|2026-11-07'], 'weekdays and Sundays before, no Saturdays');
+  const tight = await embedCharts(candles, data, { kind: 'all' }, 'UTC', 150);
+  assert.equal(Object.keys(tight).length, 1, 'stays within the size budget, newest first');
+  assert.ok(tight['MESZ6|2026-11-13']);
 });

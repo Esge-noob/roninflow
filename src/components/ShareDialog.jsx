@@ -92,7 +92,7 @@ export default function ShareDialog({ route, onClose }) {
   const snapshot = async () => {
     setBusy('snap');
     try {
-      const r = await fetch('/api/shares/snapshot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope, label, hideMoney }) });
+      const r = await fetch('/api/shares/snapshot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope, label, hideMoney, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       if (!r.ok) throw new Error('Couldn’t build the snapshot');
       const name = (r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'roninflow-snapshot.html';
       const url = URL.createObjectURL(await r.blob());
@@ -168,7 +168,7 @@ export default function ShareDialog({ route, onClose }) {
         </section>
 
         <section className="share-sec">
-          <div className="share-sec-h"><Download size={15} /> <b>Snapshot file</b><span className="muted">— one file that opens in any browser, even when this computer is off; frozen as it is now</span></div>
+          <div className="share-sec-h"><Download size={15} /> <b>Snapshot file</b><span className="muted">— one file that opens in any browser, even when this computer is off; frozen as it is now, execution charts included</span></div>
           <button className="btn" disabled={!server || busy === 'snap'} onClick={snapshot}><Download size={14} /> {busy === 'snap' ? 'Building…' : `Download ${scope.kind === 'page' ? 'this page' : 'the whole journal'} as a file`}</button>
         </section>
 

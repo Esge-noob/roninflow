@@ -675,7 +675,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   const readCache = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 
   /** Candles for one symbol and diary day, from the cache when it's final. */
-  async function get(symbol, date, tz, { force } = {}) {
+  async function get(symbol, date, tz, { force, noPaid } = {}) { // noPaid: skip Databento / Polygon (a shared view's visitor shouldn't run up your bill)
     const ysym = yahooSymbol(symbol);
     const file = cachePath(ysym, date);
     const { from, to } = dayWindow(date, tz);
@@ -701,7 +701,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const addonRec = ab.candles.length >= 5 ? { symbol: rootOf(symbol), ysym, date, tz, from, to, interval: ab.interval, source: 'Your platform (add-on)', fetchedAt: now, final: false, candles: ab.candles } : null;
       if (addonRec && ab.interval === '1m') return addonRec; // coarser add-on bars are used if nothing better is set up
       // 2. Databento (futures)
-      const dbKey = cfg.useDatabento === false ? null : keyOf('databento');
+      const dbKey = cfg.useDatabento === false || noPaid ? null : keyOf('databento');
       if (dbKey && isFutures(symbol)) {
         try {
           const candles = await databento(dbKey, rootOf(symbol), from, end);
@@ -709,7 +709,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         } catch (e) { lastErr = e; }
       }
       // 3. Polygon (stocks, crypto, forex)
-      const pgKey = cfg.usePolygon === false ? null : keyOf('polygon');
+      const pgKey = cfg.usePolygon === false || noPaid ? null : keyOf('polygon');
       const pt = polygonTicker(symbol);
       if (pgKey && pt && !isFutures(symbol)) {
         try {
@@ -872,6 +872,8 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     }
   };
   handler.ingestBars = ingestBars;
+  handler.get = get; // shared views and snapshots (share.js)
+  handler.lib = lib;
   handler.wanted = wanted;
   handler.history = { start: startHistory, continuous, jobs: () => jobs, coverage };
   handler.writeWantedFiles = writeWantedFiles;

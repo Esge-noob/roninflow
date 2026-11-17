@@ -1,6 +1,7 @@
 // View-only shared journals: opened from a share link (/s/<token>) or a snapshot file (data embedded in the page).
 // The app runs read-only: nothing is saved — not to the server, not to this browser — and only the shared data is
-// ever loaded. Server features (sync, AI, macro data, execution charts) aren't available in a shared view.
+// ever loaded. Server features (sync, AI, macro data) aren't available in a shared view. Execution charts are: a link
+// loads prices for its own trades' days from the owner's computer, and a snapshot file carries them inside.
 
 const SHARE_RE = /^\/s\/([A-Za-z0-9_-]{20,64})\/?$/;
 export const SHARE_TOKEN = (() => { try { return window.location.pathname.match(SHARE_RE)?.[1] || null; } catch { return null; } })();
@@ -15,6 +16,8 @@ export const VIEWER_SECTIONS = new Set(['dashboard', 'journal', 'diary', 'review
 
 /** Where a shared view's data comes from. */
 export const shareStateUrl = () => `/api/share/${SHARE_TOKEN}/state`;
+/** The chart library in a shared view: from the link's computer, or inside the snapshot file (null: not included). */
+export const shareChartLib = () => (SNAPSHOT ? (SNAPSHOT.meta?.chartLib ? { code: SNAPSHOT.meta.chartLib } : null) : { src: `/api/share/${SHARE_TOKEN}/lib` });
 export const shareImageUrl = (id) => (SNAPSHOT ? SNAPSHOT.meta?.images?.[id] || null : `/api/share/${SHARE_TOKEN}/image/${id}`);
 
 /** In a shared view, answer every other server call here, so nothing private is ever asked for. */
@@ -27,7 +30,13 @@ export function installViewerFetch() {
     const url = typeof input === 'string' ? input : input?.url || '';
     if (!url.startsWith('/api/')) return real(input, init);
     if (SHARE_TOKEN && url.startsWith(`/api/share/${SHARE_TOKEN}/`) && (!init?.method || init.method === 'GET')) return real(input, init);
-    if (url.startsWith('/api/candles')) return reply(424, { error: 'Execution charts aren’t included in shared journals.' });
+    if (url.startsWith('/api/candles?')) {
+      if (SHARE_TOKEN) return real(`/api/share/${SHARE_TOKEN}/candles?${url.split('?')[1]}`);
+      const q = new URLSearchParams(url.split('?')[1]);
+      const rec = SNAPSHOT?.meta?.charts?.[`${q.get('symbol')}|${q.get('date')}`];
+      return rec ? reply(200, rec) : reply(404, { error: 'This day’s prices aren’t in the snapshot.' });
+    }
+    if (url.startsWith('/api/candles')) return reply(404, { error: 'Not available in a shared journal.' });
     return reply(404, { error: 'Not available in a shared journal.' });
   };
 }

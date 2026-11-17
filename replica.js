@@ -21,7 +21,7 @@ import { Readable } from 'node:stream';
 import { createAiProxy } from './ai-proxy.js';
 import { createCandleHandler } from './candles.js';
 import { createMacroHandler } from './macro.js';
-import { sanitizeState, isLive, tokenOk, isShareAsset, sendShareImage } from './share.js';
+import { sanitizeState, isLive, tokenOk, isShareAsset, sendShareImage, sendShareChart } from './share.js';
 import { createDataHandler, createConfig, cookieToken, loginPage } from './local-api.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -231,12 +231,13 @@ async function pullShares() {
   if (Array.isArray(json?.links)) writeAtomic(SHARES_FILE, JSON.stringify(json));
 }
 /** Public: a share link's view-only data from this copy (PC offline). */
-function localShare(req, res, p) {
+async function localShare(req, res, p) {
   const token = p.split('/')[3];
   const link = tokenOk(token) ? (readJsonFile(SHARES_FILE, { links: [] }).links || []).find((l) => l.token === token) : null;
   if (!isLive(link) || !base?.json) return sendJson(res, 404, { error: link?.revoked ? 'revoked' : link ? 'expired' : 'not_found' });
   const state = JSON.parse(base.json);
   if (p.split('/')[4] === 'image') return sendShareImage(res, path.join(DATA, 'images'), sanitizeState(state, link.scope, { hideMoney: link.hideMoney }), p.split('/')[5]);
+  if (p.split('/')[4] === 'candles' || p.split('/')[4] === 'lib') return sendShareChart(res, candleApi, sanitizeState(state, link.scope, { hideMoney: link.hideMoney }), p.split('/')[4], req.url);
   return sendJson(res, 200, { meta: { token, scope: link.scope, label: link.label, hideMoney: !!link.hideMoney, createdAt: link.createdAt, sharedBy: state.user?.name ? String(state.user.name).split(/\s+/)[0] : '' }, state: sanitizeState(state, link.scope, { hideMoney: link.hideMoney }) }, { 'X-Robots-Tag': 'noindex' });
 }
 
@@ -377,7 +378,7 @@ async function handle(req, res) {
     // view-only share links are public (the token is the key); Funnel visitors may only reach these
     const funnelReq = !!req.headers['tailscale-funnel-request'];
     if (req.method === 'GET' || req.method === 'HEAD') {
-      if (/^\/api\/share\/[\w-]+\/(state|image\/[\w-]+)$/.test(p)) {
+      if (/^\/api\/share\/[\w-]+\/(state|lib|candles|image\/[\w-]+)$/.test(p)) {
         if (online && upstream && await forward(req, res, null)) return;
         return localShare(req, res, p);
       }

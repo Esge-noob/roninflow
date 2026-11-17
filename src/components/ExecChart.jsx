@@ -6,6 +6,7 @@ import { todayKey, fmtMoney, fmtTime12 } from '../lib/stats';
 import { Modal, ModalHead, Popover } from './ui';
 import { ColorRow } from './ThemeStudio';
 import { IS_DEMO, DEMO_CHART_LIB } from '../lib/demoMode';
+import { IS_VIEWER, shareChartLib } from '../lib/shareMode';
 import { ivSec, TIMEFRAMES, SPAN_DAYS, tfLabel, toLocal, barTime, aggregate } from '../lib/bars';
 
 // Candlestick chart of the day with your executions, drawn with TradingView Lightweight Charts™.
@@ -19,7 +20,15 @@ export function loadLib() {
   if (!libPromise) {
     libPromise = new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = IS_DEMO ? DEMO_CHART_LIB : '/api/candles/lib';
+      const shared = IS_VIEWER ? shareChartLib() : null;
+      if (IS_VIEWER && !shared) { libPromise = null; reject(new Error('Charts aren’t included in this snapshot.')); return; }
+      if (shared?.code) { // a snapshot file carries the library inside
+        s.textContent = shared.code;
+        document.head.appendChild(s);
+        if (window.LightweightCharts) resolve(window.LightweightCharts); else { libPromise = null; reject(new Error('Chart library didn’t load')); }
+        return;
+      }
+      s.src = IS_DEMO ? DEMO_CHART_LIB : shared?.src || '/api/candles/lib';
       s.async = true;
       s.onload = () => (window.LightweightCharts ? resolve(window.LightweightCharts) : reject(new Error('Chart library didn’t load')));
       s.onerror = () => { libPromise = null; reject(new Error('Couldn’t load the chart library')); };
