@@ -12,6 +12,10 @@ import { pointValueOf, rootOf, localIso } from '../lib/backtest';
 import { TICKS } from '../components/ExecChart';
 import { engine, loadSeries, stopEngine } from '../lib/autoWorker';
 
+// a micro and its full-size contract trade at the same price, so either chart's history works
+const MICRO_OF = { MES: 'ES', MNQ: 'NQ', MYM: 'YM', M2K: 'RTY', MCL: 'CL', MGC: 'GC', SIL: 'SI' };
+const TWIN_OF = { ...MICRO_OF, ...Object.fromEntries(Object.entries(MICRO_OF).map(([m, f]) => [f, m])) };
+
 const ChartStudio = lazy(() => import('../components/ChartStudio'));
 
 // ---------------------------------------------------------------------------------------------- vocabulary
@@ -333,10 +337,10 @@ function DataPanel({ s, patch, hist, from, to, splitDay }) {
             <div className="ab-job-bar"><i /></div>
             <b style={{ fontWeight: 500 }}>Waiting for ATAS charts</b>
             <ol className="ab-steps">
-              <li>In ATAS, open a <b>1-minute</b> {s.symbol} chart (time frame M1).</li>
+              <li>In ATAS, open a <b>1-minute</b> {s.symbol} chart{TWIN_OF[s.symbol] ? <> — or {TWIN_OF[s.symbol]}, same prices</> : null} (time frame M1).</li>
               <li>Chart settings → <b>Days to load</b>: as many as you want (365 = a year, if your data feed has it).</li>
               <li>Add the <b>Journal Sync</b> indicator to that chart (or remove and re-add it). It sends everything the chart loaded within a minute.</li>
-              <li>To go further back, do the same on earlier contracts’ charts (e.g. {s.symbol}U6, {s.symbol}M6…) — RoninFlow joins them at each roll and back-adjusts the prices.</li>
+              <li>To go further back, do the same on earlier contracts’ charts (e.g. {TWIN_OF[s.symbol] || s.symbol}U6, {TWIN_OF[s.symbol] || s.symbol}M6…) — RoninFlow joins them at each roll and back-adjusts the prices.</li>
             </ol>
             {Object.keys(job.seen || {}).length === 0 && <span className="muted">No ATAS chart has checked in yet. This needs Journal Sync 1.4 or newer — reinstall it from Start menu → RoninFlow → Install platform add-ons → ATAS.</span>}
             {Object.entries(job.charts || {}).map(([name, c]) => (

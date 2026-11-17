@@ -277,3 +277,19 @@ test('a day saved with Yahoo’s hourly bars switches to 1-minute bars once the 
   assert.equal(rec.candles.length, 300);
   assert.match(rec.source, /add-on/);
 });
+
+test('ATAS chart history: a full-size chart (ES) feeds a micro’s download (MES) — same prices', () => {
+  const { h } = setup({ trades: [{ symbol: 'MES', source: 'atas', entry: '2026-11-13T06:40:00' }] });
+  h.history.start('MES', TZ);
+  assert.deepEqual(h.history.chartWant('atas', 'ESZ6'), { want: true }, 'the ES chart is asked for its history');
+  assert.deepEqual(h.history.chartWant('atas', 'NQZ6'), { want: false }, 'another market isn’t');
+  const day = (iso) => Date.parse(`${iso}T15:00:00Z`) / 1000;
+  const out = [];
+  for (let t = day('2026-06-01'); t <= day('2026-07-01'); t += 86400) for (let k = 0; k < 30; k++) out.push([t + k * 60, 6000, 6001, 5999, 6000, 1]);
+  h.ingestBars({ source: 'atas', symbol: 'ESU6', history: true, bars: out });
+  h.history.chartDone({ symbol: 'ESU6', first: out[0][0], last: out.at(-1)[0], count: out.length });
+  assert.equal(h.history.jobs().MES.oldest, '2026-06-01');
+  assert.equal(h.history.coverage('MES').first, '2026-06-01');
+  const s = h.history.continuous('MES', '2026-06-02', '2026-06-30');
+  assert.ok(s.t.length > 500 && s.c[0] === 6000);
+});

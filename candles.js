@@ -491,16 +491,20 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   function histContracts(root) {
     const out = [];
     for (const dir of listDir(barsDir).filter((n) => n.startsWith('h_'))) {
-      if (!fs.existsSync(path.join(barsDir, dir, root.replace(/[^\w.-]/g, '_')))) continue;
+      // a micro and its full-size contract trade at the same price: an ES chart's history serves MES backtests
+      const sub = [root, TWIN[root]].find((r) => r && fs.existsSync(path.join(barsDir, dir, r.replace(/[^\w.-]/g, '_'))));
+      if (!sub) continue;
       const name = dir.slice(2).toUpperCase();
-      out.push({ dir, name, ...(contractMonth(root, name) || { y: null, m: null }) });
+      out.push({ dir, sub, name, ...(contractMonth(sub, name) || { y: null, m: null }) });
     }
     return out.sort((a, b) => (a.y ?? 0) - (b.y ?? 0) || (a.m ?? 0) - (b.m ?? 0));
   }
   /** Chart-history mode (ATAS): the add-on sends whole charts; this says whether a job wants them. */
+  /** A chart-mode history job for this chart's market: its own, or its micro / full-size twin's (an ES chart serves MES). */
+  const chartJob = (root) => (jobs[root]?.mode === 'chart' ? jobs[root] : TWIN[root] && jobs[TWIN[root]]?.mode === 'chart' ? jobs[TWIN[root]] : jobs[root]);
   function chartWant(source, symbol) {
     const root = rootOf(symbol);
-    const job = jobs[root];
+    const job = chartJob(root);
     if (!job || job.mode !== 'chart' || job.status !== 'running' || job.source !== srcId(source)) return { want: false };
     job.seen = job.seen || {};
     job.seen[String(symbol).slice(0, 40)] = new Date().toISOString();
@@ -510,7 +514,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   }
   function chartDone(body) {
     const root = rootOf(body.symbol);
-    const job = jobs[root];
+    const job = chartJob(root);
     if (!job || job.mode !== 'chart') return;
     job.charts = job.charts || {};
     job.charts[String(body.symbol).slice(0, 40)] = { first: Number(body.first) || null, last: Number(body.last) || null, count: Number(body.count) || 0, oneMinute: body.oneMinute !== false, at: new Date().toISOString() };
@@ -525,7 +529,9 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   function coverage(root) {
     const days = new Set();
     for (const src of [...addonSources().map((x) => x.id), EARLIER, ...histContracts(root).map((c) => c.dir)]) {
-      try { for (const f of fs.readdirSync(path.join(barsDir, src, root.replace(/[^\w.-]/g, '_')))) if (f.endsWith('.json')) days.add(f.slice(0, 10)); } catch { /* none */ }
+      for (const r of [root, TWIN[root]].filter(Boolean)) {
+        try { for (const f of fs.readdirSync(path.join(barsDir, src, r.replace(/[^\w.-]/g, '_')))) if (f.endsWith('.json')) days.add(f.slice(0, 10)); } catch { /* none */ }
+      }
     }
     const list = [...days].sort();
     return { days: list.length, first: list[0] || null, last: list[list.length - 1] || null, list };
@@ -538,9 +544,12 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const byT = new Map();
     for (let t = from - (from % DAY); t <= to; t += DAY) {
       let best = null;
-      for (const src of sources) {
-        const cur = readCache(barFile(src, root, t));
-        if (cur && (!best || Object.keys(cur).length > Object.keys(best).length)) best = cur;
+      for (const r of [root, TWIN[root]].filter(Boolean)) { // the micro's own bars, else its full-size twin's (same prices)
+        for (const src of sources) {
+          const cur = readCache(barFile(src, r, t));
+          if (cur && (!best || Object.keys(cur).length > Object.keys(best).length)) best = cur;
+        }
+        if (best) break;
       }
       if (best) for (const r of Object.values(best)) if (r[0] >= from && r[0] < to) byT.set(r[0], r);
     }
@@ -555,7 +564,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const days = new Map(); // UTC day start → { contract → rows }
       for (const c of hist) {
         for (let t = from - (from % DAY); t <= to; t += DAY) {
-          const cur = readCache(barFile(c.dir, root, t));
+          const cur = readCache(barFile(c.dir, c.sub, t));
           if (cur) { const m = days.get(t) || new Map(); m.set(c.name, Object.values(cur).filter((r) => r[0] >= from && r[0] < to)); days.set(t, m); }
         }
       }
@@ -893,7 +902,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   handler.get = get; // shared views and snapshots (share.js)
   handler.lib = lib;
   handler.wanted = wanted;
-  handler.history = { start: startHistory, continuous, jobs: () => jobs, coverage };
+  handler.history = { start: startHistory, continuous, jobs: () => jobs, coverage, chartWant, chartDone };
   handler.writeWantedFiles = writeWantedFiles;
   return handler;
 }
