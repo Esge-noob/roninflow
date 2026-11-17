@@ -58,7 +58,7 @@ export function initialState() {
       sync: { enabled: true, cursor: 0, tz: 'auto', detectedTz: null, skip: [] },
       playbook: null,
       risk: null,
-      migrations: ['blockers-widget', 'rebrand', 'trade-widgets', 'avgday-widget', 'atas-live-time', 'group-positions', 'account-progress', 'public-defaults'],
+      migrations: ['blockers-widget', 'rebrand', 'trade-widgets', 'avgday-widget', 'atas-live-time', 'group-positions', 'account-progress', 'public-defaults', 'demo-ronin-card'],
       reviewNotified: [],
       currency: { code: 'USD', convert: true, rate: 1, auto: true, updatedAt: null },
     },

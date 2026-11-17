@@ -48,6 +48,14 @@ function normalize(saved) {
         if (!w.includes('progress')) { const i = w.indexOf('kpis'); saved.settings.dashboardWidgets = i >= 0 ? [...w.slice(0, i + 1), 'progress', ...w.slice(i + 1)] : ['progress', ...w]; }
         saved.settings.migrations = [...(saved.settings.migrations || []), 'account-progress'];
       }
+      // demo: layouts saved by older demos still have Most Traded where the Ronin Score now goes
+      if (IS_DEMO && saved.settings && !(saved.settings.migrations || []).includes('demo-ronin-card')) {
+        const l = saved.settings.dashLayouts?.['My Dashboard'];
+        if (Array.isArray(l) && !l.some((i) => i.id === 'ronin')) {
+          saved.settings.dashLayouts = { ...saved.settings.dashLayouts, 'My Dashboard': l.map((i) => (i.id === 'mostTraded' ? { ...i, id: 'ronin' } : i)) };
+        }
+        saved.settings.migrations = [...(saved.settings.migrations || []), 'demo-ronin-card'];
+      }
       // older versions stored a single Anthropic key on the coach settings
       if (saved.settings?.coach && saved.settings.coach.provider === undefined) {
         const c = saved.settings.coach;
