@@ -1255,7 +1255,9 @@ div:hover > .shot-ask, .shot-ask:focus { opacity: 1; }
 .ec-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'title syms tools'; align-items: center; gap: 10px 12px; margin-bottom: 14px; }
 .ec-head .card-title { grid-area: title; }
 .ec-tools { grid-area: tools; }
-.ec-syms { grid-area: syms; display: flex; gap: 6px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.ec-syms { grid-area: syms; display: flex; gap: 6px; flex-wrap: nowrap; overflow: hidden; min-width: 0; position: relative; }
+.ec-syms-meas { position: absolute; left: 0; top: 0; display: flex; gap: 6px; visibility: hidden; pointer-events: none; white-space: nowrap; }
+.ec-more { display: inline-flex; align-items: center; gap: 3px; }
 .ec-syms::-webkit-scrollbar { display: none; }
 .ec-syms .chip { flex-shrink: 0; }
 @container (max-width: 560px) {

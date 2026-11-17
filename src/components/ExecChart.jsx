@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Maximize2, RefreshCw, Palette, Check, ChevronDown, Expand } from 'lucide-react';
 import { lazy, Suspense } from 'react';
 import { useStore } from '../store/store';
@@ -125,6 +125,55 @@ export function buildExecutions(trades, barTimes, toBar = (u) => toLocal(u), unt
   }
   const markers = [...groups.values()].sort((a, b) => a.time - b.time || (a.side === 'buy' ? -1 : 1));
   return { markers, lines, first, last };
+}
+
+/**
+ * Symbol tabs that never get cut off: as many chips as fit, then a "+N" menu with the rest. The symbol you're on is
+ * always one of the chips shown.
+ */
+export function SymbolTabs({ symbols, value, onPick }) {
+  const box = useRef(null);
+  const meas = useRef(null);
+  const [fit, setFit] = useState(symbols.length);
+  const key = symbols.map((x) => `${x.s}:${x.c}`).join('|');
+  useLayoutEffect(() => {
+    const el = box.current, m = meas.current;
+    if (!el || !m) return undefined;
+    const calc = () => {
+      const w = el.clientWidth;
+      const chips = [...m.children].map((c) => c.offsetWidth);
+      const gap = 6;
+      const total = chips.slice(0, symbols.length).reduce((a, b) => a + b + gap, -gap);
+      if (total <= w) { setFit(symbols.length); return; }
+      const moreW = (chips[symbols.length] || 52) + gap;
+      let used = 0, n = 0;
+      for (let i = 0; i < symbols.length; i++) { const next = used + chips[i] + (n ? gap : 0); if (next + moreW > w) break; used = next; n++; }
+      setFit(Math.max(1, n));
+    };
+    calc();
+    const ro = new ResizeObserver(calc);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const at = symbols.findIndex((x) => x.s === value);
+  let shown = symbols.slice(0, fit);
+  if (fit < symbols.length && at >= fit) shown = [...symbols.slice(0, fit - 1), symbols[at]];
+  const rest = symbols.filter((x) => !shown.includes(x));
+  const chip = ({ s, c }, extra = {}) => <button key={s} role="tab" aria-selected={s === value} className={`chip ${s === value ? 'on' : ''}`} onClick={() => onPick(s)} {...extra}>{s} <span className="muted" style={{ marginLeft: 4 }}>{c}</span></button>;
+  return (
+    <div ref={box} className="ec-syms" role="tablist">
+      <div ref={meas} className="ec-syms-meas" aria-hidden="true">
+        {symbols.map((x) => chip(x, { tabIndex: -1, onClick: undefined }))}
+        <button className="chip ec-more" tabIndex={-1}>+{symbols.length} <ChevronDown size={12} /></button>
+      </div>
+      {shown.map((x) => chip(x))}
+      {rest.length > 0 && (
+        <Popover portal align="right" width={180} trigger={({ toggle, open }) => <button className={`chip ec-more ${open ? 'on' : ''}`} onClick={toggle} title={`${rest.length} more symbol${rest.length === 1 ? '' : 's'}`} aria-haspopup="menu">+{rest.length} <ChevronDown size={12} /></button>}>
+          {(close) => rest.map(({ s, c }) => <button key={s} className="pop-item" onClick={() => { onPick(s); close(); }}><span className="grow">{s}</span><span className="muted">{c} trade{c === 1 ? '' : 's'}</span></button>)}
+        </Popover>
+      )}
+    </div>
+  );
 }
 
 export default function ExecChart({ date: dateProp, trades: tradesProp, onOpenTrade, focus, big, title }) {
@@ -331,11 +380,7 @@ export default function ExecChart({ date: dateProp, trades: tradesProp, onOpenTr
     <div className={big ? 'panel exec-chart ec-mini ec-big' : focus ? 'exec-chart ec-mini' : 'panel exec-chart'}>
       <div className="ec-head">
         <div className={focus && !big ? 'label' : 'card-title'} style={focus && !big ? { margin: 0 } : undefined}>{title || (focus ? 'Chart' : 'Executions')}</div>
-        {!focus && <div className="ec-syms" role="tablist">
-          {symbols.map(({ s, c }) => (
-            <button key={s} role="tab" aria-selected={s === sym} className={`chip ${s === sym ? 'on' : ''}`} onClick={() => setPick(s)}>{s} <span className="muted" style={{ marginLeft: 4 }}>{c}</span></button>
-          ))}
-        </div>}
+        {!focus && <SymbolTabs symbols={symbols} value={sym} onPick={setPick} />}
         <div className="row gap4 ec-tools">
           <TimeframePicker tf={tf} native={rec.status === 'ok' ? rec.interval : null} source={rec.source} onPick={(v) => setSetting('execTf', v)} />
           <button className="icon-btn" title="Chart colours" onClick={() => setColorsOpen(true)}><Palette size={15} /></button>
