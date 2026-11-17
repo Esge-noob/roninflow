@@ -20,6 +20,7 @@
 // Every candle set is saved in data/candles/ so a day only has to be fetched once.
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { metatraderDirs, journalDropDirs } from './connect-apis.js';
 
 const LIB_VERSION = '5.0.7';
@@ -117,32 +118,52 @@ async function polygon(key, ticker, from, to) {
 
 const isFutures = (symbol) => !/(-PERP|-SPOT|-SWAP|USDT|USDC|\/|:)/i.test(String(symbol)) && (ROOTS.includes(rootOf(symbol)) || /^[A-Z0-9]{1,4}[FGHJKMNQUVXZ]\d{1,2}$/.test(String(symbol).toUpperCase()));
 
-// CME equity-index futures (quarterly): the front month rolls 8 days before the third Friday of Mar / Jun / Sep / Dec.
-const QUARTERLY = new Set(['ES', 'MES', 'NQ', 'MNQ', 'YM', 'MYM', 'RTY', 'M2K']);
+// Which contract month is the front (most traded) one on a date, by the exchange's usual roll:
+//   equity index (ES, NQ, YM, RTY + micros): Mar / Jun / Sep / Dec, rolled 8 days before the 3rd Friday
+//   crude / natural gas: every month, rolled around the 19th (crude) / 24th (gas) of the month before delivery
+//   gold: Feb / Apr / Jun / Aug / Oct / Dec · silver & copper: Mar / May / Jul / Sep / Dec — rolled around the 25th
+//   of the month before. Treasuries: Mar / Jun / Sep / Dec, rolled at the end of the month before.
+// Anything else isn't worked out (the contract you last traded is used for ~25 days either side).
+const ROLL = {
+  quarterlyIndex: { months: [3, 6, 9, 12], roll: (y, m) => { const first = new Date(Date.UTC(y, m - 1, 1)); return new Date(Date.UTC(y, m - 1, 1 + ((5 - first.getUTCDay() + 7) % 7) + 14 - 8)); } },
+  crude: { months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], roll: (y, m) => new Date(Date.UTC(y, m - 2, 19)) },
+  gas: { months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], roll: (y, m) => new Date(Date.UTC(y, m - 2, 24)) },
+  gold: { months: [2, 4, 6, 8, 10, 12], roll: (y, m) => new Date(Date.UTC(y, m - 2, 25)) },
+  silver: { months: [3, 5, 7, 9, 12], roll: (y, m) => new Date(Date.UTC(y, m - 2, 25)) },
+  bonds: { months: [3, 6, 9, 12], roll: (y, m) => new Date(Date.UTC(y, m - 1, 0)) },
+};
+const ROLL_OF = {
+  ES: 'quarterlyIndex', MES: 'quarterlyIndex', NQ: 'quarterlyIndex', MNQ: 'quarterlyIndex', YM: 'quarterlyIndex', MYM: 'quarterlyIndex', RTY: 'quarterlyIndex', M2K: 'quarterlyIndex',
+  CL: 'crude', MCL: 'crude', QM: 'crude', NG: 'gas', QG: 'gas', GC: 'gold', MGC: 'gold', SI: 'silver', SIL: 'silver', HG: 'silver',
+  ZB: 'bonds', ZN: 'bonds', ZF: 'bonds', ZT: 'bonds', UB: 'bonds',
+};
 const MONTH_CODES = 'FGHJKMNQUVXZ';
 const p2 = (n) => String(n).padStart(2, '0');
-export function frontQuarter(date) {
+/** { y, m } of the front contract on `date` (YYYY-MM-DD), or null when the root's roll isn't known. */
+export function frontMonth(root, date) {
+  const rule = ROLL[ROLL_OF[root]];
+  if (!rule) return null;
   let [y, m] = date.split('-').map(Number);
-  for (let k = 0; k < 6; k++) {
-    const qm = Math.ceil(m / 3) * 3;
-    const first = new Date(Date.UTC(y, qm - 1, 1));
-    const third = 1 + ((5 - first.getUTCDay() + 7) % 7) + 14;
-    const roll = new Date(Date.UTC(y, qm - 1, third - 8)).toISOString().slice(0, 10);
-    if (date < roll) return { y, m: qm };
-    m = qm + 1;
+  for (let k = 0; k < 30; k++) {
+    if (rule.months.includes(m) && date < rule.roll(y, m).toISOString().slice(0, 10)) return { y, m };
+    m += 1;
     if (m > 12) { m = 1; y += 1; }
   }
-  return { y, m };
+  return null;
 }
+export const frontQuarter = (date) => frontMonth('ES', date);
 /** `contract` (as your platform names it, last traded on `seen`) moved to the contract that was front month on `date`.
- *  Monthly contracts (energy, metals…) can't be worked out here: the same contract is used within ~25 days, else null. */
+ *  Returns null when that can't be worked out and `date` is more than ~25 days from `seen`. */
 export function contractFor(contract, root, date, seen = date) {
-  if (!QUARTERLY.has(root)) return Math.abs(Date.parse(date) - Date.parse(seen)) <= 25 * 86400e3 ? contract : null;
-  const { y, m } = frontQuarter(date);
-  const nt = contract.replace(new RegExp(`^(${root}\\s+)\\d{2}-\\d{2}(.*)$`), (_, a, rest) => `${a}${p2(m)}-${p2(y % 100)}${rest}`); // "MNQ 12-25"
-  if (nt !== contract) return nt;
-  const cme = contract.replace(new RegExp(`^(${root})[FGHJKMNQUVXZ](\\d{1,4})(.*)$`), (_, a, yy, rest) => `${a}${MONTH_CODES[m - 1]}${yy.length === 1 ? y % 10 : yy.length === 2 ? p2(y % 100) : y}${rest}`); // "MNQZ25", "MNQZ5", "MNQZ25.CME"…
-  return cme !== contract ? cme : Math.abs(Date.parse(date) - Date.parse(seen)) <= 25 * 86400e3 ? contract : null;
+  const near = Math.abs(Date.parse(date) - Date.parse(seen)) <= 25 * 86400e3 ? contract : null;
+  const f = frontMonth(root, date);
+  if (!f) return near;
+  const { y, m } = f;
+  const ntRe = new RegExp(`^(${root}\\s+)\\d{2}-\\d{2}(.*)$`); // "MNQ 12-25" (NinjaTrader)
+  if (ntRe.test(contract)) return contract.replace(ntRe, (_, a, rest) => `${a}${p2(m)}-${p2(y % 100)}${rest}`);
+  const cmeRe = new RegExp(`^(${root})[FGHJKMNQUVXZ](\\d{1,4})(.*)$`); // "MNQZ25", "MNQZ5", "MNQZ25.CME"…
+  if (cmeRe.test(contract)) return contract.replace(cmeRe, (_, a, yy, rest) => `${a}${MONTH_CODES[m - 1]}${yy.length === 1 ? y % 10 : yy.length === 2 ? p2(y % 100) : y}${rest}`);
+  return near;
 }
 
 export function createCandleHandler(dataDir, { readTrades, readConnTrades, log = () => {}, vault, tokenOk, dropDirs } = {}) {
@@ -193,7 +214,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   }
   const listDir = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; } };
   /** Platforms that have sent bars, with how many symbols each. */
-  const addonSources = () => listDir(barsDir).filter((n) => n !== EARLIER).map((id) => ({ id, symbols: listDir(path.join(barsDir, id)).length }));
+  const addonSources = () => listDir(barsDir).filter((n) => n !== EARLIER && !n.endsWith('-roll')).map((id) => ({ id, symbols: listDir(path.join(barsDir, id)).length }));
   function barsFrom(source, symbol, from, to) {
     const out = [];
     // a micro trades at the same price as its full-size contract, so either chart's bars will do (MES ↔ ES …)
@@ -275,6 +296,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       items.push({ symbol: d.symbol, contract: d.contract, from: have > from ? Math.max(from, have - 600) : from, to: end });
       if (items.length >= limit) break;
     }
+    if (items.length < limit) items.push(...historyItems(source, now).slice(0, limit - items.length)); // history downloads come last
     wantCache.set(ck, { at: now, items });
     return items;
   }
@@ -316,6 +338,183 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     if (changed) saveRequested();
     return out;
   }
+  // ---------- history downloads (automated backtests): as far back as your platform's data goes ----------
+  // One job per market. Weeks are asked for newest first through the wanted list (the add-ons' usual loop); each week
+  // uses the contract that was front month then. On a roll day the old contract's bars are fetched too, so the
+  // continuous series can be back-adjusted. Four empty weeks in a row = the start of your platform's history.
+  const jobsFile = path.join(dataDir, 'history-jobs.json');
+  let jobs = {};
+  try { jobs = JSON.parse(fs.readFileSync(jobsFile, 'utf8')) || {}; } catch { /* none yet */ }
+  const saveJobs = () => { try { fs.mkdirSync(dataDir, { recursive: true }); fs.writeFileSync(jobsFile, JSON.stringify(jobs)); } catch (e) { log('[candles] could not save history-jobs.json', e.message); } };
+  const isoDay = (d) => d.toISOString().slice(0, 10);
+  const addDays = (date, n) => { const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return isoDay(d); };
+  const mondayOf = (date) => { const d = new Date(`${date}T12:00:00Z`); return addDays(date, -((d.getUTCDay() + 6) % 7)); };
+  const prevWeekday = (date) => { let d = addDays(date, -1); while ([0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay())) d = addDays(d, -1); return d; };
+  /** Newest trade of this market that carries a platform contract name: { source, c, d } */
+  function latestContract(root, prefer) {
+    let best = null;
+    const see = (t, d) => {
+      if (!t?.contract || rootOf(t.symbol || t.contract) !== root || !t.source) return;
+      const src = String(t.source).toLowerCase();
+      if (prefer && prefer !== 'any' && src !== prefer) return;
+      if (!best || d > best.d) best = { source: src, c: String(t.contract), d };
+    };
+    try { for (const t of (readTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    try { for (const t of (readConnTrades?.() || [])) if (t?.entry) see(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    return best;
+  }
+  const storedBars = (source, root, from, to) => barsFrom(source, root, from, to).length;
+  /** Queue the next week(s) of a job until a few items are waiting. */
+  function fillJob(job) {
+    let guard = 0;
+    while (job.status === 'running' && job.pending.filter((i) => !i.roll).length < 6 && guard++ < 12) {
+      const week = job.next;
+      if (week < addDays(job.started.slice(0, 10), -366 * 20)) { job.status = 'done'; job.reason = 'limit'; break; }
+      const days = [0, 1, 2, 3, 4].map((k) => addDays(week, k)).filter((d) => d <= isoDay(new Date()));
+      const items = [];
+      for (const d of days) {
+        const c = contractFor(job.contract, job.root, d, job.seen);
+        if (!c) { job.status = 'done'; job.reason = 'contract'; break; }
+        const last = items[items.length - 1];
+        if (last && last.contract === c) last.days.push(d);
+        else items.push({ contract: c, days: [d] });
+        const pd = prevWeekday(d);
+        const pc = contractFor(job.contract, job.root, pd, job.seen);
+        if (pc && pc !== c) { // roll day: the old contract's bars too, for back-adjusting
+          const w = dayWindow(d, job.tz);
+          if (!job.rolls.some((r) => r.date === d)) job.rolls.push({ date: d, from: w.from, to: w.to, old: pc, new: c });
+          if (!storedBars(`${job.source}-roll`, job.root, w.from, w.to)) job.pending.push({ symbol: `${job.root}~roll`, contract: pc, from: w.from, to: w.to, week, roll: true, tries: 0 });
+        }
+      }
+      if (job.status !== 'running') break;
+      let need = 0, have = 0;
+      for (const it of items) {
+        const from = dayWindow(it.days[0], job.tz).from, to = Math.min(dayWindow(it.days[it.days.length - 1], job.tz).to, Math.floor(Date.now() / 1000));
+        if (to <= from) continue;
+        if (coveredTo(`${job.source}|${job.root}`, from) >= to || storedBars(job.source, job.root, from, to) > 200 * it.days.length) { have += 1; continue; }
+        job.pending.push({ symbol: job.root, contract: it.contract, from, to, week, roll: false, tries: 0 });
+        need += 1;
+      }
+      job.weeks[week] = { left: need, bars: have ? 1 : 0 };
+      if (!need) finishWeek(job, week);
+      job.next = addDays(week, -7);
+    }
+  }
+  function finishWeek(job, week) {
+    const w = job.weeks[week];
+    if (!w) return;
+    if (w.bars > 0) { job.empty = 0; if (!job.oldest || week < job.oldest) job.oldest = week; }
+    else job.empty += 1;
+    job.done += 1;
+    delete job.weeks[week];
+    if (job.empty >= 4 && job.status === 'running') { job.status = 'done'; job.reason = 'start'; job.pending = []; }
+  }
+  function historyItems(source, now) {
+    const out = [];
+    let changed = false;
+    for (const job of Object.values(jobs)) {
+      if (job.status !== 'running' || job.source !== source) continue;
+      fillJob(job);
+      for (const it of job.pending) {
+        if (now - (it.at || 0) > 50) { it.at = now; it.tries += 1; changed = true; }
+        if (it.tries > 6) continue; // the platform keeps failing on this one — skipped below
+        out.push({ symbol: it.symbol, contract: it.contract, from: it.from, to: it.to });
+        if (out.length >= 6) break;
+      }
+      const stuck = job.pending.filter((i) => i.tries > 6);
+      if (stuck.length) {
+        job.pending = job.pending.filter((i) => i.tries <= 6);
+        for (const it of stuck) { if (!it.roll && job.weeks[it.week]) { job.weeks[it.week].left -= 1; if (job.weeks[it.week].left <= 0) finishWeek(job, it.week); } }
+        job.failed = (job.failed || 0) + stuck.length;
+      }
+    }
+    if (changed) saveJobs();
+    return out;
+  }
+  function historyIngest(source, symbol, from, to, n) {
+    const roll = String(symbol).endsWith('~roll');
+    const root = rootOf(String(symbol).replace(/~roll$/, ''));
+    const job = jobs[root];
+    if (!job || job.source !== srcId(source)) return;
+    let hit = false;
+    job.pending = job.pending.filter((it) => {
+      if (it.roll !== roll || !(Number(from) <= it.from + 60 && Number(to) >= it.to - 60)) return true;
+      hit = true;
+      if (!roll && job.weeks[it.week]) {
+        const w = job.weeks[it.week];
+        w.left -= 1; w.bars += n;
+        if (w.left <= 0) finishWeek(job, it.week);
+      }
+      return false;
+    });
+    if (hit) { job.bars += n; job.updated = new Date().toISOString(); saveJobs(); wantCache.clear(); }
+  }
+  function startHistory(symbol, tz) {
+    const root = rootOf(symbol);
+    const pick = cfg.addonSource && cfg.addonSource !== 'any' ? cfg.addonSource : null;
+    const lc = latestContract(root, pick) || (pick ? null : latestContract(root));
+    if (!lc) throw Object.assign(new Error(`RoninFlow learns your platform’s name for ${root} contracts from a trade its add-on synced. Take one ${root} trade (sim is fine) with the add-on running, then try again.`), { code: 'NO_CONTRACT' });
+    if (cfg.addon === false) throw Object.assign(new Error('Price data from your platform add-on is switched off — turn it on in Settings → Price data.'), { code: 'ADDON_OFF' });
+    const old = jobs[root];
+    jobs[root] = {
+      root, source: lc.source, contract: lc.c, seen: lc.d, tz: validTz(tz) ? tz : Intl.DateTimeFormat().resolvedOptions().timeZone,
+      status: 'running', reason: null, next: mondayOf(isoDay(new Date())), started: new Date().toISOString(), updated: new Date().toISOString(),
+      pending: [], weeks: {}, rolls: old?.rolls || [], empty: 0, done: 0, bars: 0, failed: 0, oldest: null,
+    };
+    fillJob(jobs[root]);
+    saveJobs();
+    wantCache.clear();
+    if (!dropDirs) setTimeout(writeWantedFiles, 300).unref?.();
+    return jobs[root];
+  }
+  /** Days (UTC file dates) with saved 1-minute bars for a market, all platforms. */
+  function coverage(root) {
+    const days = new Set();
+    for (const src of [...addonSources().map((x) => x.id), EARLIER]) {
+      try { for (const f of fs.readdirSync(path.join(barsDir, src, root.replace(/[^\w.-]/g, '_')))) if (f.endsWith('.json')) days.add(f.slice(0, 10)); } catch { /* none */ }
+    }
+    const list = [...days].sort();
+    return { days: list.length, first: list[0] || null, last: list[list.length - 1] || null, list };
+  }
+  const jobView = (job) => job && ({ ...job, pending: job.pending.length, weeks: undefined, waiting: job.pending.length });
+  /** One continuous 1-minute series for a market and date range, back-adjusted at contract rolls when we have the bars. */
+  function continuous(root, fromDate, toDate, adjust = true) {
+    const from = Math.floor(Date.parse(`${fromDate}T00:00:00Z`) / 1000) - DAY, to = Math.floor(Date.parse(`${toDate}T00:00:00Z`) / 1000) + 2 * DAY;
+    const sources = [...addonSources().map((x) => x.id), EARLIER];
+    const byT = new Map();
+    for (let t = from - (from % DAY); t <= to; t += DAY) {
+      let best = null;
+      for (const src of sources) {
+        const cur = readCache(barFile(src, root, t));
+        if (cur && (!best || Object.keys(cur).length > Object.keys(best).length)) best = cur;
+      }
+      if (best) for (const r of Object.values(best)) if (r[0] >= from && r[0] < to) byT.set(r[0], r);
+    }
+    const rows = [...byT.values()].sort((a, b) => a[0] - b[0]);
+    const rolls = [];
+    const job = jobs[root];
+    if (adjust && job?.rolls?.length && rows.length) {
+      for (const r of [...job.rolls].sort((a, b) => b.date.localeCompare(a.date))) {
+        const old = barsFrom(`${job.source}-roll`, root, r.from, r.to);
+        if (!old.length) { rolls.push({ date: r.date, t: r.from, adj: null }); continue; }
+        const oldBy = new Map(old.map((x) => [x[0], x[4]]));
+        const diffs = rows.filter((x) => x[0] >= r.from && x[0] < r.to && oldBy.has(x[0])).map((x) => x[4] - oldBy.get(x[0])).sort((a, b) => a - b);
+        rolls.push({ date: r.date, t: r.from, adj: diffs.length ? diffs[Math.floor(diffs.length / 2)] : null });
+      }
+      // newest roll first: every bar before a roll moves by that roll's gap (and all the later ones)
+      let cum = 0, k = rows.length - 1;
+      for (const r of rolls) {
+        for (; k >= 0 && rows[k][0] >= r.t; k--) if (cum) rows[k] = [rows[k][0], rows[k][1] + cum, rows[k][2] + cum, rows[k][3] + cum, rows[k][4] + cum, rows[k][5]];
+        if (r.adj != null) cum += r.adj;
+      }
+      if (cum) for (; k >= 0; k--) rows[k] = [rows[k][0], rows[k][1] + cum, rows[k][2] + cum, rows[k][3] + cum, rows[k][4] + cum, rows[k][5]];
+    }
+    const lo = Math.floor(Date.parse(`${fromDate}T00:00:00Z`) / 1000) - DAY, hi = to;
+    const keep = rows.filter((r) => r[0] >= lo && r[0] < hi);
+    const col = (i) => keep.map((r) => (i === 0 || i === 5 ? r[i] : Math.round(r[i] * 1e6) / 1e6));
+    return { symbol: root, n: keep.length, t: col(0), o: col(1), h: col(2), l: col(3), c: col(4), v: col(5), rolls: rolls.reverse() };
+  }
+
   const wantedLines = (items) => items.map((i) => [i.symbol, i.contract, i.from, i.to].map((v) => String(v).replace(/[|\r\n]/g, ' ')).join('|')).join('\n') + (items.length ? '\n' : '');
   // MetaTrader / Sierra Chart: the list goes into their drop folders as price-wanted.txt
   const wantedFiles = dropDirs || (() => [...metatraderDirs().map((d) => [d, 'metatrader']), ...journalDropDirs().map((d) => [d, 'sierrachart'])]);
@@ -337,8 +536,16 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     for (const g of groups) {
       if (!g?.symbol) continue;
       const source = g.source || body.source;
-      if (Array.isArray(g.bars)) n += storeBars(g.symbol, g.bars, source);
+      if (String(g.symbol).endsWith('~roll')) { // an old contract's bars on a roll day (history download)
+        const got = Array.isArray(g.bars) ? storeBars(g.symbol.replace(/~roll$/, ''), g.bars, `${srcId(source)}-roll`) : 0;
+        n += got;
+        if (g.from !== undefined && g.to !== undefined) historyIngest(source, g.symbol, g.from, g.to, got);
+        continue;
+      }
+      const got = Array.isArray(g.bars) ? storeBars(g.symbol, g.bars, source) : 0;
+      n += got;
       if (g.from !== undefined && g.to !== undefined) {
+        historyIngest(source, g.symbol, g.from, g.to, got);
         markCovered(source, g.symbol, g.from, g.to);
         let changed = false;
         for (const [key, r] of Object.entries(requested)) {
@@ -486,6 +693,27 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         if (u.searchParams.get('format') === 'lines') { res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(wantedLines(items)); }
         return send(res, 200, { items });
       }
+      if (u.pathname === '/api/candles/history' || u.pathname === '/api/candles/history/bars') {
+        const root = rootOf(u.searchParams.get('symbol') || '');
+        if (!root) return send(res, 400, { error: 'symbol needed' });
+        if (u.pathname === '/api/candles/history/bars') {
+          const from = u.searchParams.get('from'), to = u.searchParams.get('to');
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '') || !/^\d{4}-\d{2}-\d{2}$/.test(to || '')) return send(res, 400, { error: 'from and to (YYYY-MM-DD) needed' });
+          const body = JSON.stringify(continuous(root, from, to, u.searchParams.get('adjust') !== '0'));
+          res.statusCode = 200; res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store');
+          if (/\bgzip\b/.test(req.headers?.['accept-encoding'] || '')) { res.setHeader('Content-Encoding', 'gzip'); return res.end(zlib.gzipSync(body)); }
+          return res.end(body);
+        }
+        if (req.method === 'POST') {
+          const action = u.searchParams.get('action');
+          if (action === 'start') { try { startHistory(root, u.searchParams.get('tz')); } catch (e) { return send(res, 400, { error: e.message, code: e.code }); } }
+          if (action === 'stop' && jobs[root]) { jobs[root].status = 'stopped'; jobs[root].pending = []; saveJobs(); wantCache.clear(); }
+        }
+        const job = jobs[root];
+        if (job?.status === 'running' && Date.now() - Date.parse(job.updated) > 15 * 60e3) job.stale = true; else if (job) job.stale = false;
+        const cov = coverage(root);
+        return send(res, 200, { job: jobView(job), coverage: { days: cov.days, first: cov.first, last: cov.last }, contract: latestContract(root) });
+      }
       if (u.pathname === '/api/candles/config') {
         if (req.method === 'POST') {
           const b = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
@@ -526,6 +754,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   };
   handler.ingestBars = ingestBars;
   handler.wanted = wanted;
+  handler.history = { start: startHistory, continuous, jobs: () => jobs, coverage };
   handler.writeWantedFiles = writeWantedFiles;
   return handler;
 }

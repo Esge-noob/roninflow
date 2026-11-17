@@ -56,8 +56,8 @@ function Router() {
       view = <Strategy key={sub || 'index'} sub={sub} />;
       break;
     case 'backtest':
-      crumbs = sub && sub !== 'whatif' ? [{ label: 'Backtesting', href: '#/backtest' }, { label: 'Session' }] : [{ label: 'Backtesting' }];
-      view = <Backtest key={sub || 'index'} sub={sub} />;
+      crumbs = sub === 'auto' && route[2] ? [{ label: 'Backtesting', href: '#/backtest/auto' }, { label: 'Automated' }] : sub && sub !== 'whatif' && sub !== 'auto' ? [{ label: 'Backtesting', href: '#/backtest' }, { label: 'Session' }] : [{ label: 'Backtesting' }];
+      view = <Backtest key={`${sub || 'index'}/${route[2] || ''}`} sub={sub} id={route[2]} />;
       break;
     case 'risk':
       crumbs = [{ label: 'Risk Management' }];

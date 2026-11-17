@@ -339,6 +339,7 @@ export function StoreProvider({ children }) {
       // notebook
       setNotebook: (fn) => update((s) => ({ ...s, notebook: fn(s.notebook) })),
       setBacktests: (fn) => update((s) => ({ ...s, backtests: fn(s.backtests || []) })),
+      setAutoStrategies: (fn) => update((s) => ({ ...s, autoStrategies: fn(s.autoStrategies || []) })),
       // coach
       setChats: (fn) => update((s) => ({ ...s, chats: fn(s.chats) })),
       setTemplates: (fn) => update((s) => ({ ...s, templates: fn(s.templates) })),

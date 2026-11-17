@@ -10,6 +10,7 @@ import { GroupStats } from './Review';
 import { summarize, equityCurve, fmtDate, fmtTime12, pfText, maxDrawdown, keyOf, fmtMoney, uid } from '../lib/stats';
 import { roninScore } from '../lib/roninScore';
 import { tradeBlockers } from '../lib/playbook';
+import { AutoList, AutoEditor } from './AutoBacktest';
 import { pointValueOf, rootOf, nextWeekday, nyOpenLocal, sessionDays, runWhatIf, activeRules, RULE_LABEL, WHATIF_DEFAULT } from '../lib/backtest';
 
 const ChartStudio = lazy(() => import('../components/ChartStudio'));
@@ -17,17 +18,18 @@ const COMMON = ['MES', 'ES', 'MNQ', 'NQ', 'MYM', 'YM', 'M2K', 'RTY', 'MCL', 'CL'
 const curveData = (trades) => [{ label: '', y: 0 }, ...equityCurve(trades).map((c) => ({ label: '', y: c.y }))];
 const today = () => keyOf(new Date());
 
-export default function Backtest({ sub }) {
-  if (sub && sub !== 'whatif') return <SessionDetail id={sub} />;
-  const tab = sub === 'whatif' ? 'whatif' : 'sessions';
+export default function Backtest({ sub, id }) {
+  if (sub === 'auto' && id) return <AutoEditor id={id} />;
+  if (sub && sub !== 'whatif' && sub !== 'auto') return <SessionDetail id={sub} />;
+  const tab = sub === 'whatif' ? 'whatif' : sub === 'auto' ? 'auto' : 'sessions';
   return (
     <div className="page">
       <div className="row page-head-row" style={{ marginBottom: 18 }}>
         <div className="page-title" style={{ margin: 0 }}>Backtesting</div>
         <div className="grow" />
-        <Seg value={tab} onChange={(t) => navigate(t === 'whatif' ? 'backtest/whatif' : 'backtest')} options={[{ value: 'sessions', label: 'Replay sessions' }, { value: 'whatif', label: 'What-if' }]} />
+        <Seg value={tab} onChange={(t) => navigate(t === 'sessions' ? 'backtest' : `backtest/${t}`)} options={[{ value: 'sessions', label: 'Replay' }, { value: 'whatif', label: 'What-if' }, { value: 'auto', label: 'Automated' }]} />
       </div>
-      {tab === 'whatif' ? <WhatIf /> : <Sessions />}
+      {tab === 'whatif' ? <WhatIf /> : tab === 'auto' ? <AutoList /> : <Sessions />}
     </div>
   );
 }

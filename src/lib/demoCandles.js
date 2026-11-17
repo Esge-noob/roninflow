@@ -68,3 +68,43 @@ export function demoCandles(trades, symbol, date) {
   }
   return out;
 }
+
+/** Demo site only: a made-up continuous 1-minute history for automated backtests — 5:00 AM to 2:00 PM local on
+ *  weekdays, with calm and busy stretches, trend days and range days. Same input → same bars. */
+export function demoHistory(symbol, fromDate, toDate) {
+  const root = rootOf(symbol);
+  const tick = TICK[root] || 0.01;
+  const r = rng(`hist|${root}`);
+  let p = BASE[root] || 100;
+  const out = { symbol: root, t: [], o: [], h: [], l: [], c: [], v: [], rolls: [] };
+  const end = new Date(`${toDate}T12:00:00`);
+  const start = new Date(`${fromDate}T12:00:00`);
+  // walk from a fixed start so any range gives the same prices
+  const d = new Date('2024-01-01T12:00:00');
+  let vol = 1;
+  const round = (x) => Math.round(x / tick) * tick;
+  while (d <= end) {
+    const wd = d.getDay();
+    if (wd !== 0 && wd !== 6) {
+      vol = Math.max(0.5, Math.min(2.2, vol * Math.exp(gauss(r) * 0.18)));
+      const base = BASE[root] || 100;
+      // most days drift a little, some trend; a slow pull back toward the usual price keeps it realistic
+      const dayDrift = (r() < 0.25 ? gauss(r) * 0.006 : gauss(r) * 0.0012) + ((base - p) / base) * 0.01;
+      const sigma = p * 0.00025 * vol;
+      p += gauss(r) * sigma * 5; // overnight gap
+      const keep = d >= start;
+      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const t0 = Math.floor(new Date(`${day}T05:00:00`).getTime() / 1000);
+      for (let k = 0; k < 540; k++) {
+        const u = k < 90 ? 0.6 : k < 150 ? 1.7 : k < 420 ? 0.9 : 1.3; // busy around the open and into the close
+        const o = p;
+        p += (dayDrift * p) / 540 + gauss(r) * sigma * u;
+        const c = round(p), hi = Math.max(round(o), c) + round(Math.abs(gauss(r)) * sigma * 0.7 * u), lo = Math.min(round(o), c) - round(Math.abs(gauss(r)) * sigma * 0.7 * u);
+        if (keep) { out.t.push(t0 + k * 60); out.o.push(round(o)); out.h.push(hi); out.l.push(lo); out.c.push(c); out.v.push(Math.round((k >= 90 && k < 150 ? 900 : 300) * (0.4 + r()))); }
+      }
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  out.n = out.t.length;
+  return out;
+}

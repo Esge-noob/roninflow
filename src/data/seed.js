@@ -37,6 +37,7 @@ export function initialState() {
     accounts: [],
     strategies: [],
     payouts: [],
+    autoStrategies: [], // automated backtests (src/views/AutoBacktest.jsx)
     backtests: [], // backtesting sessions (src/views/Backtest.jsx): their own trades, never mixed into the journal's
     diary: {}, // { 'YYYY-MM-DD': { pre: {...}, notes: '', mistakes: [], lessons: '', mood } }
     notebook: { folders: [], notes: [] },

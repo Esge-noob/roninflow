@@ -204,3 +204,36 @@ test('a backtest can ask the add-ons for any day: the front-month contract goes 
   h.ingestBars({ source: 'ninjatrader', symbol: 'MNQ', from: items[0].from, to: items[0].to, bars: [] });
   assert.equal(h.wanted('ninjatrader', { tz: TZ, now }).length, 1, 'answered (even with nothing): no longer asked for');
 });
+
+test('history download: weeks newest first with the right contracts, roll days twice, stops at the start of the data, back-adjusted series', () => {
+  const { h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }] });
+  const job = h.history.start('MNQ', TZ);
+  assert.equal(job.source, 'ninjatrader');
+  const cutoff = Date.parse('2026-08-01T00:00:00Z') / 1000; // pretend the platform has data from August on
+  const seen = new Set();
+  let rounds = 0;
+  for (; rounds < 200 && h.history.jobs().MNQ.status === 'running'; rounds++) {
+    const items = h.wanted('ninjatrader', { tz: TZ });
+    if (!items.length) break;
+    for (const it of items) {
+      seen.add(`${it.symbol}|${it.contract}`);
+      const roll = it.symbol.endsWith('~roll');
+      const price = roll ? 90 : 100;
+      const n = it.from >= cutoff ? 50 : 0;
+      h.ingestBars({ source: 'ninjatrader', symbol: it.symbol, from: it.from, to: it.to, bars: Array.from({ length: n }, (_, i) => [it.from + 3600 + i * 60, price, price + 1, price - 1, price, 5]) });
+    }
+  }
+  const j = h.history.jobs().MNQ;
+  assert.equal(j.status, 'done');
+  assert.equal(j.reason, 'start');
+  assert.ok(j.oldest >= '2026-07-27' && j.oldest <= '2026-08-03', `oldest week ${j.oldest}`);
+  assert.ok(seen.has('MNQ|MNQ 12-26') && seen.has('MNQ|MNQ 09-26'), 'December, then September before the Sep 10 roll');
+  assert.ok(seen.has('MNQ~roll|MNQ 09-26'), 'the old contract on the roll day');
+  assert.ok(j.rolls.some((r) => r.date === '2026-09-10'));
+  const s = h.history.continuous('MNQ', '2026-09-01', '2026-09-20');
+  const before = s.t.findIndex((t) => t >= j.rolls.find((r) => r.date === '2026-09-10').from);
+  assert.equal(s.c[0], 110, 'bars before the roll move up by the gap (100 − 90)');
+  assert.equal(s.c[before], 100, 'the new contract is unchanged');
+  assert.deepEqual(s.rolls.map((r) => [r.date, r.adj]), [['2026-09-10', 10]]);
+  assert.equal(h.history.continuous('MNQ', '2026-09-01', '2026-09-20', false).c[0], 100);
+});
