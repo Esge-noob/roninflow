@@ -47,6 +47,8 @@ namespace NinjaTrader.NinjaScript.AddOns
 		private System.Threading.Timer heartbeatTimer;
 		private System.Threading.Timer priceTimer;
 		private int priceBusy;
+		private System.Threading.Timer tickTimer;   // ticks for RoninFlow's tick-by-tick replay, when it asks
+		private int tickBusy;
 		private bool priceAnnounced;
 		private int busy;
 		private DateTime nextTry = DateTime.MinValue;
@@ -76,6 +78,7 @@ namespace NinjaTrader.NinjaScript.AddOns
 				flushTimer = new System.Threading.Timer(_ => Flush(), null, 2000, 2000);
 				heartbeatTimer = new System.Threading.Timer(_ => Heartbeat(), null, 3000, 30000);
 				priceTimer = new System.Threading.Timer(_ => PriceRound(), null, 20000, 60000);
+				tickTimer = new System.Threading.Timer(_ => TickRound(), null, 25000, 5000);
 				Log("started — sending to " + url);
 			}
 			else if (State == State.Terminated)
@@ -92,6 +95,7 @@ namespace NinjaTrader.NinjaScript.AddOns
 				if (flushTimer != null) flushTimer.Dispose();
 				if (heartbeatTimer != null) heartbeatTimer.Dispose();
 				if (priceTimer != null) priceTimer.Dispose();
+				if (tickTimer != null) tickTimer.Dispose();
 				Flush(); // last attempt
 			}
 		}
@@ -295,6 +299,80 @@ namespace NinjaTrader.NinjaScript.AddOns
 			if (rows.Count == 0 && !AnyConnection()) return;
 			PostBars(symbol, from, to, rows);
 			if (!priceAnnounced || rows.Count > 0) { priceAnnounced = true; Log("price data: sent " + rows.Count + " one-minute bar(s) of " + contract); }
+		}
+
+		// ---------------------------------------------------------------- ticks (tick-by-tick replay)
+		// RoninFlow lists the hours a replay is waiting for (GET /api/candles/ticks/wanted); each is fetched as 1-tick bars
+		// from the data connection and sent back as [ms, price, size, side] (side unknown here: 0).
+		private void TickRound()
+		{
+			if (Interlocked.Exchange(ref tickBusy, 1) == 1) return;
+			try
+			{
+				string list;
+				try { list = Get(ApiUrl("/api/candles/ticks/wanted?source=ninjatrader&format=lines")); }
+				catch { return; } // journal not reachable, or an older journal
+				foreach (string raw in list.Split('\n'))
+				{
+					string[] p = raw.Trim().Split('|');
+					long from, to;
+					if (p.Length < 4 || !long.TryParse(p[2], out from) || !long.TryParse(p[3], out to) || to <= from) continue;
+					SendTicks(p[0], p[1], from, to);
+				}
+			}
+			catch (Exception ex) { Log("tick data: " + ex.Message); }
+			finally { Interlocked.Exchange(ref tickBusy, 0); }
+		}
+
+		private void SendTicks(string symbol, string contract, long from, long to)
+		{
+			NinjaTrader.Cbi.Instrument inst = null;
+			try { inst = NinjaTrader.Cbi.Instrument.GetInstrument(contract); } catch { }
+			if (inst == null) { PostTicks(symbol, from, to, new List<string>()); return; } // so it isn't asked for again
+			var rows = new List<string>();
+			string err = null;
+			var finished = new ManualResetEventSlim(false);
+			BarsRequest br = null;
+			try
+			{
+				br = new BarsRequest(inst, ToPlatform(from), ToPlatform(to));
+				br.BarsPeriod = new BarsPeriod { BarsPeriodType = BarsPeriodType.Tick, Value = 1 };
+				br.TradingHours = inst.MasterInstrument.TradingHours;
+				br.Request((r, code, msg) =>
+				{
+					try
+					{
+						if (code != ErrorCode.NoError) { err = code + " " + msg; return; }
+						NinjaTrader.Data.Bars b = r.Bars;
+						for (int i = 0; i < b.Count; i++)
+						{
+							DateTime utc = ToUtc(b.GetTime(i));
+							long ms = (long)(utc - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+							if (ms < from * 1000 || ms >= to * 1000) continue;
+							rows.Add("[" + ms + "," + D(b.GetClose(i)) + "," + b.GetVolume(i).ToString(CultureInfo.InvariantCulture) + ",0]");
+						}
+					}
+					catch (Exception ex) { err = ex.Message; }
+					finally { finished.Set(); }
+				});
+				if (!finished.Wait(120000)) err = "no answer from the data connection";
+			}
+			catch (Exception ex) { err = ex.Message; }
+			finally { if (br != null) try { br.Dispose(); } catch { } }
+			if (err != null) { Log("tick data for " + contract + ": " + err + " — will try again"); return; }
+			if (rows.Count == 0 && !AnyConnection()) return;
+			PostTicks(symbol, from, to, rows);
+			Log("tick data: sent " + rows.Count + " tick(s) of " + contract);
+		}
+
+		private void PostTicks(string symbol, long from, long to, List<string> rows)
+		{
+			int parts = Math.Max(1, (rows.Count + 19999) / 20000);
+			for (int k = 0; k < parts; k++)
+			{
+				var part = rows.Skip(k * 20000).Take(20000);
+				Post("{\"source\":\"ninjatrader\",\"symbol\":" + Quote(symbol) + ",\"from\":" + from + ",\"to\":" + to + ",\"part\":" + k + ",\"last\":" + (k == parts - 1 ? "true" : "false") + ",\"ticks\":[" + string.Join(",", part) + "]}", ApiUrl("/api/candles/ticks/ingest"));
+			}
 		}
 
 		private void PostBars(string symbol, long from, long to, List<string> rows)

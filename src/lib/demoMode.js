@@ -29,10 +29,10 @@ export function installDemoFetch() {
       let trades = [];
       try { trades = JSON.parse(localStorage.getItem('roninflow-demo-v1') || '{}').trades || []; } catch { /* nothing saved yet */ }
       return import('./demoCandles').then(({ demoCandles, demoTicks }) => {
-        const d = new Date(from * 1000);
-        const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const ticks = demoTicks(demoCandles(trades, q.get('symbol'), day).filter((b) => b[0] >= from && b[0] < to), q.get('symbol'));
-        return reply(200, { ticks, hours: { have: [from - (from % 3600)], pending: [], none: [] }, sources: ['demo'], canFetch: true });
+        const days = new Set(), have = [];
+        for (let h = from - (from % 3600); h < to; h += 3600) { have.push(h); const d = new Date(h * 1000); days.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`); }
+        const bars = [...days].flatMap((day) => demoCandles(trades, q.get('symbol'), day)).filter((b) => b[0] >= from && b[0] < to).sort((a, b) => a[0] - b[0]);
+        return reply(200, { ticks: demoTicks(bars, q.get('symbol')), hours: { have, pending: [], none: [] }, sources: ['demo'], from: 'demo', canFetch: true });
       });
     }
     if (url.startsWith('/api/candles/history')) {

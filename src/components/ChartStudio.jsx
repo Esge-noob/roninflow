@@ -541,36 +541,58 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     return part;
   };
   const tickHour = replay.mode === 'on' && rows[replay.idx] ? rows[replay.idx][0] - (rows[replay.idx][0] % 3600) : null;
+  // a new day: forget what was still on its way (it's asked for again for the hours you now need)
+  useEffect(() => {
+    for (const [h, v] of ticksRef.current) if (!Array.isArray(v)) ticksRef.current.delete(h);
+    pendingSince.current = new Map();
+    barTicks.current = new Map();
+    setTickState({ status: 'idle', source: '' });
+  }, [date]);
   useEffect(() => {
     if (!tickWanted || tickHour == null) return undefined;
     let alive = true, timer;
+    const NAME = { atas: 'ATAS', ninjatrader: 'NinjaTrader', quantower: 'Quantower', metatrader: 'MetaTrader', ctrader: 'cTrader', sierrachart: 'Sierra Chart', databento: 'Databento', polygon: 'Polygon', demo: 'demo' };
     const load = async () => {
-      const hours = [tickHour, tickHour + 3600].filter((h) => { const g = ticksRef.current.get(h); return g === undefined || g === 'pending'; });
-      if (!hours.length) return;
-      let waiting = false;
-      for (const h of hours) {
-        try {
-          const r = await fetch(`/api/candles/ticks?symbol=${encodeURIComponent(sym)}&from=${h}&to=${h + 3600}`);
-          const j = await r.json().catch(() => ({}));
-          if (!alive) return;
-          if (!r.ok) { ticksRef.current.set(h, 'none'); setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' })); continue; }
-          if (j.hours?.have?.includes(h)) { ticksRef.current.set(h, j.ticks || []); pendingSince.current.delete(h); setTickState({ status: 'ok', source: j.sources?.[0] || '' }); }
-          else if (j.hours?.pending?.includes(h)) {
-            if (!pendingSince.current.has(h)) pendingSince.current.set(h, Date.now());
-            if (Date.now() - pendingSince.current.get(h) > 200e3) { ticksRef.current.set(h, 'none'); setTickState((x) => (x.status === 'ok' ? x : { status: 'timeout', source: 'atas', addon: j.addon })); continue; }
-            ticksRef.current.set(h, 'pending'); waiting = true;
-            setTickState((x) => (x.status === 'ok' ? x : { status: 'pending', source: 'atas', addon: j.addon }));
-          } else { ticksRef.current.set(h, 'none'); if (!j.canFetch) setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' })); }
-        } catch { if (alive) ticksRef.current.set(h, 'none'); }
-      }
+      // the hour the replay is in and the next one, in one request; 'slow' hours (waited a long time) keep being checked
+      const need = [tickHour, tickHour + 3600].filter((h) => { const g = ticksRef.current.get(h); return g === undefined || g === 'pending' || g === 'slow'; });
+      if (!need.length) return;
+      let again = 0;
+      try {
+        const from = need[0], to = need[need.length - 1] + 3600;
+        const r = await fetch(`/api/candles/ticks?symbol=${encodeURIComponent(sym)}&from=${from}&to=${to}`);
+        const j = await r.json().catch(() => ({}));
+        if (!alive) return;
+        if (!r.ok) {
+          for (const h of need) ticksRef.current.set(h, 'none');
+          setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' }));
+        } else {
+          const have = new Set(j.hours?.have || []), pend = new Set(j.hours?.pending || []);
+          const byHour = new Map();
+          for (const t of j.ticks || []) { const h = Math.floor(t[0] / 1000 / 3600) * 3600; if (!byHour.has(h)) byHour.set(h, []); byHour.get(h).push(t); }
+          const via = NAME[j.from] || j.from || '';
+          for (const h of need) {
+            if (have.has(h)) { ticksRef.current.set(h, byHour.get(h) || []); pendingSince.current.delete(h); setTickState({ status: 'ok', source: j.sources?.[0] || '', name: NAME[j.sources?.[0]] || j.sources?.[0] || '' }); continue; }
+            if (pend.has(h)) {
+              if (!pendingSince.current.has(h)) pendingSince.current.set(h, Date.now());
+              const slow = Date.now() - pendingSince.current.get(h) > 180e3;
+              ticksRef.current.set(h, slow ? 'slow' : 'pending'); // slow: replay with bars meanwhile, keep checking
+              again = slow ? 10000 : 3000;
+              setTickState((x) => (x.status === 'ok' ? x : { status: slow ? 'timeout' : 'pending', source: j.from || '', name: via, addon: j.addon }));
+              continue;
+            }
+            ticksRef.current.set(h, 'none');
+            if (!j.canFetch) setTickState((x) => (x.status === 'ok' ? x : { status: 'none', source: '' }));
+          }
+        }
+      } catch { if (alive) again = 10000; }
       barTicks.current = new Map();
       setTickVer((v) => v + 1);
-      if (waiting && alive) timer = setTimeout(load, 4000);
+      if (again && alive) timer = setTimeout(load, again);
     };
     load();
     return () => { alive = false; clearTimeout(timer); };
-  }, [tickWanted, tickHour, sym]); // eslint-disable-line react-hooks/exhaustive-deps
-  const tickActive = tickWanted && (tickState.status === 'ok' || tickState.status === 'pending');
+  }, [tickWanted, tickHour, sym, date]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tickActive = tickWanted && (tickState.status === 'ok' || tickState.status === 'pending' || tickState.status === 'timeout');
   const hoverX = useRef(null);
 
   // ---------------------------------------------------------------- chart
@@ -1222,7 +1244,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
         if ((next[0] + srcIv) * 1000 > ms) break;
         idx += 1; s = 0; tickedTimes.current.add(next[0]); changed = true; continue;
       }
-      if (tickWanted && (tk === 'pending' || tk === undefined)) { waiting = true; at = Math.min(ms, next[0] * 1000); break; } // ticks on their way
+      if (tickWanted && (tk === 'pending' || tk === undefined) && tickState.status !== 'timeout') { waiting = true; at = Math.min(ms, next[0] * 1000); break; } // ticks on their way
       if ((next[0] + srcIv) * 1000 > ms) break;
       idx += 1; s = 0; changed = true;
     }
@@ -1382,12 +1404,12 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const hhmmss = (ms) => { const d = new Date(ms); return `${fmtTime12(d.toISOString()).replace(/\s?([AP]M)$/i, '')}:${String(d.getSeconds()).padStart(2, '0')} ${d.getHours() < 12 ? 'AM' : 'PM'}`; };
   const timeLabel = (i) => { const r = rows[i]; if (!r) return ''; const d = localIsoOf(r[0]).slice(0, 10); return `${d !== date ? `${fmtDate(d)} · ` : ''}${fmtTime12(new Date(r[0] * 1000).toISOString())}`; };
   const progress = rows.length > 1 ? Math.min(100, ((replay.idx + (curSub && Array.isArray(partTicks) && partTicks.length ? curSub / partTicks.length : 0)) / (rows.length - 1)) * 100) : 0;
-  const tickLabel = { ok: tickState.source === 'databento' ? 'Databento' : tickState.source === 'atas' ? 'ATAS' : 'on', pending: 'waiting for ATAS…', timeout: 'ATAS didn’t answer', none: 'not available', idle: '…' }[tickState.status] || '…';
-  const addonSays = tickState.addon ? ` Journal Sync says (${tickState.addon.ago}s ago, ${tickState.addon.symbol}): ${tickState.addon.state}.` : ' Journal Sync hasn’t reported on ticks yet — it needs version 1.5.1 or newer.';
+  const tickLabel = { ok: tickState.name || 'on', pending: `waiting for ${tickState.name || 'your platform'}…`, timeout: `${tickState.name || 'your platform'} is slow — bars meanwhile`, none: 'not available', idle: '…' }[tickState.status] || '…';
+  const addonSays = tickState.source === 'atas' ? (tickState.addon ? ` Journal Sync says (${tickState.addon.ago}s ago, ${tickState.addon.symbol}): ${tickState.addon.state}.` : ' Journal Sync hasn’t reported on ticks yet — it needs version 1.5.1 or newer.') : '';
   const tickTitle = tickState.status === 'ok' ? `Replaying tick by tick from ${tickLabel}. Click to replay bar by bar.`
-    : tickState.status === 'pending' ? `Asked ATAS for this hour’s ticks — Journal Sync on a chart of this market sends them.${addonSays}`
-      : tickState.status === 'timeout' ? `ATAS didn’t send ticks.${addonSays} Replaying bar by bar.`
-        : 'No tick data for this day. Tick replay needs Databento (Settings → Price data) or ATAS with Journal Sync 1.5 on a chart of this market. Replaying bar by bar.';
+    : tickState.status === 'pending' ? `Asked ${tickState.name || 'your platform'} for this hour’s ticks — its RoninFlow add-on sends them while the platform is open.${addonSays}`
+      : tickState.status === 'timeout' ? `${tickState.name || 'Your platform'} hasn’t sent this hour’s ticks yet — replaying bar by bar meanwhile, and still checking.${addonSays}`
+        : 'No tick data for this day. Tick replay needs Databento or Polygon (Settings → Price data), or a platform add-on that sends ticks: ATAS, NinjaTrader, Quantower, MetaTrader 5, cTrader or Sierra Chart (update the add-on). Replaying bar by bar.';
 
   const placeRef = useRef(place);
   placeRef.current = place;

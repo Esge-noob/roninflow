@@ -236,6 +236,126 @@ static void PriceData(SCStudyInterfaceRef sc, const std::string& folder, const s
 	job = PriceJob();
 }
 
+// ---------- ticks for RoninFlow's tick-by-tick replay ----------
+// The journal lists the hours a replay is waiting for in ticks-wanted.txt (same lines as price-wanted.txt). Each is read
+// from a hidden 1-trade-per-bar chart (so every bar is one trade) and dropped as [ms, price, size, side] lines in the
+// same .bars.jsonl file. <name>.tickcap tells the journal this study can send ticks.
+struct TickJob
+{
+	std::string line, symbol, feed;
+	long long from = 0, to = 0;
+	int chart = 0;
+	unsigned long long startedAt = 0, lastChangeAt = 0;
+	int lastSize = -1;
+};
+static std::map<int, TickJob> g_tickJobs;
+static std::map<std::string, unsigned long long> g_tickRecent;
+static unsigned long long g_tickcapAt = 0;
+
+static long long UnixMsUtc(const SCDateTime& gmt)
+{
+	int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0, ms = 0;
+	gmt.GetDateTimeYMDHMS_MS(y, mo, d, h, mi, s, ms);
+	return (DaysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s) * 1000LL + ms;
+}
+
+static void TickData(SCStudyInterfaceRef sc, const std::string& folder, const std::string& account)
+{
+	if (g_priceOwner != sc.ChartNumber) return; // the chart that fetches prices fetches ticks too
+	unsigned long long now = GetTickCount64();
+	if (now - g_tickcapAt > 30000) { g_tickcapAt = now; WriteFileText(folder + "\\sierrachart-" + SafeName(account) + ".tickcap", "1", false); }
+	TickJob& job = g_tickJobs[sc.ChartNumber];
+	SCDateTime& lastList = sc.GetPersistentSCDateTime(3);
+
+	if (job.chart == 0)
+	{
+		if (sc.CurrentSystemDateTime - lastList < SCDateTime::SECONDS(5)) return;
+		lastList = sc.CurrentSystemDateTime;
+		std::string text = ReadFileText(folder + "\\ticks-wanted.txt");
+		size_t pos = 0;
+		while (pos < text.size())
+		{
+			size_t eol = text.find('\n', pos);
+			std::string line = text.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+			pos = eol == std::string::npos ? text.size() : eol + 1;
+			while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+			if (line.empty()) continue;
+			auto seen = g_tickRecent.find(line);
+			if (seen != g_tickRecent.end() && now - seen->second < 120000) continue;
+			std::vector<std::string> p;
+			size_t a = 0, b;
+			while ((b = line.find('|', a)) != std::string::npos) { p.push_back(line.substr(a, b - a)); a = b + 1; }
+			p.push_back(line.substr(a));
+			if (p.size() < 4) continue;
+			long long from = _atoi64(p[2].c_str()), to = _atoi64(p[3].c_str());
+			if (to <= from) continue;
+			job = TickJob();
+			job.line = line; job.symbol = p[0]; job.from = from; job.to = to;
+			job.feed = FeedSymbol(p[1], sc.Symbol.GetChars());
+			long long nowUnix = UnixUtc(sc.AdjustDateTimeToGMT(sc.CurrentSystemDateTime));
+			int days = (int)((nowUnix - from) / 86400) + 2;
+			s_ACSOpenChartParameters op;
+			op.PriorChartNumber = 0;
+			op.ChartDataType = INTRADAY_DATA;
+			op.Symbol = SCString(job.feed.c_str());
+			op.IntradayBarPeriodType = IBPT_NUM_TRADES_PER_BAR; // one trade per bar
+			op.IntradayBarPeriodLength = 1;
+			op.DaysToLoad = days < 2 ? 2 : (days > 30 ? 30 : days);
+			op.LoadWeekendData = 1;
+			op.HideNewChart = 1;
+			job.chart = sc.OpenChartOrGetChartReference(op);
+			job.startedAt = job.lastChangeAt = now;
+			if (job.chart <= 0)
+			{
+				g_tickRecent[line] = now;
+				job = TickJob();
+			}
+			break;
+		}
+		return;
+	}
+
+	SCDateTimeArray times;
+	sc.GetChartDateTimeArray(job.chart, times);
+	int size = times.GetArraySize();
+	if (size != job.lastSize) { job.lastSize = size; job.lastChangeAt = now; }
+	bool settled = size > 0 && now - job.lastChangeAt > 5000;
+	if (!settled && now - job.startedAt < 180000) return;
+
+	g_tickRecent[job.line] = now;
+	SCGraphData data;
+	if (size > 0) sc.GetChartBaseData(job.chart, data);
+	std::vector<std::string> rows;
+	for (int i = 0; i < size; ++i)
+	{
+		long long ms = UnixMsUtc(sc.AdjustDateTimeToGMT(times[i]));
+		if (ms < job.from * 1000 || ms >= job.to * 1000) continue;
+		double bidv = data[SC_BIDVOL][i], askv = data[SC_ASKVOL][i];
+		int side = askv > bidv ? 1 : (bidv > askv ? -1 : 0); // traded at the ask = a buyer
+		char row[160];
+		snprintf(row, sizeof(row), "[%lld,%.10g,%.10g,%d]", ms, (double)data[SC_LAST][i], (double)data[SC_VOLUME][i], side);
+		rows.push_back(row);
+	}
+	int parts = (int)((rows.size() + 4999) / 5000);
+	if (parts < 1) parts = 1;
+	std::string out;
+	for (int k = 0; k < parts; ++k)
+	{
+		std::string list;
+		for (size_t i = (size_t)k * 5000; i < rows.size() && i < (size_t)(k + 1) * 5000; ++i) { if (!list.empty()) list += ","; list += rows[i]; }
+		char head[160];
+		snprintf(head, sizeof(head), ",\"from\":%lld,\"to\":%lld,\"part\":%d,\"last\":%s,\"ticks\":[", job.from, job.to, k, k == parts - 1 ? "true" : "false");
+		out += "{\"source\":\"sierrachart\",\"symbol\":\"" + JsonEscape(job.symbol.c_str()) + "\"" + head + list + "]}\n";
+	}
+	if (WriteFileText(folder + "\\sierrachart-" + SafeName(account) + ".bars.jsonl", out, true))
+	{
+		char msg[300];
+		snprintf(msg, sizeof(msg), "RoninFlow Sync: sent %d tick(s) of %s", (int)rows.size(), job.feed.c_str());
+		sc.AddMessageToLog(SCString(msg), 0);
+	}
+	job = TickJob();
+}
+
 SCSFExport scsf_TradeJournalSync(SCStudyInterfaceRef sc)
 {
 	SCInputRef InTimesAreUtc = sc.Input[0];
@@ -310,6 +430,7 @@ SCSFExport scsf_TradeJournalSync(SCStudyInterfaceRef sc)
 	}
 
 	PriceData(sc, folder, account);
+	TickData(sc, folder, account);
 
 	if (!announced)
 	{

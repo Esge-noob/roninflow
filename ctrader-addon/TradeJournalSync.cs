@@ -16,6 +16,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using cAlgo.API;
 using cAlgo.API.Internals;
@@ -79,6 +80,60 @@ namespace cAlgo.Robots
             WriteStatus();
             if ((DateTime.UtcNow - lastHeartbeat).TotalSeconds >= 30) Heartbeat();
             if (DateTime.UtcNow >= nextPrices) { nextPrices = DateTime.UtcNow.AddSeconds(60); PriceRound(); }
+            TickRound();
+        }
+
+        // ---------------------------------------------------------------- ticks (tick-by-tick replay)
+        // RoninFlow lists the hours a replay is waiting for; cTrader's ticks are quotes, sent as the bid price
+        // ([ms, bid, 0, 0]: cTrader has no traded volume or aggressor side).
+        private void TickRound()
+        {
+            try
+            {
+                string list = Get(ApiUrl("/api/candles/ticks/wanted?source=ctrader&format=lines"));
+                if (list == null) return; // journal not reachable, or an older journal
+                foreach (string raw in list.Split('\n'))
+                {
+                    string[] p = raw.Trim().Split('|');
+                    long from, to;
+                    if (p.Length < 4 || !long.TryParse(p[2], out from) || !long.TryParse(p[3], out to) || to <= from) continue;
+                    SendTicks(p[0], p[1], from, to);
+                }
+            }
+            catch (Exception e) { Print("[RoninFlow] tick data: {0}", e.Message); }
+        }
+
+        private void SendTicks(string symbol, string name, long from, long to)
+        {
+            if (!Symbols.Exists(name)) return; // another account's cBot may have it
+            var rows = new List<string>();
+            try
+            {
+                DateTime f = DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime;
+                Ticks ticks = MarketData.GetTicks(name);
+                // older hours: load further back until the hour is covered (each call loads another chunk)
+                for (int guard = 0; guard < 300 && ticks.Count > 0 && ticks[0].Time > f; guard++)
+                    if (ticks.LoadMoreHistory() <= 0) break;
+                for (int i = 0; i < ticks.Count; i++)
+                {
+                    Tick tk = ticks[i];
+                    long ms = new DateTimeOffset(DateTime.SpecifyKind(tk.Time, DateTimeKind.Utc)).ToUnixTimeMilliseconds(); // the robot runs in UTC
+                    if (ms < from * 1000 || ms >= to * 1000) continue;
+                    rows.Add("[" + ms.ToString(CultureInfo.InvariantCulture) + "," + D(tk.Bid) + ",0,0]");
+                }
+            }
+            catch (Exception e) { Print("[RoninFlow] tick data for {0}: {1} — will try again", name, e.Message); return; }
+            int parts = Math.Max(1, (rows.Count + 19999) / 20000);
+            for (int k = 0; k < parts; k++)
+            {
+                var body = new StringBuilder("{\"source\":\"ctrader\",");
+                Str(body, "symbol", symbol);
+                body.Append(",\"from\":").Append(from.ToString(CultureInfo.InvariantCulture)).Append(",\"to\":").Append(to.ToString(CultureInfo.InvariantCulture));
+                body.Append(",\"part\":").Append(k.ToString(CultureInfo.InvariantCulture)).Append(",\"last\":").Append(k == parts - 1 ? "true" : "false");
+                body.Append(",\"ticks\":[").Append(string.Join(",", rows.Skip(k * 20000).Take(20000))).Append("]}");
+                if (!Post(body.ToString(), ApiUrl("/api/candles/ticks/ingest"))) return;
+            }
+            Print("[RoninFlow] tick data: sent {0} tick(s) of {1}", rows.Count, name);
         }
 
         // ---------------------------------------------------------------- price data (1-minute bars for the diary charts)

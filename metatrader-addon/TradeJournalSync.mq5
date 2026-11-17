@@ -67,6 +67,7 @@ void OnTimer()
    Scan(TimeCurrent() - 86400);
    WriteStatus();
    if(g_ticks++ % 12 == 2) PriceRound();   // about once a minute
+   TickRound();                             // ticks for a replay, when RoninFlow asks (every 5 s)
   }
 void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest &request, const MqlTradeResult &result)
   {
@@ -197,6 +198,74 @@ void PriceRound()
       if(to <= from || RecentlySent(lines[i])) continue;
       if(SendBars(p[0], p[1], from, to)) { RememberSent(lines[i]); done++; }
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Ticks for RoninFlow's tick-by-tick replay: it lists the hours a   |
+//| replay is waiting for in ticks-wanted.txt (same lines). Trades    |
+//| where the broker has them (futures, stocks), else quotes (bid).   |
+//| <name>.tickcap tells RoninFlow this EA can send ticks.            |
+//+------------------------------------------------------------------+
+void TickRound()
+  {
+   int c = FileOpen("TradeJournal\\mt5-" + g_login + ".tickcap", FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON);
+   if(c != INVALID_HANDLE) { FileWriteString(c, IntegerToString((long)TimeGMT())); FileClose(c); }
+   int h = FileOpen("TradeJournal\\ticks-wanted.txt", FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE) return;
+   string lines[];
+   while(!FileIsEnding(h))
+     {
+      string l = FileReadString(h);
+      StringTrimLeft(l); StringTrimRight(l);
+      if(StringLen(l) == 0) continue;
+      int n = ArraySize(lines); ArrayResize(lines, n + 1); lines[n] = l;
+     }
+   FileClose(h);
+   for(int i = 0; i < ArraySize(lines); i++)
+     {
+      string p[];
+      if(StringSplit(lines[i], '|', p) < 4) continue;
+      long from = StringToInteger(p[2]), to = StringToInteger(p[3]);
+      if(to <= from || RecentlySent("ticks|" + lines[i])) continue;
+      if(SendTicks(p[0], p[1], from, to)) RememberSent("ticks|" + lines[i]);
+     }
+  }
+
+bool SendTicks(string symbol, string name, long from, long to)
+  {
+   if(!SymbolSelect(name, true)) return false;
+   long off = (long)(TimeGMT() - TimeTradeServer());     // server time → UTC
+   off = (long)MathRound(off / 900.0) * 900;
+   MqlTick ticks[];
+   int n = CopyTicksRange(name, ticks, COPY_TICKS_TRADE, (ulong)(from - off) * 1000, (ulong)(to - off) * 1000);
+   bool trades = n > 0;
+   if(!trades) n = CopyTicksRange(name, ticks, COPY_TICKS_INFO, (ulong)(from - off) * 1000, (ulong)(to - off) * 1000);
+   if(n < 0) return false;                               // still downloading: next time
+   int digits = (int)SymbolInfoInteger(name, SYMBOL_DIGITS);
+   int parts = (n + 4999) / 5000; if(parts < 1) parts = 1;
+   int fh = FileOpen("TradeJournal\\mt5-" + g_login + ".bars.jsonl", FILE_READ | FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ);
+   if(fh == INVALID_HANDLE) return false;
+   FileSeek(fh, 0, SEEK_END);
+   for(int k = 0; k < parts; k++)
+     {
+      string rows = "";
+      int count = 0;
+      for(int i = k * 5000; i < n && i < (k + 1) * 5000; i++)
+        {
+         long ms = (long)ticks[i].time_msc + off * 1000;
+         double px = trades ? ticks[i].last : ticks[i].bid;
+         int side = (ticks[i].flags & TICK_FLAG_BUY) != 0 ? 1 : ((ticks[i].flags & TICK_FLAG_SELL) != 0 ? -1 : 0);
+         if(!trades) side = 0;
+         if(count > 0) rows += ",";
+         rows += "[" + IntegerToString(ms) + "," + DoubleToString(px, digits) + "," + IntegerToString(trades ? (long)ticks[i].volume : 0) + "," + IntegerToString(side) + "]";
+         count++;
+        }
+      string line = "{\"source\":\"metatrader\",\"symbol\":\"" + Esc(symbol) + "\",\"from\":" + IntegerToString(from) + ",\"to\":" + IntegerToString(to) + ",\"part\":" + IntegerToString(k) + ",\"last\":" + (k == parts - 1 ? "true" : "false") + ",\"ticks\":[" + rows + "]}";
+      FileWriteString(fh, line + "\n");
+     }
+   FileClose(fh);
+   PrintFormat("[RoninFlow] tick data: sent %d tick(s) of %s", n, name);
+   return true;
   }
 
 // false = not this terminal's symbol, or MetaTrader is still downloading the history (asked again next minute)

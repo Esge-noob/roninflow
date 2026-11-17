@@ -138,6 +138,24 @@ async function polygon(key, ticker, from, to) {
   return (j.results || []).map((b) => [Math.floor(b.t / 1000), b.o, b.h, b.l, b.c, b.v || 0]);
 }
 
+// ---------- Polygon trades (stocks, crypto: tick by tick) ----------
+async function polygonTrades(key, ticker, from, to) {
+  const out = [];
+  let url = `https://api.polygon.io/v3/trades/${encodeURIComponent(ticker)}?timestamp.gte=${from}000000000&timestamp.lt=${to}000000000&order=asc&sort=timestamp&limit=50000&apiKey=${encodeURIComponent(key)}`;
+  for (let page = 0; url && page < 40; page++) {
+    const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    const j = await r.json().catch(() => null);
+    if (!r.ok || !j) throw new Error(`Polygon: ${j?.error || j?.message || r.status}`);
+    for (const t of j.results || []) {
+      const ns = t.sip_timestamp ?? t.participant_timestamp;
+      if (ns == null || !Number.isFinite(Number(t.price))) continue;
+      out.push([Math.floor(Number(BigInt(ns) / 1000000n)), Number(t.price), Number(t.size) || 0, 0]);
+    }
+    url = j.next_url ? `${j.next_url}${j.next_url.includes('?') ? '&' : '?'}apiKey=${encodeURIComponent(key)}` : null;
+  }
+  return out;
+}
+
 const isFutures = (symbol) => !/(-PERP|-SPOT|-SWAP|USDT|USDC|\/|:)/i.test(String(symbol)) && (ROOTS.includes(rootOf(symbol)) || /^[A-Z0-9]{1,4}[FGHJKMNQUVXZ]\d{1,2}$/.test(String(symbol).toUpperCase()));
 
 // Which contract month is the front (most traded) one on a date, by the exchange's usual roll:
@@ -677,11 +695,18 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       if (!fs.existsSync(dir)) continue; // that platform's add-on isn't installed on this computer
       const text = wantedLines(wanted(source)).replace(/\n/g, '\r\n'); // Windows line ends: MetaTrader reads lines
       const file = path.join(dir, 'price-wanted.txt');
-      if (lastWritten.get(file) === text && fs.existsSync(file)) continue;
-      try { fs.writeFileSync(file, text); lastWritten.set(file, text); } catch (e) { log(`[candles] could not write ${file}: ${e.message}`); }
+      if (!(lastWritten.get(file) === text && fs.existsSync(file))) { try { fs.writeFileSync(file, text); lastWritten.set(file, text); } catch (e) { log(`[candles] could not write ${file}: ${e.message}`); } }
+      // ticks for a replay (only an add-on that keeps a .tickcap file reads this)
+      let capable = false;
+      try { capable = fs.readdirSync(dir).some((f) => f.endsWith('.tickcap')); } catch { /* */ }
+      if (!capable) continue;
+      const tfile = path.join(dir, 'ticks-wanted.txt');
+      const ttext = wantedLines(tickWanted(source)).replace(/\n/g, '\r\n');
+      if (lastWritten.get(tfile) === ttext && fs.existsSync(tfile)) continue;
+      try { fs.writeFileSync(tfile, ttext); lastWritten.set(tfile, ttext); } catch (e) { log(`[candles] could not write ${tfile}: ${e.message}`); }
     }
   }
-  if (!dropDirs) { setTimeout(writeWantedFiles, 15000).unref?.(); setInterval(writeWantedFiles, 60000).unref?.(); }
+  if (!dropDirs) { setTimeout(writeWantedFiles, 15000).unref?.(); setInterval(writeWantedFiles, 60000).unref?.(); setInterval(() => { if (Object.keys(tickWant).length) writeWantedFiles(); }, 10000).unref?.(); }
   /** One add-on bars message (web request or a line of a .bars.jsonl file). */
   function ingestBars(body) {
     const groups = Array.isArray(body?.series) ? body.series : [body];
@@ -914,6 +939,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     return n;
   }
   const tickInflight = new Map();
+  let tickSeq = 0; // each replay request gets the next number; the newest is served first
   /**
    * Ticks for a replay window (at most 3 hours). Hours nobody has yet: fetched from Databento when there's a key,
    * else asked of the ATAS indicator (pending). Returns { ticks, hours: { have, pending, none }, sources }.
@@ -923,29 +949,39 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const now = Math.floor(Date.now() / 1000);
     to = Math.min(to, from + 3 * HOUR, now);
     const hours = hoursIn(from, to);
-    const dbKey = !noPaid && cfg.useDatabento !== false ? keyOf('databento') : null;
-    const atas = cfg.addon !== false && addonSources().some((x) => x.id === 'atas') && (!cfg.addonSource || cfg.addonSource === 'any' || cfg.addonSource === 'atas');
+    const seq = ++tickSeq;
+    const dbKey = !noPaid && cfg.useDatabento !== false && isFutures(symbol) ? keyOf('databento') : null;
+    const pgKey = !noPaid && cfg.usePolygon !== false && !isFutures(symbol) && polygonTicker(symbol) ? keyOf('polygon') : null;
+    const pick = cfg.addonSource && cfg.addonSource !== 'any' ? cfg.addonSource : null;
+    const atas = cfg.addon !== false && addonSources().some((x) => x.id === 'atas') && (!pick || pick === 'atas');
+    // other add-ons that can send ticks: they ask for the list (web) or keep a .tickcap file fresh (MetaTrader, Sierra Chart)
+    const tickAddons = cfg.addon !== false ? tickCapable().filter((src) => (!pick || pick === src) && contractOn(src, root, new Date(from * 1000).toISOString().slice(0, 10))) : [];
+    const atas2 = atas || tickAddons.length > 0;
     const have = [], pending = [], none = [];
     const out = [];
     const sources = new Set();
     for (const h of hours) {
       let cov = coveredBy(root, h);
-      if (!cov && dbKey && isFutures(symbol) && h + HOUR <= now + HOUR) {
+      if (!cov && (dbKey || pgKey)) {
         const key = `${root}|${h}`;
-        if (!tickInflight.has(key)) tickInflight.set(key, databentoTrades(dbKey, root, h, Math.min(h + HOUR, now)).then((ticks) => storeTicks({ source: 'databento', symbol: root, from: h, to: h + HOUR, ticks })).catch((e) => { log('[ticks]', e.message); }).finally(() => tickInflight.delete(key)));
+        const fetchIt = dbKey ? databentoTrades(dbKey, root, h, Math.min(h + HOUR, now)).then((ticks) => storeTicks({ source: 'databento', symbol: root, from: h, to: h + HOUR, ticks }))
+          : polygonTrades(pgKey, polygonTicker(symbol), h, Math.min(h + HOUR, now)).then((ticks) => storeTicks({ source: 'polygon', symbol: root, from: h, to: h + HOUR, ticks }));
+        if (!tickInflight.has(key)) tickInflight.set(key, fetchIt.catch((e) => { log('[ticks]', e.message); }).finally(() => tickInflight.delete(key)));
         await tickInflight.get(key);
         cov = coveredBy(root, h);
       }
       if (cov) {
         have.push(h); sources.add(cov.src);
         for (const t of readCache(tickFile(cov.src, cov.root, h)) || []) if (t[0] >= from * 1000 && t[0] < to * 1000) out.push(t);
-      } else if (atas) {
+      } else if (atas2) {
         pending.push(h);
         const k = `${root}|${h}`;
-        if (!tickWant[k]) tickWant[k] = { root, h, at: Date.now(), asked: 0 };
+        if (!tickWant[k]) { tickWant[k] = { root, h, at: Date.now(), asked: {} }; if (!dropDirs) setTimeout(writeWantedFiles, 300).unref?.(); }
+        tickWant[k].seen = Date.now(); // a replay is waiting for it right now (it asks every few seconds)
+        tickWant[k].seq = seq;
       } else none.push(h);
     }
-    return { ticks: out, hours: { have, pending, none }, sources: [...sources], canFetch: !!(dbKey || atas), addon: atas && addonTick ? { ...addonTick, ago: Math.round((Date.now() - addonTick.at) / 1000) } : null };
+    return { ticks: out, hours: { have, pending, none }, sources: [...sources], canFetch: !!(dbKey || pgKey || atas2), from: atas ? 'atas' : tickAddons[0] || null, addon: atas && addonTick ? { ...addonTick, ago: Math.round((Date.now() - addonTick.at) / 1000) } : null };
   }
   /** The ATAS indicator asks which hour of ticks to send for its chart's market (oldest request first, one at a time). */
   let addonTick = null; // what the ATAS indicator last said about ticks (shown on the replay's Ticks button)
@@ -954,14 +990,41 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     if (state) addonTick = { state: String(state).slice(0, 200), symbol: String(symbol).slice(0, 40), at: Date.now() };
     if (busy) return { want: false }; // still working on the last hour
     const root = rootOf(symbol);
-    const mine = Object.values(tickWant).filter((w) => (w.root === root || TWIN[w.root] === root) && Date.now() - w.at < 30 * 60e3);
-    for (const w of Object.values(tickWant)) if (Date.now() - w.at >= 30 * 60e3) delete tickWant[`${w.root}|${w.h}`]; // nobody's waiting any more
-    const next = mine.filter((w) => Date.now() - w.asked > 120e3).sort((a, b) => a.h - b.h)[0];
+    const next = waitingTicks().filter((w) => w.root === root || TWIN[w.root] === root).find((w) => Date.now() - (w.asked.atas || 0) > 120e3);
     if (!next) return { want: false };
-    next.asked = Date.now();
+    next.asked.atas = Date.now();
     return { want: true, from: next.h, to: next.h + HOUR };
   }
-  handler_ticks.store = storeTicks; handler_ticks.get = ticksFor; handler_ticks.ask = tickAsk;
+  /** Hours a replay is waiting for right now (asked in the last 30 s) — the newest request first, so the day you're on wins. */
+  function waitingTicks() {
+    for (const [k, w] of Object.entries(tickWant)) if (Date.now() - (w.seen || w.at) > 30e3) delete tickWant[k]; // nobody's waiting any more
+    return Object.values(tickWant).sort((a, b) => (b.seq || 0) - (a.seq || 0) || a.h - b.h);
+  }
+  const tickPolled = {}; // source → when its add-on last asked for the tick list
+  /** Add-ons (other than ATAS) that can send ticks right now. */
+  function tickCapable() {
+    const out = Object.entries(tickPolled).filter(([, at]) => Date.now() - at < 5 * 60e3).map(([src]) => src);
+    for (const [dir, src] of wantedFiles()) { // MetaTrader / Sierra Chart keep <name>.tickcap fresh while they can
+      try { if (fs.readdirSync(dir).some((f) => f.endsWith('.tickcap') && Date.now() - fs.statSync(path.join(dir, f)).mtimeMs < 5 * 60e3)) out.push(src); } catch { /* not installed */ }
+    }
+    return [...new Set(out)];
+  }
+  /** The tick list for one add-on: "symbol|contract|from|to" lines, each hour handed out once every two minutes. */
+  function tickWanted(source) {
+    const src = srcId(source);
+    tickPolled[src] = Date.now();
+    const out = [];
+    for (const w of waitingTicks()) {
+      if (Date.now() - (w.asked[src] || 0) < 120e3) continue;
+      const contract = contractOn(src, w.root, new Date(w.h * 1000).toISOString().slice(0, 10));
+      if (!contract) continue;
+      out.push({ symbol: w.root, contract, from: w.h, to: w.h + HOUR });
+      w.asked[src] = Date.now();
+      if (out.length >= 2) break;
+    }
+    return out;
+  }
+  handler_ticks.store = storeTicks; handler_ticks.get = ticksFor; handler_ticks.ask = tickAsk; handler_ticks.wanted = tickWanted;
 
   const send = (res, code, obj) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(obj)); };
 
@@ -985,6 +1048,12 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         if (tokenOk && !tokenOk(req)) return send(res, 401, { error: 'Missing or wrong token (Connections → Webhook / API).' });
         const body = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; if (t.length > 60e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
         return send(res, 200, { ok: true, ticks: storeTicks(body) });
+      }
+      if (u.pathname === '/api/candles/ticks/wanted') {
+        if (tokenOk && !tokenOk(req)) return send(res, 401, { error: 'Missing or wrong token (Connections → Webhook / API).' });
+        const items = tickWanted(u.searchParams.get('source') || '');
+        if (u.searchParams.get('format') === 'lines') { res.statusCode = 200; res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); return res.end(wantedLines(items)); }
+        return send(res, 200, { items });
       }
       if (u.pathname === '/api/candles/ticks/want') return send(res, 200, tickAsk(u.searchParams.get('source') || 'atas', u.searchParams.get('symbol') || '', { state: u.searchParams.get('state'), busy: u.searchParams.get('busy') === '1' }));
       if (u.pathname === '/api/candles/ticks') {

@@ -118,7 +118,7 @@ const macroApi = createMacroHandler(DATA_DIR, { log }); // economic calendar + C
 const readState = () => { const j = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'journal.json'), 'utf8')); return j.state || j; };
 const connectApi = createConnectHandler(DATA_DIR, { log, vault });
 const candleApi = createCandleHandler(DATA_DIR, { readTrades, readConnTrades: () => connectApi.recentTrades(), log, vault, tokenOk: (req) => connectApi.tokenOk(req, isLocalPc(req)) });
-connectApi.barsSink = (body) => candleApi.ingestBars(body);
+connectApi.barsSink = (body) => (Array.isArray(body?.ticks) ? candleApi.ticks.store(body) : candleApi.ingestBars(body)); // a .bars.jsonl line can carry ticks too
 const shareApi = createShareHandler({ dataDir: DATA_DIR, distDir: DIST, port: PORT, readState, candles: candleApi });
 const netApi = createNetHandler({ config, port: PORT, mode: 'server', onLanChange: (on) => setImmediate(() => bind(on)) });
 
@@ -187,7 +187,7 @@ function handle(req, res) {
 
     // Platform add-ons and webhooks push trades with a token (checked inside), so they skip the PIN screen.
     if (req.url.startsWith('/api/connect/ingest')) return connectApi(req, res, { loopback });
-    if (req.url.startsWith('/api/candles/ingest') || req.url.startsWith('/api/candles/wanted') || req.url.startsWith('/api/candles/history/chart') || req.url.startsWith('/api/candles/ticks/ingest') || req.url.startsWith('/api/candles/ticks/want')) return candleApi(req, res);
+    if (req.url.startsWith('/api/candles/ingest') || req.url.startsWith('/api/candles/wanted') || req.url.startsWith('/api/candles/history/chart') || req.url.startsWith('/api/candles/ticks/ingest') || req.url.startsWith('/api/candles/ticks/want')) return candleApi(req, res); // (…/ticks/want and …/ticks/wanted)
 
     // App icon + manifest load before signing in (browsers fetch the manifest without cookies when installing).
     if (!loopback && req.method === 'GET' && /^\/(manifest\.webmanifest|favicon\.svg|sw\.js|offline\.html|icons\/[\w.-]+\.png)$/.test(req.url.split('?')[0])) return serveStatic(req, res);

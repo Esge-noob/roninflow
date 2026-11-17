@@ -342,3 +342,30 @@ test('ticks: a replay asks ATAS for an hour, the indicator sends it (in parts), 
   const n = await other.h.ticks.get('MES', H, H + 3600);
   assert.deepEqual([n.hours.none, n.canFetch], [[H], false]);
 });
+
+test('ticks for every add-on: the newest replay request first; NinjaTrader gets a list; MetaTrader a file once it can', async () => {
+  const { dir, drop, h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }, { symbol: 'MNQ', contract: 'MNQZ26', source: 'metatrader', entry: '2026-11-13T06:40:00' }] });
+  const H1 = Date.parse('2026-10-16T14:00:00Z') / 1000, H2 = Date.parse('2026-11-12T14:00:00Z') / 1000;
+  // nobody can send ticks yet
+  assert.deepEqual((await h.ticks.get('MNQ', H1, H1 + 3600)).hours.none, [H1]);
+  // the NinjaTrader add-on asks for the tick list → it can; a replay on Oct 16, then the date changes to Nov 12
+  assert.deepEqual(h.ticks.wanted('ninjatrader'), []);
+  assert.deepEqual((await h.ticks.get('MNQ', H1, H1 + 3600)).hours.pending, [H1]);
+  await new Promise((r) => setTimeout(r, 20));
+  const later = await h.ticks.get('MNQ', H2, H2 + 3600);
+  assert.equal(later.from, 'ninjatrader');
+  const items = h.ticks.wanted('ninjatrader');
+  assert.deepEqual(items.map((i) => [i.contract, i.from]), [['MNQ 12-26', H2], ['MNQ 12-26', H1]], 'the day you’re on first');
+  assert.deepEqual(h.ticks.wanted('ninjatrader'), [], 'handed out once every two minutes');
+  // its answer arrives like ATAS's
+  h.ticks.store({ source: 'ninjatrader', symbol: 'MNQ', from: H2, to: H2 + 3600, ticks: [[(H2 + 5) * 1000, 21000, 1, 0]] });
+  assert.equal((await h.ticks.get('MNQ', H2, H2 + 3600)).ticks.length, 1);
+  // MetaTrader: a ticks-wanted.txt only once its EA keeps a .tickcap file
+  h.writeWantedFiles();
+  assert.ok(!fs.existsSync(path.join(drop, 'ticks-wanted.txt')));
+  fs.writeFileSync(path.join(drop, 'mt5-1.tickcap'), String(Date.now()));
+  await h.ticks.get('MNQ', H1, H1 + 3600); // still waiting for Oct 16
+  h.writeWantedFiles();
+  assert.match(fs.readFileSync(path.join(drop, 'ticks-wanted.txt'), 'utf8'), /^MNQ\|MNQZ26\|\d+\|\d+/);
+  void dir;
+});

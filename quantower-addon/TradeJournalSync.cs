@@ -43,6 +43,7 @@ namespace TradeJournal
         private DateTime lastHeartbeat = DateTime.MinValue;
         private DateTime nextPrices = DateTime.UtcNow.AddSeconds(20);
         private int priceBusy;
+        private int tickBusy;   // ticks for RoninFlow's tick-by-tick replay, when it asks (every tick of this loop, ~5 s)
         private bool priceAnnounced;
 
         public TradeJournalSync() : base()
@@ -142,6 +143,8 @@ namespace TradeJournal
                     if (Interlocked.Exchange(ref this.priceBusy, 1) == 0)
                         Task.Run(() => { try { this.PriceRound(); } finally { Interlocked.Exchange(ref this.priceBusy, 0); } });
                 }
+                if (Interlocked.Exchange(ref this.tickBusy, 1) == 0)
+                    Task.Run(() => { try { this.TickRound(); } finally { Interlocked.Exchange(ref this.tickBusy, 0); } });
             }
             finally { Interlocked.Exchange(ref this.busy, 0); }
         }
@@ -203,6 +206,66 @@ namespace TradeJournal
                 this.Log("[RoninFlow] price data: sent " + rows.Count + " one-minute bar(s) of " + contract);
             }
             return true;
+        }
+
+        // ---------------------------------------------------------------- ticks (tick-by-tick replay)
+        // RoninFlow lists the hours a replay is waiting for; each is loaded as trade ticks (HistoryType.Last) and sent
+        // back as [ms, price, size, side].
+        private void TickRound()
+        {
+            try
+            {
+                string list = this.Get(this.ApiUrl("/api/candles/ticks/wanted?source=quantower&format=lines"));
+                if (list == null) return; // journal not reachable, or an older journal
+                foreach (string raw in list.Split('\n'))
+                {
+                    string[] p = raw.Trim().Split('|');
+                    long from, to;
+                    if (p.Length < 4 || !long.TryParse(p[2], out from) || !long.TryParse(p[3], out to) || to <= from) continue;
+                    this.SendTicks(p[0], p[1], from, to);
+                }
+            }
+            catch (Exception e) { this.Log("[RoninFlow] tick data: " + e.Message, StrategyLoggingLevel.Error); }
+        }
+
+        private void SendTicks(string symbol, string contract, long from, long to)
+        {
+            global::TradingPlatform.BusinessLayer.Symbol sym = null;
+            try { sym = QCore.Symbols.FirstOrDefault(s => s != null && (s.Name == contract || s.Id == contract)); } catch { }
+            if (sym == null) return; // not loaded right now — RoninFlow asks again
+            var rows = new List<string>();
+            HistoricalData hd = null;
+            try
+            {
+                DateTime f = DateTimeOffset.FromUnixTimeSeconds(from).UtcDateTime, t = DateTimeOffset.FromUnixTimeSeconds(to).UtcDateTime;
+                hd = sym.GetTickHistory(HistoryType.Last, f, t);
+                if (hd != null)
+                {
+                    for (int i = 0; i < hd.Count; i++)
+                    {
+                        var it = hd[i, SeekOriginHistory.Begin] as HistoryItemLast;
+                        if (it == null) continue;
+                        DateTime left = it.TimeLeft.Kind == DateTimeKind.Local ? it.TimeLeft.ToUniversalTime() : it.TimeLeft;
+                        long ms = new DateTimeOffset(DateTime.SpecifyKind(left, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+                        if (ms < from * 1000 || ms >= to * 1000) continue;
+                        string ag = it.AggressorFlag.ToString();
+                        int side = ag.IndexOf("Buy", StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : ag.IndexOf("Sell", StringComparison.OrdinalIgnoreCase) >= 0 ? -1 : 0;
+                        rows.Add("[" + ms.ToString(CultureInfo.InvariantCulture) + "," + D(it.Price) + "," + D(it.Volume) + "," + side.ToString(CultureInfo.InvariantCulture) + "]");
+                    }
+                }
+            }
+            catch (Exception e) { this.Log("[RoninFlow] tick data for " + contract + ": " + e.Message + " — will try again", StrategyLoggingLevel.Error); return; }
+            finally { var d = hd as IDisposable; if (d != null) try { d.Dispose(); } catch { } }
+            int parts = Math.Max(1, (rows.Count + 19999) / 20000);
+            for (int k = 0; k < parts; k++)
+            {
+                var body = new StringBuilder("{\"source\":\"quantower\",");
+                Str(body, "symbol", symbol);
+                body.Append(",\"from\":").Append(from).Append(",\"to\":").Append(to).Append(",\"part\":").Append(k).Append(",\"last\":").Append(k == parts - 1 ? "true" : "false");
+                body.Append(",\"ticks\":[").Append(string.Join(",", rows.Skip(k * 20000).Take(20000))).Append("]}");
+                if (!this.Post(body.ToString(), this.ApiUrl("/api/candles/ticks/ingest"))) return;
+            }
+            this.Log("[RoninFlow] tick data: sent " + rows.Count + " tick(s) of " + contract);
         }
 
         // http://127.0.0.1:5173/api/connect/ingest → http://127.0.0.1:5173 + path
