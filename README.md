@@ -53,10 +53,12 @@ reviews and screenshots stay on your own machine.
   prop-firm account rules (profit target, static / intraday / EOD trailing drawdown) and payouts / ROI.
 - **Share view-only:** a live link or an offline snapshot file of your journal or one page — execution charts included —
   with account numbers hidden and optional hidden dollar amounts. **Sync trade reviews** across copy-traded accounts.
-- **Macro:** an economic calendar (list, week and month views, in your time zone, with forecasts and actuals) and the
-  CFTC **COT report** — who's long, who's short and who's crowded across index, rates, FX, metals, energy and crypto futures.
+- **Macro:** an economic calendar (list, week and month views, in your time zone, with forecasts and actuals), the
+  CFTC **COT report** — who's long, who's short and who's crowded across index, rates, FX, metals, energy and crypto futures —
+  and **GEX** for SPX, NDX, RUT and their ETFs: call wall, put wall, gamma flip, GEX by strike, vanna and charm, every level
+  converted to ES / NQ / RTY, with a *GEX levels* indicator for your charts (free Cboe data, or real time with Polygon or Tradier).
 - **Private by design:** password protection, encrypted API keys, daily backups — nothing leaves your machine unless you
-  connect a service yourself. (The Macro pages download public calendar and COT data when you open them; they send nothing about you.)
+  connect a service yourself. (The Macro pages download public calendar, COT and options data; they send nothing about you.)
 - Windows, macOS, Linux and Docker; 16 languages, themes, works on your phone, one-click updates.
 
 ## Screenshots
@@ -75,8 +77,8 @@ reviews and screenshots stay on your own machine.
 | **Daily diary** — today's risk tier, edge blockers, session cards | **Reviews** — weekly to yearly, conditions and strategies |
 | ![Strategy performance cards](docs/screenshots/strategy.png) | ![Performance by market condition](docs/screenshots/market-conditions.png) |
 | **Strategies** — P&L curve and stats per strategy | **Market conditions** — how you trade in each one |
-| ![Prop-firm accounts with drawdown and ROI](docs/screenshots/accounts.png) | |
-| **Accounts** — prop-firm rules, drawdown, costs & payouts | |
+| ![Prop-firm accounts with drawdown and ROI](docs/screenshots/accounts.png) | ![GEX: gamma exposure by strike with call wall, put wall and flip](docs/screenshots/macro-gex.png) |
+| **Accounts** — prop-firm rules, drawdown, costs & payouts | **GEX** — dealer gamma levels, in your futures' prices |
 
 <p align="center"><img src="docs/screenshots/mobile.png" width="300" alt="RoninFlow on a phone"></p>
 
@@ -124,6 +126,7 @@ so installed copies can check for updates.
 | `#/backtest` | **Backtesting.** *Replay*: sessions you trade day by day in the full-screen chart (order panel, drag-to-place limit / stop orders, draggable order / stop / target tags, tick-by-tick when a source has ticks, any date, restart from a bar) with the session's trades, stats and a comparison across sessions. *What-if*: your real trades re-run with daily and per-trade rules, time and weekday windows and skipped strategies / symbols / tags. *Automated* (`#/backtest/auto`): rule-builder or code strategies over your platform's downloaded 1-minute history — results, TradingView-style report, trades (MAE / MFE, CSV), Optimize (sweep ranked by robustness), Walk-forward, out-of-sample lock, Monte Carlo, slippage stress, random baseline and luck test. |
 | `#/macro/calendar` | **Economic Calendar**: List (today / this week / next week), Week and Month views in your time zone, impact and currency filters, search, a countdown to the next release and the next high-impact event, beat / miss colouring, and earlier releases of each event. Data: ForexFactory's public weekly feed (this week and next; every week fetched is kept, so history builds up; checked every 30 minutes). Its feed has no actual figures, so actuals — and the weeks ForexFactory hasn't published — come from TradingView's public calendar feed, checked every few minutes around releases (unofficial; switch it off at the bottom of the page). Official US release dates (Fed, BLS) are the last fallback. Market and bank holidays for the US, UK, eurozone, Japan, Canada, Australia, New Zealand and Switzerland are worked out from each country's rules (`holidays.js`), so they show months ahead, marked *markets closed*, *early close* or *banks closed*. |
 | `#/macro/cot` | **COT Report**: about 30 futures markets from the CFTC's weekly Commitments of Traders (Legacy, futures only, ~3 years): large speculators' net position and weekly change, % long, COT index over 6M / 1Y / 3Y with *crowded long / short* flags, commercials, open interest and a trend line. Click a market for its chart and recent weeks; **Add market** searches every market in the report. Updates after each Friday release. |
+| `#/macro/gex` | **GEX**: dealer gamma exposure for SPX, NDX, RUT, SPY, QQQ, IWM (or any optionable ticker) and the expirations you pick (nearest by default): price, gamma zone (+γ mean-reverting / −γ trending), total GEX per 1% move, call wall, put wall and gamma flip; GEX by strike (calls up, puts down, net cumulative and total-GEX-by-price lines; scroll to zoom, drag to pan); vanna and charm for 0–45 and 46–180 days; a plain-English summary (your Trading Coach's AI, or a built-in one). Every level is also shown in ES / NQ / RTY prices, using your platform's price at the time of the data (or a price you type). Data: Cboe's free delayed quotes (~15 minutes, no key), or real time from Polygon (your key, options plan) or Tradier (a free brokerage account's token) — set under the gear icon. During US market hours the nearest expiration's levels of SPX and NDX are saved every 15 minutes (`data/gex/levels/`), and the **GEX levels** indicator in the full-screen chart draws them on ES / NQ / RTY charts — replays only show the levels known at the replay's time. Open interest updates once a day, so intraday levels use the morning's positions. |
 | `#/accounts` | Account cards with equity charts, status menu, add / edit / delete, detail modal with profit-target / drawdown / daily-limit progress. |
 
 Global: account switcher, notifications drawer, privacy mode (eye icon blurs all $ values), themes, language,

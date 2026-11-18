@@ -20,6 +20,7 @@ import Payouts from './views/Payouts';
 import Connections from './views/Connections';
 import EconCalendar from './views/EconCalendar';
 import Cot from './views/Cot';
+import Gex from './views/Gex';
 import Backtest from './views/Backtest';
 
 function Router() {
@@ -72,8 +73,8 @@ function Router() {
       view = <Payouts />;
       break;
     case 'macro':
-      crumbs = [{ label: 'Macro', href: '#/macro/calendar' }, { label: sub === 'cot' ? 'COT Report' : 'Economic Calendar' }];
-      view = sub === 'cot' ? <Cot /> : <EconCalendar />;
+      crumbs = [{ label: 'Macro', href: '#/macro/calendar' }, { label: sub === 'cot' ? 'COT Report' : sub === 'gex' ? 'GEX' : 'Economic Calendar' }];
+      view = sub === 'cot' ? <Cot /> : sub === 'gex' ? <Gex /> : <EconCalendar />;
       break;
     case 'connections':
       crumbs = [{ label: 'Connections' }];

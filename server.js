@@ -24,6 +24,7 @@ import { createConnectHandler } from './connect.js';
 import { createVault } from './secrets.js';
 import { createSystemHandler } from './system.js';
 import { createMacroHandler } from './macro.js';
+import { createGexHandler, futuresFromCandles } from './gex.js';
 import { createShareHandler, isShareAsset } from './share.js';
 import { createDataHandler, createNetHandler, createConfig, isLocalPc, cookieToken, lanUrls, loginPage } from './local-api.js';
 
@@ -118,6 +119,8 @@ const macroApi = createMacroHandler(DATA_DIR, { log }); // economic calendar + C
 const readState = () => { const j = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'journal.json'), 'utf8')); return j.state || j; };
 const connectApi = createConnectHandler(DATA_DIR, { log, vault });
 const candleApi = createCandleHandler(DATA_DIR, { readTrades, readConnTrades: () => connectApi.recentTrades(), log, vault, tokenOk: (req) => connectApi.tokenOk(req, isLocalPc(req)) });
+const gexApi = createGexHandler(DATA_DIR, { log, vault, futuresAt: futuresFromCandles(candleApi) }); // Macro → GEX
+gexApi.start();
 connectApi.barsSink = (body) => (Array.isArray(body?.ticks) ? candleApi.ticks.store(body) : candleApi.ingestBars(body)); // a .bars.jsonl line can carry ticks too
 const shareApi = createShareHandler({ dataDir: DATA_DIR, distDir: DIST, port: PORT, readState, candles: candleApi });
 const netApi = createNetHandler({ config, port: PORT, mode: 'server', onLanChange: (on) => setImmediate(() => bind(on)) });
@@ -221,6 +224,7 @@ function handle(req, res) {
     if (req.url.startsWith('/api/candles')) return candleApi(req, res);
     if (req.url.startsWith('/api/connect')) return connectApi(req, res, { trusted: true, loopback });
     if (req.url.startsWith('/api/system')) return isReplica ? sendJson(res, 403, { error: 'forbidden' }) : systemApi(req, res);
+    if (req.url.startsWith('/api/macro/gex')) return gexApi(req, res);
     if (req.url.startsWith('/api/macro')) return macroApi(req, res);
     if (req.url.startsWith('/api/shares')) return isReplica ? sendJson(res, 403, { error: 'forbidden' }) : shareApi.api(req, res);
     if (req.url.startsWith('/api/vault')) return isReplica ? sendJson(res, 403, { error: 'forbidden' }) : vaultApi(req, res);

@@ -43,6 +43,26 @@ export function installDemoFetch() {
       if (url.startsWith('/api/candles/history/bars')) return import('./demoCandles').then(({ demoHistory }) => reply(200, demoHistory(q.get('symbol'), q.get('from') < '2025-01-01' ? '2025-01-01' : q.get('from'), q.get('to') > last ? last : q.get('to'))));
       return reply(200, { job: { status: 'done', reason: 'demo', oldest: '2025-01-06', done: 98, bars: 0 }, coverage: { days: 480, first: '2025-01-01', last }, contract: { source: 'demo', c: q.get('symbol') } });
     }
+    if (url.startsWith('/api/macro/gex/levels')) { // sample levels around each demo day's prices, a point every half hour of US hours
+      const q = new URL(url, 'http://demo').searchParams;
+      let trades = [];
+      try { trades = JSON.parse(localStorage.getItem('roninflow-demo-v1') || '{}').trades || []; } catch { /* nothing saved yet */ }
+      return import('./demoCandles').then(({ demoCandles }) => {
+        const fut = q.get('fut'), date = q.get('date');
+        const bars = demoCandles(trades, fut, date) || [];
+        const start = Date.parse(`${date}T14:30:00Z`), tickOf = { ES: 0.25, MES: 0.25, NQ: 0.25, MNQ: 0.25, RTY: 0.1, M2K: 0.1 }[fut];
+        if (!bars.length || !tickOf) return reply(200, { fut, date, levels: [] });
+        const at = (ms) => { const b = bars.filter((x) => x[0] * 1000 <= ms).pop() || bars[0]; return b[4]; };
+        const open = at(start), step = fut.endsWith('Q') ? 50 : 10;
+        const r = (v) => Math.round(v / step) * step;
+        const levels = [];
+        for (let i = 0; i < 14; i++) {
+          const t = start + i * 30 * 60e3, p = at(t), drift = (p - open) * 0.35;
+          levels.push({ t, spot: p, callWall: r(open * 1.006 + drift), putWall: r(open * 0.993 + drift), flip: Math.round((open * 1.0008 + drift * 1.4) * 4) / 4, zone: p > open * 1.0008 + drift * 1.4 ? 'positive' : 'negative' });
+        }
+        return reply(200, { fut, date, levels });
+      });
+    }
     if (url.startsWith('/api/macro/')) return import('./macroDemo').then(({ demoMacro }) => reply(200, demoMacro(url))); // sample macro data
     if (url.startsWith('/api/candles')) return reply(404, { error: 'Not available in the demo.' });
     return reply(404, { error: 'Not available in the demo — this needs RoninFlow running on your computer.' });

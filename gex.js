@@ -1,0 +1,286 @@
+// GEX (gamma exposure) for the Macro → GEX page and the "GEX levels" chart indicator.
+//
+// Dealer positioning from the options chain: how much the market makers who sold the options have to buy or sell as
+// price moves (gamma), as implied volatility moves (vanna) and as time passes (charm). Usual convention: dealers are
+// long the calls customers sell them and short the puts customers buy, so call gamma counts positive, put gamma negative.
+//
+//   GET  /api/macro/gex/config                       → { source, sources, autoSave, symbols }
+//   POST /api/macro/gex/config { source?, tradierKey?, tradierSandbox?, autoSave? }
+//   GET  /api/macro/gex/expirations?symbol=SPX       → { symbol, expirations: ['YYYY-MM-DD', …] }
+//   GET  /api/macro/gex?symbol=SPX&exp=D1,D2         → levels, GEX by strike, aggregate profile, vanna/charm, futures
+//   GET  /api/macro/gex/levels?fut=ES&date=YYYY-MM-DD → { levels: [{ t, callWall, putWall, flip, spot }] } in ES prices
+//
+// Sources
+//   • Cboe's delayed option quotes (cdn.cboe.com, the data behind its delayed-quotes pages) — free, no key, ~15 minutes
+//     delayed, with open interest, implied volatility and Greeks for every strike. The default, and always used for
+//     the vanna/charm charts and the expiration list (they change slowly).
+//   • Polygon (your Polygon key, needs an options plan) or Tradier (a free brokerage account's API token) — real time,
+//     used for the GEX chart and levels when chosen.
+// Open interest is published once a day (overnight), so intraday GEX uses the morning's positions — like every GEX tool.
+import fs from 'node:fs';
+import path from 'node:path';
+import { bsGreeks, parseOcc, expiryMs, computeGex, computeVannaCharm, nyDate } from './src/lib/gexMath.js';
+
+export { bsGreeks, parseOcc, expiryMs, computeGex, computeVannaCharm };
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+
+/** The page's indices (any optionable ticker works too); each one's futures market for the converted levels. */
+export const GEX_SYMBOLS = [
+  { key: 'SPX', label: 'S&P 500 index', fut: 'ES', index: true },
+  { key: 'NDX', label: 'Nasdaq-100 index', fut: 'NQ', index: true },
+  { key: 'RUT', label: 'Russell 2000 index', fut: 'RTY', index: true },
+  { key: 'SPY', label: 'S&P 500 ETF', fut: 'ES' },
+  { key: 'QQQ', label: 'Nasdaq-100 ETF', fut: 'NQ' },
+  { key: 'IWM', label: 'Russell 2000 ETF', fut: 'RTY' },
+];
+const INDEX = new Set(['SPX', 'NDX', 'RUT', 'VIX', 'XSP', 'DJX', 'OEX', 'XEO', 'MRUT']);
+export const FUT_OF = { SPX: 'ES', SPY: 'ES', XSP: 'ES', NDX: 'NQ', QQQ: 'NQ', RUT: 'RTY', IWM: 'RTY' };
+const INDEX_OF_FUT = { ES: 'SPX', MES: 'SPX', NQ: 'NDX', MNQ: 'NDX', RTY: 'RUT', M2K: 'RUT' };
+
+// ---------- chains ----------
+function normCboe(j) {
+  const d = j?.data || j;
+  const spot = Number(d?.current_price ?? d?.close ?? d?.last_trade_price);
+  const rows = [];
+  for (const o of d?.options || []) {
+    const p = parseOcc(o.option);
+    if (!p) continue;
+    rows.push({ exp: p.exp, type: p.type, strike: p.strike, oi: Number(o.open_interest) || 0, gamma: Number(o.gamma) || 0, iv: Number(o.iv) || 0, mult: 100 });
+  }
+  const ts = Date.parse(String(j?.timestamp || d?.last_trade_time || '').replace(' ', 'T')) || null;
+  return { spot, rows, at: ts };
+}
+
+/** futuresAt(root, ms) from the journal's price data (your platform's / Yahoo's 1-minute bars; never a paid source). */
+export const futuresFromCandles = (candles) => async (fut, atMs) => {
+  const rec = await candles?.get?.(fut, nyDate(atMs), 'America/New_York', { noPaid: true });
+  const c = (rec?.candles || []).filter((r) => r[0] * 1000 <= atMs + 60e3);
+  const last = c[c.length - 1];
+  if (!last || atMs - last[0] * 1000 > 30 * 60e3 || !/m$/.test(rec.interval || '1m')) return null;
+  return { price: last[4], at: last[0] * 1000 };
+};
+
+export function createGexHandler(dataDir, { log = () => {}, vault = null, fetchImpl = (...a) => fetch(...a), now = () => Date.now(), futuresAt = async () => null } = {}) {
+  const dir = path.join(dataDir, 'gex');
+  const cfgFile = path.join(dir, 'config.json');
+  const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
+  const writeJson = (f, v) => { fs.mkdirSync(path.dirname(f), { recursive: true }); const t = `${f}.tmp`; fs.writeFileSync(t, JSON.stringify(v)); fs.renameSync(t, f); };
+  let cfg = { source: 'cboe', autoSave: true, symbols: ['SPX', 'NDX'], tradierSandbox: false, ...readJson(cfgFile, {}) };
+  const saveCfg = () => writeJson(cfgFile, cfg);
+  const key = (n) => vault?.get(n) || null;
+  const polygonKey = () => key('price:polygon');
+  const tradierKey = () => key('gex:tradier');
+  const cache = new Map(); // source|symbol|exps → { at, data }
+  const busy = new Map();
+  const once = (k, fn) => { if (!busy.has(k)) busy.set(k, fn().finally(() => busy.delete(k))); return busy.get(k); };
+
+  async function getJson(url, { headers = {}, timeout = 30000 } = {}) {
+    const r = await fetchImpl(url, { headers: { 'User-Agent': UA, Accept: 'application/json', ...headers }, signal: AbortSignal.timeout(timeout) });
+    const text = await r.text();
+    if (!r.ok) { const e = new Error(`HTTP ${r.status}`); e.status = r.status; e.body = text.slice(0, 300); throw e; }
+    return JSON.parse(text);
+  }
+
+  // Cboe: the whole chain in one file (indices are "_SPX"); kept 2 minutes, it's delayed anyway
+  async function cboeChain(symbol) {
+    const k = `cboe|${symbol}`, c = cache.get(k);
+    if (c && now() - c.at < 120e3) return c.data;
+    return once(k, async () => {
+      const urls = INDEX.has(symbol) ? [`_${symbol}`, symbol] : [symbol, `_${symbol}`];
+      let last;
+      for (const u of urls) {
+        try {
+          const data = normCboe(await getJson(`https://cdn.cboe.com/api/global/delayed_quotes/options/${u}.json`));
+          if (data.rows.length && data.spot > 0) { data.source = 'cboe'; data.at ||= now() - 15 * 60e3; cache.set(k, { at: now(), data }); return data; }
+        } catch (e) { last = e; }
+      }
+      throw new Error(last?.status === 403 || last?.status === 404 ? `Cboe has no options for ${symbol}` : `Couldn’t reach Cboe (${last?.message || 'no data'})`);
+    });
+  }
+
+  // Polygon: the snapshot of the chosen expirations (needs an options plan; indices as I:SPX)
+  async function polygonChain(symbol, exps) {
+    const k2 = polygonKey();
+    if (!k2) throw new Error('Add your Polygon key in Settings → Price data first');
+    const u = INDEX.has(symbol) ? `I:${symbol}` : symbol;
+    const rows = [];
+    let spot = null;
+    for (const exp of exps.slice(0, 6)) {
+      let url = `https://api.polygon.io/v3/snapshot/options/${encodeURIComponent(u)}?expiration_date=${exp}&limit=250&apiKey=${encodeURIComponent(k2)}`;
+      for (let page = 0; url && page < 40; page++) {
+        let j;
+        try { j = await getJson(url); } catch (e) { throw new Error(e.status === 403 || e.status === 401 ? 'Your Polygon plan doesn’t include options snapshots' : `Polygon: ${e.message}`); }
+        for (const o of j.results || []) {
+          const d = o.details || {};
+          if (!d.strike_price) continue;
+          rows.push({ exp: d.expiration_date, type: d.contract_type === 'put' ? 'P' : 'C', strike: Number(d.strike_price), oi: Number(o.open_interest) || 0, gamma: Number(o.greeks?.gamma) || 0, iv: Number(o.implied_volatility) || 0, mult: Number(d.shares_per_contract) || 100 });
+          if (!spot && o.underlying_asset?.price > 0) spot = Number(o.underlying_asset.price);
+        }
+        url = j.next_url ? `${j.next_url}${j.next_url.includes('?') ? '&' : '?'}apiKey=${encodeURIComponent(k2)}` : null;
+      }
+    }
+    return { rows, spot, at: now(), source: 'polygon' };
+  }
+
+  // Tradier: one chain per expiration, with Greeks (from ORATS); real time with a brokerage account's token
+  const tradierBase = () => (cfg.tradierSandbox ? 'https://sandbox.tradier.com/v1' : 'https://api.tradier.com/v1');
+  const tradierGet = (p) => {
+    const t = tradierKey();
+    if (!t) throw new Error('Add your Tradier API token first');
+    return getJson(`${tradierBase()}${p}`, { headers: { Authorization: `Bearer ${t}` } }).catch((e) => { throw new Error(e.status === 401 ? 'Tradier didn’t accept the token' : `Tradier: ${e.message}`); });
+  };
+  const arr = (x) => (Array.isArray(x) ? x : x ? [x] : []);
+  async function tradierChain(symbol, exps) {
+    const q = await tradierGet(`/markets/quotes?symbols=${encodeURIComponent(symbol)}`);
+    const quote = arr(q?.quotes?.quote)[0] || {};
+    const spot = Number(quote.last || quote.close || quote.prevclose) || null;
+    const rows = [];
+    for (const exp of exps.slice(0, 6)) {
+      const j = await tradierGet(`/markets/options/chains?symbol=${encodeURIComponent(symbol)}&expiration=${exp}&greeks=true`);
+      for (const o of arr(j?.options?.option)) rows.push({ exp: o.expiration_date || exp, type: o.option_type === 'put' ? 'P' : 'C', strike: Number(o.strike), oi: Number(o.open_interest) || 0, gamma: Number(o.greeks?.gamma) || 0, iv: Number(o.greeks?.mid_iv || o.greeks?.smv_vol) || 0, mult: Number(o.contract_size) || 100 });
+    }
+    return { rows, spot, at: now(), source: 'tradier' };
+  }
+  async function tradierExpirations(symbol) {
+    const j = await tradierGet(`/markets/options/expirations?symbol=${encodeURIComponent(symbol)}&includeAllRoots=true`);
+    return arr(j?.expirations?.date).map(String).sort();
+  }
+
+  async function expirations(symbol) {
+    try {
+      const c = await cboeChain(symbol);
+      return [...new Set(c.rows.map((r) => r.exp))].filter((d) => expiryMs(d) > now()).sort(); // not ones that closed today
+    } catch (e) {
+      if (cfg.source === 'tradier' && tradierKey()) return tradierExpirations(symbol);
+      throw e;
+    }
+  }
+
+  /** The futures price at a moment (for converting levels): your platform's / Yahoo's 1-minute bars. */
+  async function ratioFor(symbol, spot, atMs) {
+    const fut = FUT_OF[symbol];
+    if (!fut || !(spot > 0)) return null;
+    try {
+      const p = await futuresAt(fut, atMs);
+      return p?.price > 0 ? { fut, price: p.price, ratio: p.price / spot, at: p.at } : null;
+    } catch { return null; }
+  }
+
+  async function report(symbol, exps, { source = cfg.source } = {}) {
+    const free = await cboeChain(symbol).catch((e) => ({ error: e.message }));
+    let all = free.rows ? free.rows : [];
+    const list = free.rows ? [...new Set(free.rows.map((r) => r.exp))].filter((d) => expiryMs(d) > now()).sort() : await expirations(symbol);
+    if (!exps?.length) exps = list.slice(0, 1);
+    let live = null, liveError = null;
+    if (source === 'polygon' || source === 'tradier') {
+      try {
+        const k = `${source}|${symbol}|${exps.join(',')}`, c = cache.get(k);
+        live = c && now() - c.at < 30e3 ? c.data : await once(k, () => (source === 'polygon' ? polygonChain(symbol, exps) : tradierChain(symbol, exps)));
+        cache.set(k, { at: now(), data: live });
+        if (!live.rows.length) { liveError = `${source === 'polygon' ? 'Polygon' : 'Tradier'} returned no options for those expirations`; live = null; }
+      } catch (e) { liveError = e.message; live = null; }
+    }
+    if (!live && free.error) throw new Error(liveError ? `${liveError}; ${free.error}` : free.error);
+    const main = live || free;
+    const spot = main.spot > 0 ? main.spot : free.spot;
+    const at = main.at || now();
+    const gex = computeGex(main.rows, { spot, now: at, exps });
+    const near = all.length ? computeVannaCharm(all, { spot: free.spot || spot, now: free.at || at, minDte: 0, maxDte: 45 }) : null;
+    const regime = all.length ? computeVannaCharm(all, { spot: free.spot || spot, now: free.at || at, minDte: 46, maxDte: 180 }) : null;
+    const fut = await ratioFor(symbol, spot, at);
+    const out = {
+      symbol, spot, at, source: main.source, delayed: main.source === 'cboe', liveError, expirations: list, exps,
+      ...gex, near, regime, fut,
+    };
+    remember(symbol, out);
+    return out;
+  }
+
+  // ---------- levels kept for the charts (one file per index per day, a point at most every 10 minutes) ----------
+  const levelFile = (symbol, date) => path.join(dir, 'levels', symbol, `${date}.json`);
+  function remember(symbol, r) {
+    if (!r.exps?.length || r.exps[0] !== r.expirations?.[0] || r.exps.length !== 1) return; // only the nearest expiration (what the indicator shows)
+    const date = nyDate(r.at), f = levelFile(symbol, date);
+    const list = readJson(f, []);
+    const last = list[list.length - 1];
+    if (last && r.at - last.t < 10 * 60e3) list.pop();
+    list.push({ t: r.at, spot: r.spot, callWall: r.callWall, putWall: r.putWall, flip: r.flip, total: r.total, zone: r.zone, ratio: r.fut?.ratio ?? null, exp: r.exps[0] });
+    try { writeJson(f, list); } catch (e) { log('[gex] could not save levels', e.message); }
+  }
+  function levelsFor(futRoot, date) {
+    const symbol = INDEX_OF_FUT[futRoot];
+    if (!symbol) return [];
+    const etfFallback = { SPX: 'SPY', NDX: 'QQQ', RUT: 'IWM' }[symbol];
+    let list = readJson(levelFile(symbol, date), []);
+    if (!list.length && etfFallback) list = readJson(levelFile(etfFallback, date), []);
+    // into futures prices: each point's own ratio, else the day's nearest one known
+    const known = list.filter((p) => p.ratio > 0);
+    return list.map((p) => {
+      const ratio = p.ratio > 0 ? p.ratio : known.reduce((a, q) => (a == null || Math.abs(q.t - p.t) < Math.abs(a.t - p.t) ? q : a), null)?.ratio;
+      if (!ratio) return null;
+      const x = (v) => (v == null ? null : Math.round(v * ratio * 4) / 4);
+      return { t: p.t, spot: x(p.spot), callWall: x(p.callWall), putWall: x(p.putWall), flip: x(p.flip), zone: p.zone };
+    }).filter(Boolean);
+  }
+
+  // during US market hours, keep the nearest-expiration levels of your indices so charts (and replays) can show them
+  async function autoRound() {
+    if (!cfg.autoSave) return;
+    const t = now();
+    const ny = new Date(new Date(t).toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const mins = ny.getHours() * 60 + ny.getMinutes();
+    if (ny.getDay() === 0 || ny.getDay() === 6 || mins < 9 * 60 + 25 || mins > 16 * 60 + 20) return;
+    for (const s of cfg.symbols || []) {
+      try { await report(s, null); } catch (e) { log('[gex]', s, e.message); }
+    }
+  }
+
+  const send = (res, code, obj) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(obj)); };
+  const body = (req) => new Promise((resolve) => { let s = ''; req.on('data', (c) => { s += c; if (s.length > 1e4) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(s || '{}')); } catch { resolve({}); } }); });
+  const SYM_RE = /^[A-Z]{1,6}$/;
+  const configView = () => ({
+    source: cfg.source, autoSave: cfg.autoSave !== false, symbols: cfg.symbols, tradierSandbox: !!cfg.tradierSandbox,
+    sources: { cboe: true, polygon: !!polygonKey(), tradier: !!tradierKey() }, list: GEX_SYMBOLS,
+  });
+
+  const handler = async (req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const route = u.pathname.replace(/^\/api\/macro\/gex/, '') || '/';
+    try {
+      if (req.method === 'GET' && route === '/config') return send(res, 200, configView());
+      if (req.method === 'POST' && route === '/config') {
+        const b = await body(req);
+        if (['cboe', 'polygon', 'tradier'].includes(b.source)) cfg.source = b.source;
+        if (typeof b.autoSave === 'boolean') cfg.autoSave = b.autoSave;
+        if (typeof b.tradierSandbox === 'boolean') cfg.tradierSandbox = b.tradierSandbox;
+        if (Array.isArray(b.symbols)) cfg.symbols = b.symbols.map((s) => String(s).toUpperCase()).filter((s) => SYM_RE.test(s)).slice(0, 6);
+        if (typeof b.tradierKey === 'string' && vault) vault.set('gex:tradier', b.tradierKey.trim() || null);
+        saveCfg();
+        cache.clear();
+        return send(res, 200, configView());
+      }
+      const symbol = String(u.searchParams.get('symbol') || 'SPX').toUpperCase().replace(/^\$|^\^/, '');
+      if (!SYM_RE.test(symbol)) return send(res, 400, { error: 'Unknown symbol' });
+      if (req.method === 'GET' && route === '/expirations') return send(res, 200, { symbol, expirations: await expirations(symbol) });
+      if (req.method === 'GET' && route === '/levels') {
+        const fut = String(u.searchParams.get('fut') || '').toUpperCase(), date = String(u.searchParams.get('date') || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return send(res, 400, { error: 'date?' });
+        return send(res, 200, { fut, date, levels: levelsFor(fut, date) });
+      }
+      if (req.method === 'GET' && route === '/') {
+        const exps = (u.searchParams.get('exp') || '').split(',').filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).slice(0, 12);
+        return send(res, 200, await report(symbol, exps));
+      }
+      return send(res, 404, { error: 'not found' });
+    } catch (e) {
+      log('[gex]', e.message);
+      return send(res, 502, { error: e.message });
+    }
+  };
+  handler.report = report;
+  handler.levelsFor = levelsFor;
+  handler.autoRound = autoRound;
+  handler.start = () => { setTimeout(autoRound, 30e3).unref?.(); setInterval(autoRound, 15 * 60e3).unref?.(); };
+  return handler;
+}

@@ -56,13 +56,30 @@ const TICK_SPEEDS = [1, 2, 5, 10, 30, 60]; // with ticks: times real time (1× =
 const DEFAULT_IND = {
   ema1: { on: true, n: 9 }, ema2: { on: true, n: 21 }, sma: { on: false, n: 50 }, vwap: { on: true },
   bb: { on: false, n: 20, k: 2 }, volume: { on: true }, rsi: { on: false, n: 14 }, macd: { on: false },
-  vpvr: { on: false, n: 70 }, vpsess: { on: false, n: 40 },
+  vpvr: { on: false, n: 70 }, vpsess: { on: false, n: 40 }, gex: { on: false },
 };
 const IND_INFO = [
   ['ema1', 'EMA', '#f5a623', 'n'], ['ema2', 'EMA', '#4da3e5', 'n'], ['sma', 'SMA', '#c084fc', 'n'], ['vwap', 'VWAP', '#e5e7eb'],
   ['bb', 'Bollinger Bands', '#64748b', 'n'], ['volume', 'Volume'], ['rsi', 'RSI', '#a78bfa', 'n'], ['macd', 'MACD (12, 26, 9)'],
   ['vpvr', 'Volume profile (visible range)', '#e8b043'], ['vpsess', 'Session volume profile', '#e8b043'],
+  ['gex', 'GEX levels', '#8b6dff'],
 ];
+
+// ---------- GEX levels indicator (saved by Macro → GEX on the journal's server) ----------
+const GEX_FUT = new Set(['ES', 'MES', 'NQ', 'MNQ', 'RTY', 'M2K']);
+const gexStore = { key: '', list: [] }; // levels of the days on the chart, oldest first
+const nyDay = (ms) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+function gexSeries(bars, key) {
+  const L = gexStore.list;
+  if (!L.length) return [];
+  let j = -1;
+  return bars.map((b) => {
+    const ms = fromLocal(b.time) * 1000;
+    while (j + 1 < L.length && L[j + 1].t <= ms) j++;
+    const p = j >= 0 ? L[j] : null;
+    return p && p[key] != null && nyDay(p.t) === nyDay(ms) ? { time: b.time, value: p[key] } : { time: b.time };
+  });
+}
 
 // ---------- volume profile drawing (indicator and the fixed-range tool) ----------
 const vpCache = new Map(); // profiles are recomputed only when their range or data changes
@@ -673,6 +690,10 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
         const bb = (b) => { if (cache?.b !== b) cache = { b, v: bollinger(b, ind.bb.n, ind.bb.k) }; return cache.v; };
         inds.push({ s: line(alpha('#94a3b8', 0.9)), f: (b) => bb(b).upper }, { s: line(alpha('#94a3b8', 0.6), 0, { lineStyle: 2 }), f: (b) => bb(b).mid }, { s: line(alpha('#94a3b8', 0.9)), f: (b) => bb(b).lower });
       }
+      if (ind.gex?.on && GEX_FUT.has(rootOf(sym)) && iv < 86400) { // saved levels, stepped where they changed (only up to the replay's time)
+        const lvl = (key, color, title, style = 0) => inds.push({ s: line(color, 0, { lineWidth: 1.5, lineStyle: style, lineType: 1, lastValueVisible: true, title }), f: (b) => gexSeries(b, key) });
+        lvl('callWall', c.up, 'Call wall'); lvl('putWall', c.down, 'Put wall'); lvl('flip', '#8b6dff', 'Flip', 2);
+      }
       if (ind.volume.on) {
         const vol = chart.addSeries(LW.HistogramSeries, { priceScaleId: 'vol', priceFormat: { type: 'volume' }, priceLineVisible: false, lastValueVisible: false });
         chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
@@ -780,6 +801,21 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
     }).catch((e) => !cancelled && setRec({ status: 'error', error: e.message }));
     return () => { cancelled = true; if (chart) chart.remove(); api.current = {}; };
   }, [rec, themeKey, tf, indKey, sym, showExec]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // GEX levels: the saved levels of the days on the chart (today's again every 5 minutes)
+  useEffect(() => {
+    if (!ind.gex?.on || !GEX_FUT.has(rootOf(sym)) || !rows.length) return undefined;
+    const root = rootOf(sym);
+    const days = [...new Set([rows[0][0], ...rows.filter((_, i) => i % 60 === 0).map((r) => r[0]), rows[rows.length - 1][0]].map((t) => nyDay(t * 1000)))].slice(-10);
+    const key = `${root}|${days.join(',')}`;
+    let alive = true;
+    const load = () => Promise.all(days.map((d) => fetch(`/api/macro/gex/levels?fut=${root}&date=${d}`).then((r) => (r.ok ? r.json() : { levels: [] })).then((j) => j.levels || []).catch(() => [])))
+      .then((all) => { if (!alive) return; gexStore.key = key; gexStore.list = all.flat().sort((x, y) => x.t - y.t); render(); });
+    if (gexStore.key !== key) gexStore.list = [];
+    load();
+    const id = days.includes(nyDay(Date.now())) ? setInterval(load, 5 * 60e3) : null;
+    return () => { alive = false; if (id) clearInterval(id); };
+  }, [indKey, sym, rows.length ? rows[0][0] : 0, rows.length ? rows[rows.length - 1][0] : 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Puts the candles (up to the replay position), indicators and executions on the chart. */
   function render() {

@@ -1,11 +1,12 @@
 // The Macro page's title doubles as a menu for switching between its pages.
-import { CalendarDays, ChartColumnStacked, Check, ChevronDown } from 'lucide-react';
+import { CalendarDays, ChartColumnStacked, Check, ChevronDown, Magnet } from 'lucide-react';
 import { Popover } from './ui';
 import { navigate } from '../store/store';
 
 export const MACRO_PAGES = [
   { id: 'calendar', label: 'Economic Calendar', desc: 'Releases, forecasts and actuals', icon: CalendarDays },
   { id: 'cot', label: 'COT Report', desc: 'Futures positioning from the CFTC', icon: ChartColumnStacked },
+  { id: 'gex', label: 'GEX', desc: 'Options dealer gamma, vanna and charm levels', icon: Magnet },
 ];
 
 export default function MacroSwitch({ current }) {

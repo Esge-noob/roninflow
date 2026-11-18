@@ -1,3 +1,4 @@
+import { computeGex, computeVannaCharm, expiryMs } from './gexMath';
 // Made-up macro data for the public demo (no server there). Loaded only on the demo site.
 const MIN = 60000, DAY = 86400000;
 // [weekday (0 = Sun), ET time, ccy, title, impact, forecast, previous]
@@ -109,8 +110,54 @@ function history(ccy, title) {
   return { events: all.filter((e) => e.ccy === ccy && e.title === title && Date.parse(e.t) < now).slice(-12) };
 }
 
+// ---------- GEX: a made-up options chain shaped like a real one (walls, skew, a 0DTE pile-up at the money) ----------
+const GEX_BASE = { SPX: [6020, 5, 'ES', 1.0052], NDX: [21480, 10, 'NQ', 1.0047], RUT: [2395, 5, 'RTY', 1.0031], SPY: [600.4, 1, 'ES', 10.03], QQQ: [522.6, 1, 'NQ', 41.3], IWM: [238.7, 1, 'RTY', 10.06] };
+function gexExpirations(now) {
+  const out = [];
+  const d = new Date(now);
+  for (let i = 0; out.length < 16 && i < 40; i++, d.setDate(d.getDate() + 1)) if (d.getDay() > 0 && d.getDay() < 6 && expiryMs(d.toLocaleDateString('en-CA')) > now) out.push(d.toLocaleDateString('en-CA'));
+  for (let m = 1; m <= 6; m++) { // third Fridays out to six months
+    const t = new Date(new Date(now).getFullYear(), new Date(now).getMonth() + m, 1);
+    t.setDate(1 + ((5 - t.getDay() + 7) % 7) + 14);
+    out.push(t.toLocaleDateString('en-CA'));
+  }
+  return [...new Set(out)].sort();
+}
+function gex(symbol, exps) {
+  const [base, step, fut, ratio] = GEX_BASE[symbol] || [100 + (symbol.charCodeAt(0) % 50) * 7, 1, null, null];
+  const now = Date.now();
+  const wob = Math.sin(now / 9e5) * step * 0.6;
+  const spot = Math.round((base + wob) * 100) / 100;
+  const list = gexExpirations(now);
+  const pick = exps.length ? exps.filter((e) => list.includes(e)) : list.slice(0, 1);
+  const callWall = Math.round(base * 1.008 / (step * 5)) * step * 5, putWall = Math.round(base * 0.99 / (step * 5)) * step * 5;
+  const rows = [];
+  for (const exp of list) {
+    const T = Math.max(1, (Date.parse(`${exp}T21:00:00Z`) - now) / 864e5);
+    const near = T < 2 ? 6 : T < 10 ? 2 : 1;
+    for (let k = Math.round(base * 0.85 / step) * step; k <= base * 1.15; k += step * (T > 45 ? 5 : 1)) {
+      const dist = (k - base) / base;
+      const iv = 0.15 + Math.max(0, -dist) * 0.9 + Math.max(0, dist) * 0.25 + (T < 2 ? 0.03 : 0);
+      const bell = Math.exp(-(dist * dist) / (2 * (0.012 + T / 3000) ** 2));
+      const round = k % (step * 25) === 0 ? 2.2 : k % (step * 5) === 0 ? 1.4 : 0.6;
+      const callOi = Math.round((80 + 900 * bell * near) * round * (k === callWall ? 4 : 1) * (dist > 0 ? 1.2 : 0.6));
+      const putOi = Math.round((90 + 1100 * bell * near) * round * (k === putWall ? 4.5 : 1) * (dist < 0 ? 1.3 : 0.5));
+      rows.push({ exp, type: 'C', strike: k, oi: callOi, iv, mult: 100 }, { exp, type: 'P', strike: k, oi: putOi, iv, mult: 100 });
+    }
+  }
+  const at = now - 15 * 60e3;
+  const g = computeGex(rows, { spot, now: at, exps: pick });
+  return {
+    symbol, spot, at, source: 'cboe', delayed: true, sample: true, liveError: null, expirations: list, exps: pick, ...g,
+    near: computeVannaCharm(rows, { spot, now: at, minDte: 0, maxDte: 45 }),
+    regime: computeVannaCharm(rows, { spot, now: at, minDte: 46, maxDte: 180 }),
+    fut: fut ? { fut, price: Math.round(spot * ratio * 4) / 4, ratio, at } : null,
+  };
+}
+
 export function demoMacro(url) {
   const u = new URL(url, 'http://x');
+  if (u.pathname.endsWith('/gex')) return gex(String(u.searchParams.get('symbol') || 'SPX').toUpperCase(), (u.searchParams.get('exp') || '').split(',').filter(Boolean));
   if (u.pathname.endsWith('/calendar/history')) return history(u.searchParams.get('ccy'), u.searchParams.get('title'));
   if (u.pathname.endsWith('/calendar')) return calendar(u.searchParams.get('from'), u.searchParams.get('to'));
   if (u.pathname.endsWith('/cot/markets')) return cotMarkets();

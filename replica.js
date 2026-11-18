@@ -21,6 +21,7 @@ import { Readable } from 'node:stream';
 import { createAiProxy } from './ai-proxy.js';
 import { createCandleHandler } from './candles.js';
 import { createMacroHandler } from './macro.js';
+import { createGexHandler, futuresFromCandles } from './gex.js';
 import { sanitizeState, isLive, tokenOk, isShareAsset, sendShareImage, sendShareChart } from './share.js';
 import { createDataHandler, createConfig, cookieToken, loginPage } from './local-api.js';
 
@@ -60,7 +61,8 @@ const dataApi = createDataHandler(DATA, {
 });
 const ai = createAiProxy();
 const candleApi = createCandleHandler(DATA, { log });
-const macroApi = createMacroHandler(DATA, { log }); // the home server fetches macro data itself, so it works while the PC is off
+const macroApi = createMacroHandler(DATA, { log });
+const gexApi = createGexHandler(DATA, { log, futuresAt: futuresFromCandles(candleApi) }); // free Cboe data (keys stay on the PC) // the home server fetches macro data itself, so it works while the PC is off
 
 let online = false; // forwarding to the PC
 let upstream = null; // the PC address that answered
@@ -430,6 +432,7 @@ function local(req, res, p, body) {
   if (p.startsWith('/api/data')) return dataApi(req, res, null, { loopback: false });
   if (p.startsWith('/api/ai')) return ai(req, res, () => sendJson(res, 404, { error: 'not found' }));
   if (p.startsWith('/api/candles')) return candleApi(req, res);
+  if (p.startsWith('/api/macro/gex')) return gexApi(req, res);
   if (p.startsWith('/api/macro')) return macroApi(req, res);
   if (p === '/api/net/status') return sendJson(res, 200, { lan: true, hasPin: true, mode: 'replica', you: 'network', pcOnline: false });
   if (p.startsWith('/api/atas')) return sendJson(res, 503, { error: 'Your PC is offline', offline: true });

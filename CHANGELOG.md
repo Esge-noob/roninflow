@@ -2,7 +2,13 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
-## 1.8.1
+## 1.9.0
+
+- **Macro → GEX:** dealer gamma exposure for SPX, NDX, RUT, SPY, QQQ and IWM (or any optionable ticker) — call wall, put wall, gamma flip, gamma zone and total GEX, a GEX-by-strike chart (net cumulative and total-GEX-by-price lines, zoom and pan), vanna and charm for 0–45 and 46–180 days, and a plain-English summary from your Trading Coach. Every level is shown in ES / NQ / RTY prices too.
+- **Data:** Cboe's free delayed quotes by default (no key); real time from Polygon (options plan) or Tradier (a free brokerage account's API token), chosen under the gear icon.
+- **GEX levels on your charts:** during US market hours the levels are saved every 15 minutes, and the new *GEX levels* indicator in the full-screen chart draws the call wall, put wall and flip on ES, NQ and RTY — replays only show what was known at the replay's time.
+- Live demo: the GEX page and the indicator work with sample data.
+
 
 - **Ticks around your trades, automatically:** your platform add-on now sends every tick from the hour before your first trade to the hour after your last, for the last 14 days, in the background — the way it sends 1-minute bars — so replays of those days go tick by tick straight away. A replay you're watching always comes first, and it never slows the platform while you trade. Switch it off in Settings → Price data.
 - **Ticks take ~17× less space:** they're saved compressed (a busy ES hour: ~0.6 MB instead of ~10 MB — about 300 MB for a year of one market). Ticks you already have are compressed in the background after the update.
