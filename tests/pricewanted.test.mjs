@@ -29,19 +29,33 @@ test('lists trade days of that add-on still missing bars, newest first', () => {
     trades: [
       { symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' },
       { symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T07:10:00' }, // same day: listed once
-      { symbol: 'MES', contract: 'MESZ6', source: 'atas', entry: '2026-11-13T06:40:00' },              // another platform
-      { symbol: 'ES', entry: '2026-11-12T06:40:00' },                                                  // a file import: no contract
+      { symbol: 'MES', contract: 'MESZ6', source: 'atas', entry: '2026-11-13T06:40:00' },              // another platform: NinjaTrader fills in
+      { symbol: 'ES', entry: '2026-11-12T06:40:00' },                                                  // a file import: so does it
       { symbol: 'NQ', contract: 'NQ 12-26', source: 'ninjatrader', entry: '2026-08-01T06:40:00' },     // too old
     ],
     conn: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-16T15:30:00.000Z' }], // today, only in the inbox so far
   });
   const items = h.wanted('ninjatrader', { tz: TZ, now });
-  assert.deepEqual(items.map((i) => [i.symbol, i.contract]), [['MNQ', 'MNQ 12-26'], ['MNQ', 'MNQ 12-26']]);
+  // named the way NinjaTrader names the MNQ you traded there
+  assert.deepEqual(items.map((i) => [i.symbol, i.contract, i.from]).sort((x, y) => y[2] - x[2] || (x[0] < y[0] ? -1 : 1)).map((x) => x.slice(0, 2)), [['MNQ', 'MNQ 12-26'], ['MES', 'MES 12-26'], ['MNQ', 'MNQ 12-26'], ['ES', 'ES 12-26']]);
   const today = dayWindow('2026-11-16', TZ);
   assert.equal(items[0].from, today.from);
   assert.equal(items[0].to, now, 'today runs up to now');
   assert.equal(items[1].to, dayWindow('2026-11-13', TZ).to);
-  assert.deepEqual(h.wanted('quantower', { tz: TZ, now }), []);
+  assert.deepEqual(h.wanted('quantower', { tz: TZ, now }), [], 'Quantower names differ by connection: only once you’ve traded there');
+});
+
+test('trades from a broker connection or a file: each add-on gets its own platform’s contract name', () => {
+  const now = Math.floor(Date.parse('2026-11-16T20:00:00Z') / 1000);
+  const trades = [{ symbol: 'MES', contract: 'MESZ6', source: 'tradovate', entry: '2026-11-13T06:40:00' }];
+  // nothing traded on these platforms yet: NinjaTrader and Sierra Chart name futures the same way everywhere
+  const a = setup({ trades });
+  assert.deepEqual(a.h.wanted('ninjatrader', { tz: TZ, now }).map((i) => i.contract), ['MES 12-26']);
+  assert.deepEqual(a.h.wanted('sierrachart', { tz: TZ, now }).map((i) => i.contract), ['MESZ26']);
+  assert.deepEqual(a.h.wanted('metatrader', { tz: TZ, now }), [], 'MetaTrader symbols differ by broker');
+  // once you've traded another market there, its naming is followed (an MT5 broker's "MGCZ25" → "MESZ25")
+  const b = setup({ trades: [...trades, { symbol: 'MGC', contract: 'MGCZ25', source: 'metatrader', entry: '2026-11-02T06:40:00' }] });
+  assert.ok(b.h.wanted('metatrader', { tz: TZ, now }).some((i) => i.symbol === 'MES' && i.contract === 'MESZ26'), 'year digits as that broker writes them');
 });
 
 test('a range an add-on sent is not asked for again; today is refreshed from where it got to', () => {

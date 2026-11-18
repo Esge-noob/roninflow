@@ -180,8 +180,12 @@ Replays (and backtest replays) move tick by tick when a source has the ticks; ot
 | Sierra Chart | trades, side from bid / ask volume | the study reads a hidden 1-trade-per-bar chart |
 | Databento / Polygon | trades (futures / stocks & crypto) | fetched directly with your key (Settings → Price data) |
 
-Each hour is kept once it arrives (`data/ticks/`), so it's never fetched twice. Update an add-on to its latest version for ticks;
-older versions keep working with bars.
+Each hour is kept once it arrives (`data/ticks/`, compressed — a busy ES hour is ~0.6 MB), so it's never fetched twice.
+In the background the add-ons also send the ticks around your trades (the hour before your first trade to the hour after
+your last, last 14 days), so replays of those days start tick by tick right away — switch it off in Settings → Price data.
+Shared links and snapshot files replay from the ticks you have saved. Any add-on fills in for trades from a broker
+connection, a file or another platform too. Update an add-on to its latest version for ticks; older versions keep
+working with bars.
 
 ## Playbook: routines, market conditions, edge blockers, risk tiers
 

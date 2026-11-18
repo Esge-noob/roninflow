@@ -2,6 +2,17 @@
 
 Each release's notes on GitHub come from its section here (`## x.y.z`, newest first).
 
+## 1.8.1
+
+- **Ticks around your trades, automatically:** your platform add-on now sends every tick from the hour before your first trade to the hour after your last, for the last 14 days, in the background — the way it sends 1-minute bars — so replays of those days go tick by tick straight away. A replay you're watching always comes first, and it never slows the platform while you trade. Switch it off in Settings → Price data.
+- **Ticks take ~17× less space:** they're saved compressed (a busy ES hour: ~0.6 MB instead of ~10 MB — about 300 MB for a year of one market). Ticks you already have are compressed in the background after the update.
+- **Shared links and snapshot files:** charts open full screen with replay — tick by tick where ticks are saved (a link reads them from your computer and never fetches any for a visitor; a snapshot file carries them inside — "Include saved tick data", on by default).
+- **Fix — charts missing part of a day:** a day one source only had part of (e.g. from before the add-on was on your chart) is now filled from your other saved bars and history downloads, so the whole day shows and your executions sit on the right candles. ATAS is asked for its chart's history when a recent trade day has gaps, and the other add-ons notice a missing morning, not just a missing end of day.
+- **Every add-on fills in for trades from anywhere:** NinjaTrader, Quantower, cTrader, MetaTrader 5 and Sierra Chart now fetch bars and ticks for days you traded through a broker connection, a file import or another platform too — named the way that platform names your other markets (NinjaTrader and Sierra Chart need no trades there at all).
+- Live demo: the Ronin Score replaces Most Traded on layouts saved by older versions of the demo.
+
+**Updating:** tick replay and the automatic ticks need this release's add-ons (ATAS: Journal Sync 1.5.1). If yours is older, reinstall it from the Start menu (*Install platform add-ons*) or `scripts\addons.ps1`, then restart the platform. Trade sync keeps working with older add-ons.
+
 ## 1.8.0
 
 - **Backtesting** (new sidebar page), three ways:

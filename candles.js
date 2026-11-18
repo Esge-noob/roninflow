@@ -355,15 +355,21 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     if (hit && now - hit.at < 20) return hit.items;
     const since = new Date((now - WANT_DAYS * DAY) * 1000).toLocaleDateString('en-CA', { timeZone: tz });
     const days = new Map(); // ROOT|date → { symbol, contract }
+    // every trade day counts, wherever the trades came from (a broker connection, a file, another platform): this
+    // platform's own contract name for that day — its own trade's, else worked out (contractOn)
     const add = (t, date) => {
-      if (!t?.symbol || !t.contract || String(t.source || '').toLowerCase() !== source || date < since) return;
+      if (!t?.symbol || date < since) return;
       const key = `${rootOf(t.symbol)}|${date}`;
-      if (!days.has(key)) days.set(key, { symbol: t.symbol, contract: String(t.contract), date });
+      const own = t.contract && String(t.source || '').toLowerCase() === source ? String(t.contract) : null;
+      if (own) days.set(key, { symbol: t.symbol, contract: own, date });
+      else if (!days.has(key)) days.set(key, { symbol: t.symbol, contract: null, date });
     };
     try { for (const t of (readTrades?.() || [])) if (t?.entry && !t.deleted) add(t, String(t.entry).slice(0, 10)); } catch { /* journal not readable yet */ }
     try { for (const t of (readConnTrades?.() || [])) { const e = Date.parse(t?.entry); if (Number.isFinite(e)) add(t, localDate(Math.floor(e / 1000), tz)); } } catch { /* inbox not ready */ }
     const items = requestedItems(source, now); // a backtest is waiting on these
     for (const [key, d] of [...days].sort((a, b) => (a[1].date < b[1].date ? 1 : -1))) {
+      if (!d.contract) d.contract = contractOn(source, rootOf(d.symbol), d.date);
+      if (!d.contract) continue; // this platform's name for it isn't known
       const { from, to } = dayWindow(d.date, tz);
       if (from > now) continue;
       const end = Math.min(to, now);
@@ -402,6 +408,22 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const c = r === root ? best.c : renameRoot(best.c, r, root);
       if (c) return contractFor(c, root, date, best.d);
     }
+    // never traded this market there (your trades come from a broker connection, a file or another platform): name it
+    // the way that platform names another market you did trade there ("MNQ 12-26" → "MES 12-26", "MGCZ6" → "MESZ6")
+    const f = frontMonth(root, date);
+    if (!f) return null;
+    let sample = null;
+    const look = (t, d) => { const r = rootOf(t?.symbol || t?.contract || ''); if (t?.contract && r && String(t.source || '').toLowerCase() === source && (!sample || d > sample.d)) sample = { c: String(t.contract), r, d }; };
+    try { for (const t of (readTrades?.() || [])) if (t?.entry) look(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    try { for (const t of (readConnTrades?.() || [])) if (t?.entry) look(t, String(t.entry).slice(0, 10)); } catch { /* */ }
+    if (sample) {
+      const renamed = renameRoot(sample.c, sample.r, root);
+      const named = renamed && contractFor(renamed, root, date, '1900-01-01'); // ('seen' long ago: only a recognised pattern counts)
+      if (named) return named;
+    }
+    // nothing traded there yet: the platforms whose futures names are the same everywhere
+    if (source === 'ninjatrader') return `${root} ${p2(f.m)}-${p2(f.y % 100)}`; // "MES 12-26"
+    if (source === 'sierrachart') return `${root}${MONTH_CODES[f.m - 1]}${p2(f.y % 100)}`; // "MESZ26" (the study adds its feed's suffix)
     return null;
   }
   function requestedItems(source, now) {
