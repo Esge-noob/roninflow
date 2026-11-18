@@ -35,8 +35,12 @@ export default function MacroPill() {
     return () => { alive.current = false; clearInterval(id); };
   }, [loadNews, s.newsPill]);
   const readAlerts = () => { if (news.unread) fetch('/api/macro/news/alerts/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(() => setNews((n) => ({ alerts: n.alerts.map((a) => ({ ...a, read: true })), unread: 0 }))).catch(() => {}); };
-  const recentAlerts = news.alerts.filter((a) => a.t > now - 24 * 3600e3);
-  const latest = news.alerts.find((a) => !a.read);
+  const dismiss = (ids) => {
+    setNews((n) => ({ alerts: n.alerts.map((a) => (!ids || ids.includes(a.id) ? { ...a, dismissed: true, read: true } : a)), unread: ids ? n.alerts.filter((a) => !a.read && !ids.includes(a.id)).length : 0 }));
+    fetch('/api/macro/news/alerts/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ids ? { ids } : {}) }).catch(() => {});
+  };
+  const recentAlerts = news.alerts.filter((a) => a.t > now - 24 * 3600e3 && !a.dismissed);
+  const latest = news.alerts.find((a) => !a.read && !a.dismissed);
 
   const ccys = s.ecCcys || [];
   const { majors, holidays } = useMemo(() => {
@@ -61,7 +65,7 @@ export default function MacroPill() {
   const label = latest
     ? <><b className="truncate">{latest.title}</b>{news.unread > 1 && <span className="muted"> +{news.unread - 1}</span>}</>
     : next
-    ? <><b className="truncate">{next.ccy} {next.title}</b>{batch.length > 1 && <span className="muted"> +{batch.length - 1}</span>}<span className="mp-when">{next.ms <= now ? 'now' : soon ? countdown(next.ms - now) : fmtTime12(next.clock)}</span></>
+    ? <><span className="mp-hi" title="High-impact scheduled release">High</span><b className="truncate">{next.ccy} {next.title}</b>{batch.length > 1 && <span className="muted"> +{batch.length - 1}</span>}<span className="mp-when">{next.ms <= now ? 'now' : soon ? countdown(next.ms - now) : fmtTime12(next.clock)}</span></>
     : hol ? <b className="truncate">{hol.short} — {HOL[hol.holiday]}</b> : null;
 
   return (
@@ -76,27 +80,31 @@ export default function MacroPill() {
         <div className="mp-pop">
           {recentAlerts.length > 0 && (
             <>
-              <div className="mp-head"><span>News alerts</span><a href="#/macro/agents" className="muted" onClick={close} style={{ fontWeight: 400, fontSize: 12 }}>Agents</a></div>
+              <div className="mp-head"><span><Bell size={13} className="mp-sec-ic" /> News alerts</span><span className="row" style={{ gap: 14 }}><button className="mp-clear" onClick={() => dismiss(null)}>Clear all</button><a href="#/macro/agents" className="muted" onClick={close} style={{ fontWeight: 400, fontSize: 12 }}>Agents</a></span></div>
               {recentAlerts.slice(0, 6).map((a) => (
-                <a key={a.id} href="#/macro/news" onClick={close} className={`mp-alert ${a.read ? '' : 'new'} ${a.side}`}>
-                  <span className="row gap8"><span className="mp-t">{fmtTime12(wallClock(new Date(a.t)))}</span><b className="grow truncate">{a.agents.join(' · ')}</b>{a.market && <span className="muted">{NEWS_MARKETS[a.market]?.short}</span>}</span>
-                  <span className="mp-alert-t"><span className={`nw-tone ${a.side}`}>{a.why}</span> {a.title}</span>
-                  {a.move != null && a.market && <span className={`mp-alert-mv ${a.move > 0 ? 'pos' : a.move < 0 ? 'neg' : 'muted'}`}>{fmtMove(a.market, a.move)} in the 15 min after</span>}
-                </a>
+                <div key={a.id} className={`mp-alert ${a.read ? '' : 'new'} ${a.side}`}>
+                  <a href="#/macro/news" onClick={close} className="mp-alert-body">
+                    <span className="row gap8"><span className="mp-t">{fmtTime12(wallClock(new Date(a.t)))}</span><b className="grow truncate" title={a.agents.join(' · ')}>{a.agents.join(' · ')}</b>{a.market && <span className="muted">{NEWS_MARKETS[a.market]?.short}</span>}</span>
+                    <span className="mp-alert-t"><span className={`nw-tone ${a.side}`}>{a.why}</span> {a.title}</span>
+                    {a.move != null && a.market && <span className={`mp-alert-mv ${a.move > 0 ? 'pos' : a.move < 0 ? 'neg' : 'muted'}`}>{fmtMove(a.market, a.move)} in the 15 min after</span>}
+                  </a>
+                  <button className="mp-x" title="Dismiss" onClick={() => dismiss([a.id])}><X size={13} /></button>
+                </div>
               ))}
             </>
           )}
-          {!off && (majors.length > 0 || holidays.length > 0) && <div className="mp-head"><span>Today</span><button className="icon-btn" title="Hide today’s events until tomorrow" onClick={() => { close(); hide(); }}><X size={14} /></button></div>}
+          {!off && (majors.length > 0 || holidays.length > 0) && <div className="mp-head"><span><CalendarDays size={13} className="mp-sec-ic" /> Today’s scheduled events <span className="mp-sub">high impact</span></span><button className="icon-btn" title="Hide today’s events until tomorrow" onClick={() => { close(); hide(); }}><X size={14} /></button></div>}
           {!off && holidays.map((h) => (
             <div key={h.id} className="mp-row"><span className={`ec-hol ${h.holiday}`}>{HOL[h.holiday]}</span><span className="grow">{FLAGS[h.ccy]} {h.short}</span></div>
           ))}
           {!off && majors.map((e) => {
             const sp = surprise(e);
             return (
-              <div key={e.id} className={`mp-row ${e.ms < now - 2 * 60e3 ? 'past' : ''}`}>
+              <div key={e.id} className={`mp-row mp-ev ${e.ms < now - 2 * 60e3 ? 'past' : ''}`}>
                 <span className="mp-t">{fmtTime12(e.clock)}</span>
-                <span className="grow truncate" title={e.title}>{FLAGS[e.ccy]} {e.ccy} {e.title}</span>
-                <span className={`mp-v ${sp === 'beat' ? 'pos' : sp === 'miss' ? 'neg' : ''}`}>{e.actual || (e.ms > now ? countdown(e.ms - now).replace('in ', '') : e.forecast ? `f ${e.forecast}` : '')}</span>
+                <span className="mp-hi" title="High-impact scheduled release">High</span>
+                <span className="grow truncate" title={`${e.title} — high-impact scheduled release`}>{FLAGS[e.ccy]} {e.ccy} {e.title}</span>
+                <span className={`mp-v ${sp === 'beat' ? 'pos' : sp === 'miss' ? 'neg' : ''}`}>{e.actual ? e.actual : e.ms > now ? countdown(e.ms - now) : e.forecast ? `f ${e.forecast}` : 'released'}</span>
               </div>
             );
           })}

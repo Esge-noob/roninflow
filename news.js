@@ -10,7 +10,7 @@
 //   GET  /api/macro/news/similar?id=&market=    → { items }   earlier lines with the same story and tone, and what the market did next
 //   GET  /api/macro/news/heatmap?market=ES      → { tiles, bias, trend }
 //   GET  /api/macro/news/agents                 · POST /api/macro/news/agents { action, agent }
-//   GET  /api/macro/news/alerts                 · POST /api/macro/news/alerts/read { ids? }
+//   GET  /api/macro/news/alerts                 · POST /api/macro/news/alerts/read { ids? } · POST …/alerts/dismiss { ids? }
 //   POST /api/macro/news/explain { id, market } → { chain, text? }
 //
 // Kept in data/news/: one file of headlines per New York day (90 days), alerts, and settings.
@@ -635,6 +635,13 @@ export function createNewsHandler(dataDir, { log = () => {}, vault = null, fetch
         return send(res, 200, { agents: agentsList(), markets: followed(), ai: !!cfg.ai?.on && !!aiCfg() });
       }
       if (req.method === 'GET' && route === '/alerts') return send(res, 200, { alerts: alerts.slice(-100).reverse(), unread: alerts.filter((a) => !a.read).length });
+      if (req.method === 'POST' && route === '/alerts/dismiss') { // gone from the top-bar pill (still listed on the Agents page)
+        const b = await body(req);
+        const ids = Array.isArray(b.ids) ? new Set(b.ids) : null;
+        for (const a of alerts) if (!ids || ids.has(a.id)) { a.dismissed = true; a.read = true; }
+        saveAlerts();
+        return send(res, 200, { ok: true, unread: alerts.filter((a) => !a.read).length });
+      }
       if (req.method === 'POST' && route === '/alerts/read') {
         const b = await body(req);
         const ids = Array.isArray(b.ids) ? new Set(b.ids) : null;

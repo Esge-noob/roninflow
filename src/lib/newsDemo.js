@@ -33,6 +33,7 @@ const SIZE = { ES: 6, NQ: 30, YM: 50, RTY: 4, CL: 0.35, NG: 0.03, GC: 9, SI: 0.2
 const rnd = (seed) => { const x = Math.sin(seed * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
 let readAll = 0; // alerts marked read in this browser session
+const dismissed = new Set();
 let extra = [];
 let custom = [{ id: 'c-demo', label: 'Your agent', text: "I'm long gold. Tell me if anything goes against it.", on: true }];
 
@@ -80,7 +81,7 @@ function alerts() {
   const list = items();
   const pick = (id, agents, why, market) => { const x = list.find((y) => y.id === id); return { id: `a${id}`, t: x.t + 4000, at: x.t, itemId: id, title: x.title, src: x.src, agents, why, market, side: x.impacts[market] > 0 ? 'helps' : x.impacts[market] < 0 ? 'hurts' : 'note', price: PRICE[market], move: x.move[market]?.chg ?? undefined }; };
   const out = [pick('d0', ['Fed', 'Your agent', 'Gold'], 'Hawkish Fed', 'GC'), pick('d6', ['Geopolitics', 'Gold'], 'Calming down', 'GC'), pick('d9', ['Trump', 'Geopolitics'], 'Trump · Getting worse', 'ES'), pick('d12', ['Data', 'S&P 500'], 'Strong data', 'ES')];
-  return out.map((a, i) => ({ ...a, read: a.t <= readAll || i > 1 }));
+  return out.map((a, i) => ({ ...a, read: a.t <= readAll || i > 1, dismissed: dismissed.has(a.id) }));
 }
 function heatmap(market) {
   const list = items(), now = Date.now();
@@ -154,6 +155,7 @@ export function demoNews(url, body) {
   }
   if (r === '/alerts') { const a = alerts(); return { alerts: a.slice().reverse().sort((x, y) => y.t - x.t), unread: a.filter((x) => !x.read).length }; }
   if (r === '/alerts/read') { readAll = Date.now(); return { ok: true, unread: 0 }; }
+  if (r === '/alerts/dismiss') { if (Array.isArray(body?.ids)) body.ids.forEach((id) => dismissed.add(id)); else alerts().forEach((x) => dismissed.add(x.id)); readAll = Date.now(); return { ok: true, unread: 0 }; }
   if (r === '/config') { if (Array.isArray(body?.extraMarkets)) extra = body.extraMarkets; return config(); }
   if (r === '/explain') { const x = items().find((y) => y.id === body?.id); return { chain: x?.driver ? chainFor(x.driver, body.market) : [], text: null }; }
   return {};
