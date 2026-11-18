@@ -1,7 +1,8 @@
 // View-only shared journals: opened from a share link (/s/<token>) or a snapshot file (data embedded in the page).
 // The app runs read-only: nothing is saved — not to the server, not to this browser — and only the shared data is
-// ever loaded. Server features (sync, AI, macro data) aren't available in a shared view. Execution charts are: a link
-// loads prices for its own trades' days from the owner's computer, and a snapshot file carries them inside.
+// ever loaded. Server features (sync, AI, macro data) aren't available in a shared view. Execution charts are — full
+// screen and replay too: a link loads prices (and saved ticks) for its own trades' days from the owner's computer, and
+// a snapshot file carries them inside.
 
 const SHARE_RE = /^\/s\/([A-Za-z0-9_-]{20,64})\/?$/;
 export const SHARE_TOKEN = (() => { try { return window.location.pathname.match(SHARE_RE)?.[1] || null; } catch { return null; } })();
@@ -36,9 +37,41 @@ export function installViewerFetch() {
       const rec = SNAPSHOT?.meta?.charts?.[`${q.get('symbol')}|${q.get('date')}`];
       return rec ? reply(200, rec) : reply(404, { error: 'This day’s prices aren’t in the snapshot.' });
     }
+    if (url.startsWith('/api/candles/ticks?')) { // tick replay: the link's computer has them saved, a file carries them
+      if (SHARE_TOKEN) return real(`/api/share/${SHARE_TOKEN}/ticks?${url.split('?')[1]}`);
+      const q = new URLSearchParams(url.split('?')[1]);
+      return snapshotTicks(q.get('symbol') || '', Math.floor(Number(q.get('from'))), Math.floor(Number(q.get('to')))).then((j) => reply(200, j));
+    }
     if (url.startsWith('/api/candles')) return reply(404, { error: 'Not available in a shared journal.' });
     return reply(404, { error: 'Not available in a shared journal.' });
   };
+}
+
+/** Ticks inside a snapshot file ("SYMBOL|hour" → gzipped JSON, base64), answered the way the journal would. */
+const tickCache = new Map();
+async function snapshotHour(key) {
+  if (!tickCache.has(key)) {
+    tickCache.set(key, (async () => {
+      const b64 = SNAPSHOT?.meta?.ticks?.[key];
+      if (!b64 || typeof DecompressionStream === 'undefined') return null;
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+      return JSON.parse(text);
+    })().catch(() => null));
+  }
+  return tickCache.get(key);
+}
+export async function snapshotTicks(symbol, from, to) {
+  const have = [], none = [], ticks = [];
+  if (Number.isFinite(from) && Number.isFinite(to)) {
+    for (let h = from - (from % 3600); h < Math.min(to, from + 3 * 3600); h += 3600) {
+      const list = await snapshotHour(`${symbol}|${h}`);
+      if (!list) { none.push(h); continue; }
+      have.push(h);
+      for (const t of list) if (t[0] >= from * 1000 && t[0] < to * 1000) ticks.push(t);
+    }
+  }
+  return { ticks, hours: { have, pending: [], none }, sources: have.length ? ['snapshot'] : [], canFetch: false, from: null };
 }
 
 /** A shared view tells the page it can't save: the first attempt shows a notice. */

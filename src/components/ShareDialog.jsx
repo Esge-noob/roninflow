@@ -60,6 +60,7 @@ export default function ShareDialog({ route, onClose }) {
   const [what, setWhat] = useState(page ? 'page' : 'all');
   const [expires, setExpires] = useState(7);
   const [hideMoney, setHideMoney] = useState(false);
+  const [withTicks, setWithTicks] = useState(true);
   const [info, setInfo] = useState(null); // { links, funnel }
   const [busy, setBusy] = useState('');
   const [made, setMade] = useState(null);
@@ -93,7 +94,7 @@ export default function ShareDialog({ route, onClose }) {
     if (IS_DEMO) { // no server on the demo site: the file is put together in this browser
       try {
         const { demoSnapshot } = await import('../lib/demoSnapshot');
-        const { html, name } = await demoSnapshot(state, scope, label, hideMoney);
+        const { html, name } = await demoSnapshot(state, scope, label, hideMoney, withTicks);
         const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
         const a = Object.assign(document.createElement('a'), { href: url, download: name });
         document.body.appendChild(a); a.click(); a.remove();
@@ -104,7 +105,7 @@ export default function ShareDialog({ route, onClose }) {
       return;
     }
     try {
-      const r = await fetch('/api/shares/snapshot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope, label, hideMoney, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
+      const r = await fetch('/api/shares/snapshot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ scope, label, hideMoney, ticks: withTicks, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       if (!r.ok) throw new Error('Couldn’t build the snapshot');
       const name = (r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'roninflow-snapshot.html';
       const url = URL.createObjectURL(await r.blob());
@@ -152,7 +153,7 @@ export default function ShareDialog({ route, onClose }) {
         <div className="share-note">Left out of every share: account numbers (shown as “Account 1, 2…”), broker details, account costs, payouts, your notebook, AI chats, connections and your email.</div>
 
         <section className="share-sec">
-          <div className="share-sec-h"><Link2 size={15} /> <b>Live link</b><span className="muted">— always up to date; works while this computer (or your home server) is on</span></div>
+          <div className="share-sec-h"><Link2 size={15} /> <b>Live link</b><span className="muted">— always up to date; works while this computer (or your home server) is on. Charts open full screen, with replay — tick by tick where your ticks are saved</span></div>
           {server && !info && <div className="muted" style={{ fontSize: 12.5 }}>Checking…</div>}
           {info && !publicOk && (
             <div className="share-funnel">
@@ -181,7 +182,8 @@ export default function ShareDialog({ route, onClose }) {
         </section>
 
         <section className="share-sec">
-          <div className="share-sec-h"><Download size={15} /> <b>Snapshot file</b><span className="muted">— one file that opens in any browser, even when this computer is off; frozen as it is now, execution charts included</span></div>
+          <div className="share-sec-h"><Download size={15} /> <b>Snapshot file</b><span className="muted">— one file that opens in any browser, even when this computer is off; frozen as it is now, execution charts included (full screen and replay too)</span></div>
+          <label className="share-check"><input type="checkbox" className="cbx" checked={withTicks} onChange={(e) => setWithTicks(e.target.checked)} /> Include saved tick data, so replays go tick by tick <span className="muted">(about 0.5–1 MB per hour of ticks)</span></label>
           <button className="btn" disabled={(!server && !IS_DEMO) || busy === 'snap'} onClick={snapshot}><Download size={14} /> {busy === 'snap' ? 'Building…' : `Download ${scope.kind === 'page' ? 'this page' : 'the whole journal'} as a file`}</button>
         </section>
 

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { sanitizeState, periodStart, createShareStore, isLive, tokenOk, isShareAsset, buildSnapshot, chartAllowed, embedCharts, sendShareChart } from '../share.js';
+import { sanitizeState, periodStart, createShareStore, isLive, tokenOk, isShareAsset, buildSnapshot, chartAllowed, embedCharts, embedTicks, sendShareChart } from '../share.js';
+import zlib from 'node:zlib';
+import { createCandleHandler } from '../candles.js';
 
 const journal = () => ({
   version: 1,
@@ -152,4 +154,31 @@ test('execution charts: a share loads prices only for its own symbols, around it
   const tight = await embedCharts(candles, data, { kind: 'all' }, 'UTC', 150);
   assert.equal(Object.keys(tight).length, 1, 'stays within the size budget, newest first');
   assert.ok(tight['MESZ6|2026-11-13']);
+});
+
+test('replays in shared views: saved ticks only, for the shared trade days; a snapshot carries them gzipped', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tj-sh-'));
+  fs.writeFileSync(path.join(dir, 'price-source.json'), JSON.stringify({ autoTicks: false }));
+  const candles = createCandleHandler(dir, { readTrades: () => [], readConnTrades: () => [], dropDirs: () => [] });
+  const H = Date.parse('2026-11-13T14:00:00Z') / 1000;
+  candles.ticks.store({ source: 'atas', symbol: 'ES', from: H, to: H + 3600, ticks: [[(H + 10) * 1000, 6000, 1, 1], [(H + 20) * 1000, 6000.25, 2, -1]] });
+  const data = { trades: [{ symbol: 'MESZ6', entry: '2026-11-13T06:45:00' }] };
+  const res = () => { const r = { headers: {}, setHeader: (k, v) => { r.headers[k] = v; }, end: (b) => { r.body = String(b); } }; return r; };
+  // the trade's hour: saved (an ES chart's ticks serve MES); the next hour: none, and nothing is asked of a platform
+  const ok = res();
+  await sendShareChart(ok, candles, data, 'ticks', `/api/share/t/ticks?symbol=MESZ6&from=${H}&to=${H + 7200}`);
+  const j = JSON.parse(ok.body);
+  assert.equal(ok.statusCode, 200);
+  assert.equal(j.ticks.length, 2);
+  assert.deepEqual(j.hours, { have: [H], pending: [], none: [H + 3600] });
+  assert.equal(j.canFetch, false);
+  // another symbol, or a day the share doesn't cover: refused
+  const no1 = res(); await sendShareChart(no1, candles, data, 'ticks', `/api/share/t/ticks?symbol=NQZ6&from=${H}&to=${H + 3600}`);
+  const no2 = res(); await sendShareChart(no2, candles, data, 'ticks', `/api/share/t/ticks?symbol=MESZ6&from=${H + 10 * 86400}&to=${H + 10 * 86400 + 3600}`);
+  assert.deepEqual([no1.statusCode, no2.statusCode], [404, 404]);
+  // a snapshot: the saved hours of each trade day, gzipped + base64
+  const emb = embedTicks(candles, data, 'America/Los_Angeles');
+  assert.deepEqual(Object.keys(emb), [`MESZ6|${H}`]);
+  assert.equal(JSON.parse(zlib.gunzipSync(Buffer.from(emb[`MESZ6|${H}`], 'base64'))).length, 2);
+  assert.deepEqual(embedTicks(candles, data, 'UTC', 10), {}, 'within the size budget');
 });

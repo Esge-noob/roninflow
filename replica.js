@@ -237,7 +237,7 @@ async function localShare(req, res, p) {
   if (!isLive(link) || !base?.json) return sendJson(res, 404, { error: link?.revoked ? 'revoked' : link ? 'expired' : 'not_found' });
   const state = JSON.parse(base.json);
   if (p.split('/')[4] === 'image') return sendShareImage(res, path.join(DATA, 'images'), sanitizeState(state, link.scope, { hideMoney: link.hideMoney }), p.split('/')[5]);
-  if (p.split('/')[4] === 'candles' || p.split('/')[4] === 'lib') return sendShareChart(res, candleApi, sanitizeState(state, link.scope, { hideMoney: link.hideMoney }), p.split('/')[4], req.url);
+  if (['candles', 'lib', 'ticks'].includes(p.split('/')[4])) return sendShareChart(res, candleApi, sanitizeState(state, link.scope, { hideMoney: link.hideMoney }), p.split('/')[4], req.url);
   return sendJson(res, 200, { meta: { token, scope: link.scope, label: link.label, hideMoney: !!link.hideMoney, createdAt: link.createdAt, sharedBy: state.user?.name ? String(state.user.name).split(/\s+/)[0] : '' }, state: sanitizeState(state, link.scope, { hideMoney: link.hideMoney }) }, { 'X-Robots-Tag': 'noindex' });
 }
 
@@ -378,7 +378,7 @@ async function handle(req, res) {
     // view-only share links are public (the token is the key); Funnel visitors may only reach these
     const funnelReq = !!req.headers['tailscale-funnel-request'];
     if (req.method === 'GET' || req.method === 'HEAD') {
-      if (/^\/api\/share\/[\w-]+\/(state|lib|candles|image\/[\w-]+)$/.test(p)) {
+      if (/^\/api\/share\/[\w-]+\/(state|lib|candles|ticks|image\/[\w-]+)$/.test(p)) {
         if (online && upstream && await forward(req, res, null)) return;
         return localShare(req, res, p);
       }

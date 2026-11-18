@@ -552,7 +552,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   useEffect(() => {
     if (!tickWanted || tickHour == null) return undefined;
     let alive = true, timer;
-    const NAME = { atas: 'ATAS', ninjatrader: 'NinjaTrader', quantower: 'Quantower', metatrader: 'MetaTrader', ctrader: 'cTrader', sierrachart: 'Sierra Chart', databento: 'Databento', polygon: 'Polygon', demo: 'demo' };
+    const NAME = { atas: 'ATAS', ninjatrader: 'NinjaTrader', quantower: 'Quantower', metatrader: 'MetaTrader', ctrader: 'cTrader', sierrachart: 'Sierra Chart', databento: 'Databento', polygon: 'Polygon', demo: 'demo', snapshot: 'saved', ...(IS_VIEWER ? { atas: 'saved', ninjatrader: 'saved', quantower: 'saved', metatrader: 'saved', ctrader: 'saved', sierrachart: 'saved' } : {}) };
     const load = async () => {
       // the hour the replay is in and the next one, in one request; 'slow' hours (waited a long time) keep being checked
       const need = [tickHour, tickHour + 3600].filter((h) => { const g = ticksRef.current.get(h); return g === undefined || g === 'pending' || g === 'slow'; });
@@ -1410,6 +1410,7 @@ export default function ChartStudio({ date, trades: tradesIn, initialSym, onClos
   const tickTitle = tickState.status === 'ok' ? `Replaying tick by tick from ${tickLabel}. Click to replay bar by bar.`
     : tickState.status === 'pending' ? `Asked ${tickState.name || 'your platform'} for this hour’s ticks — its RoninFlow add-on sends them while the platform is open.${addonSays}`
       : tickState.status === 'timeout' ? `${tickState.name || 'Your platform'} hasn’t sent this hour’s ticks yet — replaying bar by bar meanwhile, and still checking.${addonSays}`
+        : IS_VIEWER ? 'This shared journal has no ticks saved for this hour — replaying bar by bar.'
         : 'No tick data for this day. Tick replay needs Databento or Polygon (Settings → Price data), or a platform add-on that sends ticks: ATAS, NinjaTrader, Quantower, MetaTrader 5, cTrader or Sierra Chart (update the add-on). Replaying bar by bar.';
 
   const placeRef = useRef(place);

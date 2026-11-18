@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
+import { dayWindow } from './candles.js';
 import { execFile } from 'node:child_process';
 
 // ---------- what a shared journal may contain ----------
@@ -224,7 +226,8 @@ export function chartAllowed(data, symbol, date) {
 }
 const validTz = (tz) => { try { Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; } };
 
-/** Public: …/candles?symbol&date&tz (prices for a shared chart) and …/lib (the chart library). */
+/** Public: …/candles?symbol&date&tz (prices for a shared chart), …/ticks?symbol&from&to (saved ticks for a replay)
+ *  and …/lib (the chart library). */
 export async function sendShareChart(res, candles, data, what, url) {
   if (!candles?.get) return send(res, 424, { error: 'Charts aren’t available here.' });
   try {
@@ -236,6 +239,14 @@ export async function sendShareChart(res, candles, data, what, url) {
       return res.end(buf);
     }
     const q = new URL(url, 'http://x').searchParams;
+    if (what === 'ticks') {
+      // only ticks already saved on this computer (nothing is fetched for a viewer), for the shared trades' days
+      const symbol = q.get('symbol') || '', from = Math.floor(Number(q.get('from'))), to = Math.floor(Number(q.get('to')));
+      if (!candles.ticks?.saved || !Number.isFinite(from) || !Number.isFinite(to) || to <= from) return send(res, 400, { error: 'symbol, from and to are needed' });
+      const day = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+      if (!chartAllowed(data, symbol, day(from)) && !chartAllowed(data, symbol, day(from + 86400))) return send(res, 404, { error: 'This shared view has no ticks for that time.' });
+      return send(res, 200, candles.ticks.saved(symbol, from, to), { 'X-Robots-Tag': 'noindex' });
+    }
     const symbol = q.get('symbol') || '', date = q.get('date') || '', tz = q.get('tz') || 'UTC';
     if (!validTz(tz) || !chartAllowed(data, symbol, date)) return send(res, 404, { error: 'This shared view has no chart for that day.' });
     const rec = await candles.get(symbol, date, tz, { noPaid: true });
@@ -276,6 +287,32 @@ export async function embedCharts(candles, data, scope, tz, budget = 25e6) {
   return out;
 }
 
+/**
+ * Saved ticks for a snapshot file, so its replays go tick by tick: each hour of each shared trade day that has them
+ * (newest day first), gzipped and base64'd ("SYMBOL|hour" → text), within `budget` bytes.
+ */
+export function embedTicks(candles, data, tz, budget = 40e6) {
+  const out = {};
+  if (!candles?.ticks?.saved || !validTz(tz)) return out;
+  const want = [];
+  for (const [symbol, days] of chartDays(data)) for (const d of days) want.push([symbol, d]);
+  want.sort((a, b) => (a[1] < b[1] ? 1 : -1));
+  let used = 0;
+  for (const [symbol, d] of want) {
+    const { from, to } = dayWindow(d, tz);
+    for (let h = from - (from % 3600); h < to; h += 3600) {
+      if (out[`${symbol}|${h}`]) continue;
+      const r = candles.ticks.saved(symbol, h, h + 3600);
+      if (!r.hours.have.length) continue;
+      const b64 = zlib.gzipSync(JSON.stringify(r.ticks), { level: 9 }).toString('base64');
+      if (used + b64.length > budget) return out;
+      used += b64.length;
+      out[`${symbol}|${h}`] = b64;
+    }
+  }
+  return out;
+}
+
 // ---------- HTTP ----------
 const send = (res, code, obj, headers = {}) => {
   res.statusCode = code;
@@ -300,7 +337,7 @@ export function createShareHandler({ dataDir, distDir, port, readState, candles 
     const link = tokenOk(token) ? store.get(token) : null;
     if (!isLive(link)) return send(res, 404, { error: link?.revoked ? 'revoked' : link ? 'expired' : 'not_found' });
     if (what === 'image') return sendShareImage(res, imgDir, sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }), id);
-    if (what === 'candles' || what === 'lib') return sendShareChart(res, candles, sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }), what, req.url);
+    if (what === 'candles' || what === 'lib' || what === 'ticks') return sendShareChart(res, candles, sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }), what, req.url);
     store.viewed(token);
     const by = readState()?.user?.name;
     return send(res, 200, { meta: meta(link, { sharedBy: by ? String(by).split(/\s+/)[0] : '' }), state: sanitizeState(readState(), link.scope, { hideMoney: link.hideMoney }) }, { 'X-Robots-Tag': 'noindex' });
@@ -320,9 +357,10 @@ export function createShareHandler({ dataDir, distDir, port, readState, candles 
         const by = readState()?.user?.name;
         const data = sanitizeState(readState(), scope, { hideMoney: !!b.hideMoney });
         const charts = b.charts === false ? {} : await embedCharts(candles, data, scope, typeof b.tz === 'string' ? b.tz : 'UTC');
+        const ticks = b.charts === false || b.ticks === false ? {} : embedTicks(candles, data, typeof b.tz === 'string' ? b.tz : 'UTC');
         let chartLib = null;
         if (Object.keys(charts).length) try { chartLib = String(await candles.lib()); } catch { /* no internet and never downloaded: the charts say so */ }
-        const html = buildSnapshot(distDir, data, meta(null, { scope, label: String(b.label || '').slice(0, 80), hideMoney: !!b.hideMoney, snapshot: true, sharedBy: by ? String(by).split(/\s+/)[0] : '', images: embedImages(imgDir, data), charts, chartLib }));
+        const html = buildSnapshot(distDir, data, meta(null, { scope, label: String(b.label || '').slice(0, 80), hideMoney: !!b.hideMoney, snapshot: true, sharedBy: by ? String(by).split(/\s+/)[0] : '', images: embedImages(imgDir, data), charts, chartLib, ticks }));
         const name = `roninflow-${(scope.kind === 'page' ? scope.label || 'page' : 'journal').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${new Date().toISOString().slice(0, 10)}.html`;
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');

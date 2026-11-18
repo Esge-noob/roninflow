@@ -174,7 +174,7 @@ function handle(req, res) {
     // Visitors through Tailscale Funnel (public internet) may only ever reach these routes.
     const funnelReq = !!req.headers['tailscale-funnel-request'];
     if (req.method === 'GET' || req.method === 'HEAD') {
-      if (/^\/api\/share\/[\w-]+\/(state|lib|candles|image\/[\w-]+)(\?|$)/.test(req.url)) return shareApi.publicApi(req, res);
+      if (/^\/api\/share\/[\w-]+\/(state|lib|candles|ticks|image\/[\w-]+)(\?|$)/.test(req.url)) return shareApi.publicApi(req, res);
       if (/^\/s\/[\w-]+\/?(\?.*)?$/.test(req.url)) { res.setHeader('X-Robots-Tag', 'noindex'); req.url = '/index.html'; return serveStatic(req, res); }
       if (isShareAsset(req.url) && (funnelReq || !isLocalPc(req))) return serveStatic(req, res);
     }

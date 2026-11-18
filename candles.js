@@ -1120,6 +1120,20 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const have = list.filter((w) => coveredBy(w.root, w.h)).length;
     return { hours: list.length, have, days: AUTO_TICK_DAYS };
   }
+  /** Ticks already saved for [from, to) (at most 3 hours) — nothing is fetched or asked for. For shared views. */
+  function savedTicks(symbol, from, to) {
+    const root = rootOf(symbol);
+    to = Math.min(to, from + 3 * HOUR);
+    const have = [], none = [], out = [], sources = new Set();
+    for (const h of hoursIn(from, to)) {
+      const cov = coveredBy(root, h);
+      if (!cov) { none.push(h); continue; }
+      have.push(h); sources.add(cov.src);
+      for (const t of readTicks(tickFile(cov.src, cov.root, h)) || []) if (t[0] >= from * 1000 && t[0] < to * 1000) out.push(t);
+    }
+    return { ticks: out, hours: { have, pending: [], none }, sources: [...sources], canFetch: false, from: null };
+  }
+  handler_ticks.saved = savedTicks;
   handler_ticks.compressOld = compressOldTicks;
   handler_ticks.store = storeTicks; handler_ticks.get = ticksFor; handler_ticks.ask = tickAsk; handler_ticks.wanted = tickWanted;
 
