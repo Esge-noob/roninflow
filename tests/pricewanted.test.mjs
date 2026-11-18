@@ -14,8 +14,9 @@ const TZ = 'America/Los_Angeles';
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tj-pw-'));
 const bars = (from, n) => Array.from({ length: n }, (_, i) => [from + i * 60, 100, 101, 99, 100.5, 10]);
 
-function setup({ trades = [], conn = [] } = {}) {
+function setup({ trades = [], conn = [], cfg } = {}) {
   const dir = tmp();
+  if (cfg) fs.writeFileSync(path.join(dir, 'price-source.json'), JSON.stringify(cfg));
   const drop = path.join(dir, 'mt');
   fs.mkdirSync(drop);
   const h = createCandleHandler(dir, { readTrades: () => trades, readConnTrades: () => conn, dropDirs: () => [[drop, 'metatrader'], [path.join(dir, 'missing'), 'sierrachart']] });
@@ -318,7 +319,7 @@ test('a backtest on the full-size contract asks the platform you trade the micro
 });
 
 test('ticks: a replay asks ATAS for an hour, the indicator sends it (in parts), the hour is kept and not asked again', async () => {
-  const { h } = setup({ trades: [{ symbol: 'MES', source: 'atas', entry: '2026-11-13T06:40:00' }] });
+  const { h } = setup({ trades: [{ symbol: 'MES', source: 'atas', entry: '2026-11-13T06:40:00' }], cfg: { autoTicks: false } }); // replay requests only
   h.ingestBars({ source: 'atas', symbol: 'ES', bars: bars(Date.parse('2026-11-13T15:00:00Z') / 1000, 10) }); // ATAS is connected
   const H = Date.parse('2026-11-13T15:00:00Z') / 1000;
   let r = await h.ticks.get('MES', H + 600, H + 1800);
@@ -344,7 +345,7 @@ test('ticks: a replay asks ATAS for an hour, the indicator sends it (in parts), 
 });
 
 test('ticks for every add-on: the newest replay request first; NinjaTrader gets a list; MetaTrader a file once it can', async () => {
-  const { dir, drop, h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }, { symbol: 'MNQ', contract: 'MNQZ26', source: 'metatrader', entry: '2026-11-13T06:40:00' }] });
+  const { dir, drop, h } = setup({ trades: [{ symbol: 'MNQ', contract: 'MNQ 12-26', source: 'ninjatrader', entry: '2026-11-13T06:40:00' }, { symbol: 'MNQ', contract: 'MNQZ26', source: 'metatrader', entry: '2026-11-13T06:40:00' }], cfg: { autoTicks: false } });
   const H1 = Date.parse('2026-10-16T14:00:00Z') / 1000, H2 = Date.parse('2026-11-12T14:00:00Z') / 1000;
   // nobody can send ticks yet
   assert.deepEqual((await h.ticks.get('MNQ', H1, H1 + 3600)).hours.none, [H1]);
@@ -368,4 +369,35 @@ test('ticks for every add-on: the newest replay request first; NinjaTrader gets 
   h.writeWantedFiles();
   assert.match(fs.readFileSync(path.join(drop, 'ticks-wanted.txt'), 'utf8'), /^MNQ\|MNQZ26\|\d+\|\d+/);
   void dir;
+});
+
+test('ticks around your trades in the background: offered when no replay is waiting, newest first, until saved', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const H = now - (now % 3600) - 2 * 86400; // two days ago, on the hour
+  const { h } = setup({ conn: [{ symbol: 'MNQ', contract: 'MNQZ26', source: 'ninjatrader', entry: new Date((H + 1800) * 1000).toISOString(), exit: new Date((H + 2400) * 1000).toISOString() }] });
+  // the trade's hour, the hour before and the hour after — newest first
+  const first = h.ticks.wanted('ninjatrader');
+  assert.deepEqual(first, [{ symbol: 'MNQ', contract: 'MNQZ26', from: H + 3600, to: H + 7200 }]);
+  assert.deepEqual(h.ticks.wanted('ninjatrader'), [], 'one background hour every 15 s, so live trading isn’t slowed');
+  // a replay that's waiting always comes first
+  const H2 = H - 86400;
+  await h.ticks.get('MNQ', H2, H2 + 3600);
+  assert.deepEqual(h.ticks.wanted('ninjatrader').map((i) => i.from), [H2]);
+  // saved hours aren't offered again; ATAS (an MNQ or NQ chart) gets the rest when nothing's waiting
+  h.ticks.store({ source: 'ninjatrader', symbol: 'MNQ', from: H + 3600, to: H + 7200, ticks: [] });
+  h.ticks.store({ source: 'ninjatrader', symbol: 'MNQ', from: H2, to: H2 + 3600, ticks: [] });
+  assert.deepEqual(h.ticks.ask('atas', 'ESZ6'), { want: false }, 'not an ES chart’s job');
+  const a = h.ticks.ask('atas', 'NQZ6');
+  assert.deepEqual([a.want, a.from, a.background], [true, H, true]);
+});
+
+test('background ticks can be switched off in Settings', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const H = now - (now % 3600) - 86400;
+  const { h } = setup({ conn: [{ symbol: 'MNQ', contract: 'MNQZ26', source: 'ninjatrader', entry: new Date((H + 60) * 1000).toISOString() }] });
+  const req = { method: 'POST', url: '/api/candles/config', headers: {}, setEncoding() {}, on(ev, cb) { if (ev === 'data') cb(JSON.stringify({ yahoo: false, autoTicks: false })); if (ev === 'end') cb(); } };
+  let body = '';
+  await h(req, { setHeader() {}, end(b) { body = b; } }, () => {});
+  assert.equal(JSON.parse(body).autoTicks, false);
+  assert.deepEqual(h.ticks.wanted('ninjatrader'), []);
 });

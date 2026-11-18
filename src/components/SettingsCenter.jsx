@@ -190,6 +190,20 @@ function Prices() {
             {cfg.addonSource && cfg.addonSource !== 'any' && <span className="muted" style={{ fontSize: 12 }}>Other platforms’ add-ons won’t fetch bars.</span>}
           </div>
         )}
+        {cfg.addon && (
+          <div className="row between gap8" style={{ flexWrap: 'wrap', marginTop: 6, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+            <div className="col gap4" style={{ flex: "1 1 300px" }}>
+              <span style={{ fontSize: 12.5 }}>Send ticks around my trades too</span>
+              <span className="muted" style={{ fontSize: 12 }}>
+                In the background, the add-ons also send every trade (tick) from the hour before your first trade to the hour after your last, for the last {cfg.ticks?.days || 14} days — so replays of those days go tick by tick right away. A replay you’re watching always comes first. Needs this release’s add-ons (ATAS: Journal Sync 1.5.1, on a chart of that market).
+              </span>
+            </div>
+            <div className="row gap8">
+              {cfg.autoTicks !== false && cfg.ticks?.hours > 0 && <span className={`badge ${cfg.ticks.have >= cfg.ticks.hours ? 'pos-soft' : 'neutral'}`}>{cfg.ticks.have >= cfg.ticks.hours ? <><Check size={12} /> All {cfg.ticks.hours} hours saved</> : `${cfg.ticks.have} of ${cfg.ticks.hours} hours saved`}</span>}
+              <Switch on={cfg.autoTicks !== false} disabled={busy} onChange={(v) => save({ autoTicks: v })} />
+            </div>
+          </div>
+        )}
       </div>
       <div className="panel col gap8" style={{ padding: 14 }}>
         <div className="row between gap8" style={{ flexWrap: 'wrap' }}>

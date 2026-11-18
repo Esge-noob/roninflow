@@ -9,7 +9,9 @@
 //        drop folders, and they drop bars back as <name>.bars.jsonl (one ingest body per line).
 //   GET  /api/candles?…&want=1 (a backtest) also asks the add-ons for that day when no 1-minute bars are saved for it:
 //        it goes to the top of /api/candles/wanted for an hour or until an add-on answers (price-requested.json).
-//   GET  /api/candles/config  · POST /api/candles/config { yahoo, addon?, addonSource?, useDatabento?, usePolygon?, databentoKey?, polygonKey? }
+//   GET  /api/candles/config  · POST /api/candles/config { yahoo, addon?, addonSource?, autoTicks?, useDatabento?, usePolygon?, databentoKey?, polygonKey? }
+//        autoTicks (default on): the add-ons also send the ticks around your trades in the background, the way they
+//        send 1-minute bars, so replays of those days start tick-by-tick without waiting
 //   GET  /api/candles/lib     → TradingView Lightweight Charts (downloaded once, then served from data/vendor)
 //
 // Where prices come from is up to you (Settings → Price data). In order:
@@ -701,12 +703,12 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       try { capable = fs.readdirSync(dir).some((f) => f.endsWith('.tickcap')); } catch { /* */ }
       if (!capable) continue;
       const tfile = path.join(dir, 'ticks-wanted.txt');
-      const ttext = wantedLines(tickWanted(source)).replace(/\n/g, '\r\n');
+      const ttext = wantedLines(tickWanted(source, { poll: false })).replace(/\n/g, '\r\n');
       if (lastWritten.get(tfile) === ttext && fs.existsSync(tfile)) continue;
       try { fs.writeFileSync(tfile, ttext); lastWritten.set(tfile, ttext); } catch (e) { log(`[candles] could not write ${tfile}: ${e.message}`); }
     }
   }
-  if (!dropDirs) { setTimeout(writeWantedFiles, 15000).unref?.(); setInterval(writeWantedFiles, 60000).unref?.(); setInterval(() => { if (Object.keys(tickWant).length) writeWantedFiles(); }, 10000).unref?.(); }
+  if (!dropDirs) { setTimeout(writeWantedFiles, 15000).unref?.(); setInterval(writeWantedFiles, 60000).unref?.(); setInterval(() => { const st = autoTickStatus(); if (Object.keys(tickWant).length || st.have < st.hours) writeWantedFiles(); }, 10000).unref?.(); }
   /** One add-on bars message (web request or a line of a .bars.jsonl file). */
   function ingestBars(body) {
     const groups = Array.isArray(body?.series) ? body.series : [body];
@@ -991,9 +993,9 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     if (busy) return { want: false }; // still working on the last hour
     const root = rootOf(symbol);
     const next = waitingTicks().filter((w) => w.root === root || TWIN[w.root] === root).find((w) => Date.now() - (w.asked.atas || 0) > 120e3);
-    if (!next) return { want: false };
-    next.asked.atas = Date.now();
-    return { want: true, from: next.h, to: next.h + HOUR };
+    if (next) { next.asked.atas = Date.now(); return { want: true, from: next.h, to: next.h + HOUR }; }
+    const bg = autoTicksFor('atas', { roots: [root, TWIN[root]].filter(Boolean), max: 1 })[0]; // nothing waiting: the hours around your trades
+    return bg ? { want: true, from: bg.from, to: bg.to, background: true } : { want: false };
   }
   /** Hours a replay is waiting for right now (asked in the last 30 s) — the newest request first, so the day you're on wins. */
   function waitingTicks() {
@@ -1010,9 +1012,9 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     return [...new Set(out)];
   }
   /** The tick list for one add-on: "symbol|contract|from|to" lines, each hour handed out once every two minutes. */
-  function tickWanted(source) {
+  function tickWanted(source, { poll = true } = {}) {
     const src = srcId(source);
-    tickPolled[src] = Date.now();
+    if (poll) tickPolled[src] = Date.now(); // (writing a drop-folder file isn't the add-on asking)
     const out = [];
     for (const w of waitingTicks()) {
       if (Date.now() - (w.asked[src] || 0) < 120e3) continue;
@@ -1022,7 +1024,62 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       w.asked[src] = Date.now();
       if (out.length >= 2) break;
     }
+    if (!out.length && tickCapable().includes(src)) out.push(...autoTicksFor(src, { max: 1 })); // nothing waiting: the hours around your trades
     return out;
+  }
+  // ---------- ticks around your trades, in the background (like the 1-minute bars for the days you traded) ----------
+  const AUTO_TICK_DAYS = 14; // how far back
+  const AUTO_PAD = HOUR;     // the hour before your first trade and after your last one, too
+  const AUTO_SPAN = 8 * HOUR; // a position held longer than this only gets its first eight hours
+  let autoCache = null;
+  const autoAsked = {}; // "src|ROOT|hour" → { at, n } — each hour is offered every 10 minutes, three times at most
+  const autoLast = {};  // src → last background hand-out (one every 15 s, so live trading isn't slowed)
+  /** Hours (newest first) of the markets you traded in the last two weeks that have trades of yours in them, ±1 hour. */
+  function autoTickHours(now = Math.floor(Date.now() / 1000)) {
+    if (cfg.addon === false || cfg.autoTicks === false) return [];
+    if (autoCache && now - autoCache.at < 60) return autoCache.list;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const since = now - AUTO_TICK_DAYS * DAY;
+    const want = new Map();
+    const span = (symbol, a, b) => {
+      if (!symbol || !Number.isFinite(a)) return;
+      if (!Number.isFinite(b) || b < a) b = a;
+      if (b < since || a > now) return;
+      b = Math.min(b, a + AUTO_SPAN);
+      const root = rootOf(symbol);
+      for (const h of hoursIn(a - AUTO_PAD, b + AUTO_PAD)) if (h + HOUR <= now) want.set(`${root}|${h}`, { root, h, date: new Date(h * 1000).toISOString().slice(0, 10) });
+    };
+    const local = (v) => { const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(v || '')); return m ? zoned(m[1], +m[2], +m[3], tz) + (+m[4] || 0) : NaN; };
+    try { for (const t of (readTrades?.() || [])) if (t?.entry && !t.deleted) span(t.symbol, local(t.entry), local(t.exit)); } catch { /* journal not readable yet */ }
+    try { for (const t of (readConnTrades?.() || [])) span(t?.symbol, Date.parse(t?.entry) / 1000, Date.parse(t?.exit) / 1000); } catch { /* inbox not ready */ }
+    const list = [...want.values()].sort((x, y) => y.h - x.h);
+    autoCache = { at: now, list };
+    return list;
+  }
+  /** Background tick hours one add-on can send now (its own contract for that day; not saved yet; not given up on). */
+  function autoTicksFor(src, { roots, max = 1 } = {}) {
+    if (cfg.addonSource && cfg.addonSource !== 'any' && cfg.addonSource !== src) return [];
+    if (Date.now() - (autoLast[src] || 0) < 15e3) return [];
+    const out = [];
+    for (const w of autoTickHours()) {
+      if (roots && !roots.includes(w.root)) continue;
+      if (coveredBy(w.root, w.h)) continue;
+      const k = `${src}|${w.root}|${w.h}`, a = autoAsked[k];
+      if (a && (a.n >= 3 || Date.now() - a.at < 10 * 60e3)) continue;
+      const contract = src === 'atas' ? w.root : contractOn(src, w.root, w.date); // ATAS uses its chart's own contract
+      if (!contract) continue;
+      out.push({ symbol: w.root, contract, from: w.h, to: w.h + HOUR });
+      autoAsked[k] = { at: Date.now(), n: (a?.n || 0) + 1 };
+      if (out.length >= max) break;
+    }
+    if (out.length) autoLast[src] = Date.now();
+    return out;
+  }
+  /** For Settings: how many of those hours are saved. */
+  function autoTickStatus() {
+    const list = autoTickHours();
+    const have = list.filter((w) => coveredBy(w.root, w.h)).length;
+    return { hours: list.length, have, days: AUTO_TICK_DAYS };
   }
   handler_ticks.store = storeTicks; handler_ticks.get = ticksFor; handler_ticks.ask = tickAsk; handler_ticks.wanted = tickWanted;
 
@@ -1095,7 +1152,8 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         if (req.method === 'POST') {
           const b = await new Promise((resolve, reject) => { let t = ''; req.setEncoding('utf8'); req.on('data', (c) => { t += c; }); req.on('end', () => { try { resolve(JSON.parse(t || '{}')); } catch (e) { reject(e); } }); req.on('error', reject); });
           cfg = { ...cfg, yahoo: !!b.yahoo, decided: true };
-          for (const k of ['addon', 'useDatabento', 'usePolygon']) if (typeof b[k] === 'boolean') cfg[k] = b[k];
+          for (const k of ['addon', 'autoTicks', 'useDatabento', 'usePolygon']) if (typeof b[k] === 'boolean') cfg[k] = b[k];
+          autoCache = null;
           if (typeof b.addonSource === 'string') cfg.addonSource = b.addonSource === 'any' ? 'any' : srcId(b.addonSource);
           wantCache.clear();
           for (const k of ['databento', 'polygon']) if (typeof b[`${k}Key`] === 'string' && b[`${k}Key`] !== '••••••••') vault?.set(`price:${k}`, b[`${k}Key`].trim());
@@ -1107,6 +1165,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
         return send(res, 200, {
           yahoo: !!cfg.yahoo, addon: cfg.addon !== false, addonSource: cfg.addonSource || 'any', addonSources: sources, addonSymbols: roots,
           useDatabento: cfg.useDatabento !== false, usePolygon: cfg.usePolygon !== false,
+          autoTicks: cfg.autoTicks !== false, ticks: autoTickStatus(),
           decided: !!cfg.decided, databento: !!keyOf('databento'), polygon: !!keyOf('polygon'), vault: !!vault,
         });
       }
