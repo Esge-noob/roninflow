@@ -288,19 +288,38 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     return out;
   }
   /** Bars from the platform chosen in Settings → Price data ("any" = the platform with the most for that day). */
+  /** base + the bars of `extra` that fall where base has none (before it, after it, or a gap of over 10 minutes). */
+  function fillGaps(base, extra) {
+    const a = [...base].sort((x, y) => x[0] - y[0]);
+    if (!a.length) return [...extra].sort((x, y) => x[0] - y[0]);
+    const gaps = [[-Infinity, a[0][0]]];
+    for (let i = 1; i < a.length; i++) if (a[i][0] - a[i - 1][0] > 600) gaps.push([a[i - 1][0], a[i][0]]);
+    gaps.push([a[a.length - 1][0], Infinity]);
+    const add = extra.filter((r) => gaps.some(([lo, hi]) => r[0] > lo && r[0] < hi));
+    return add.length ? a.concat(add).sort((x, y) => x[0] - y[0]) : a;
+  }
   function addonBars(symbol, from, to) {
     const pick = cfg.addonSource && cfg.addonSource !== 'any' ? cfg.addonSource : null;
+    // the platform with the most bars for the day; the others, bars saved by earlier versions and downloaded history
+    // (backtests) fill the gaps it leaves — e.g. a platform that only started sending in the middle of the day
+    const lists = (pick ? [pick] : addonSources().map((x) => x.id)).map((src) => barsFrom(src, symbol, from, to)).sort((a, b) => b.length - a.length);
+    lists.push(barsFrom(EARLIER, symbol, from, to));
+    lists.push(...histContracts(rootOf(symbol)).map((c) => barsFrom(c.dir, symbol, from, to)).sort((a, b) => b.length - a.length)); // the contract with the most bars that day first
     let out = [];
-    for (const src of pick ? [pick] : addonSources().map((x) => x.id)) {
-      const got = barsFrom(src, symbol, from, to);
-      if (got.length > out.length) out = got;
-    }
-    if (out.length < 5) { const old = barsFrom(EARLIER, symbol, from, to); if (old.length > out.length) out = old; }
-    if (out.length < 5) { for (const c of histContracts(rootOf(symbol))) { const got = barsFrom(c.dir, symbol, from, to); if (got.length > out.length) out = got; } } // downloaded history (backtests)
-    out.sort((a, b) => a[0] - b[0]);
+    for (const l of lists) if (l.length) out = fillGaps(out, l);
     // bar size from the data (an add-on on a 1-minute chart sends 1-minute bars)
     const step = out.length > 2 ? Math.min(...out.slice(1, 50).map((r, i) => r[0] - out[i][0]).filter((d) => d > 0)) : 60;
     return { candles: out, interval: step >= 3600 ? `${Math.round(step / 3600)}h` : `${Math.max(1, Math.round(step / 60))}m` };
+  }
+
+  /** Are the add-on bars for [from, end) missing a part of the day (its start, its end, or over two hours inside)? */
+  function dayIncomplete(symbol, from, end) {
+    const c = addonBars(symbol, from, end).candles;
+    if (c.length < 30) return true;
+    const sunday = new Date((from + DAY) * 1000).getUTCDay() === 0; // a Sunday's window starts on Saturday: no market until evening
+    if ((!sunday && c[0][0] > from + 1800) || c[c.length - 1][0] < end - 1800) return true;
+    for (let i = 1; i < c.length; i++) if (c[i][0] - c[i - 1][0] > 2 * 3600) return true;
+    return false;
   }
 
   // ---------- which trade days the add-ons should still fetch bars for ----------
@@ -350,10 +369,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const end = Math.min(to, now);
       const have = coveredTo(`${source}|${rootOf(d.symbol)}`, from);
       if (have >= end - (end === now ? 90 : 0)) continue;              // today: refreshed every ~minute and a half
-      if (!have) {                                                      // another add-on (ATAS on a chart) may have sent them
-        const ab = addonBars(d.symbol, from, end);
-        if (ab.interval === '1m' && ab.candles.length >= 200 && ab.candles[ab.candles.length - 1][0] >= end - 300) continue;
-      }
+      if (!have && end < now - 600 && !dayIncomplete(d.symbol, from, end)) continue; // another add-on (ATAS on a chart) sent the whole day
       items.push({ symbol: d.symbol, contract: d.contract, from: have > from ? Math.max(from, have - 600) : from, to: end });
       if (items.length >= limit) break;
     }
@@ -560,10 +576,33 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   /** Chart-history mode (ATAS): the add-on sends whole charts; this says whether a job wants them. */
   /** A chart-mode history job for this chart's market: its own, or its micro / full-size twin's (an ES chart serves MES). */
   const chartJob = (root) => (jobs[root]?.mode === 'chart' ? jobs[root] : TWIN[root] && jobs[TWIN[root]]?.mode === 'chart' ? jobs[TWIN[root]] : jobs[root]);
+  // ATAS: a recent trade day of this market with a part missing (e.g. from before the indicator was on the chart) →
+  // ask for the chart's loaded history, at most every 30 minutes per market
+  const autoChartAt = {};
+  const autoChartTried = {}; // "ROOT|date" → when — a day the chart's history couldn't fill isn't asked about again for a day
+  function chartGapDay(root, { tz = Intl.DateTimeFormat().resolvedOptions().timeZone, now = Math.floor(Date.now() / 1000) } = {}) {
+    if (cfg.addon === false || (cfg.addonSource && cfg.addonSource !== 'any' && cfg.addonSource !== 'atas')) return null;
+    if (Date.now() - (autoChartAt[root] || 0) < 30 * 60e3) return null;
+    const since = new Date((now - 30 * DAY) * 1000).toLocaleDateString('en-CA', { timeZone: tz });
+    const days = new Map();
+    const see = (sym, date) => { if (sym && date >= since && [root, TWIN[root]].includes(rootOf(sym))) days.set(date, sym); };
+    try { for (const t of (readTrades?.() || [])) if (t?.entry && !t.deleted) see(t.symbol, String(t.entry).slice(0, 10)); } catch { /* */ }
+    try { for (const t of (readConnTrades?.() || [])) { const e = Date.parse(t?.entry); if (Number.isFinite(e)) see(t.symbol, localDate(Math.floor(e / 1000), tz)); } } catch { /* */ }
+    for (const [date, sym] of [...days].sort((a, b) => (a[0] < b[0] ? 1 : -1))) {
+      const { from, to } = dayWindow(date, tz);
+      const end = Math.min(to, now);
+      if (Date.now() - (autoChartTried[`${root}|${date}`] || 0) < DAY * 1000) continue;
+      if (end < now - 600 && dayIncomplete(sym, from, end)) { autoChartTried[`${root}|${date}`] = Date.now(); return date; }
+    }
+    return null;
+  }
   function chartWant(source, symbol) {
     const root = rootOf(symbol);
     const job = chartJob(root);
-    if (!job || job.mode !== 'chart' || job.status !== 'running' || job.source !== srcId(source)) return { want: false };
+    if (!job || job.mode !== 'chart' || job.status !== 'running' || job.source !== srcId(source)) {
+      if (srcId(source) === 'atas' && chartGapDay(root)) { autoChartAt[root] = Date.now(); return { want: true, gaps: true }; }
+      return { want: false };
+    }
     job.seen = job.seen || {};
     job.seen[String(symbol).slice(0, 40)] = new Date().toISOString();
     job.updated = new Date().toISOString();
@@ -792,7 +831,9 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       // 1. your platform add-on's bars
       const ab = cfg.addon === false ? { candles: [] } : addonBars(symbol, from, end); // switched off in Settings → Price data
       const addonRec = ab.candles.length >= 5 ? { symbol: rootOf(symbol), ysym, date, tz, from, to, interval: ab.interval, source: 'Your platform (add-on)', fetchedAt: now, final: false, candles: ab.candles } : null;
-      if (addonRec && ab.interval === '1m') return addonRec; // coarser add-on bars are used if nothing better is set up
+      // (a day your platform only has part of goes to Databento / Polygon first, when you've set one up)
+      const paidReady = !noPaid && ((cfg.useDatabento !== false && isFutures(symbol) && keyOf('databento')) || (cfg.usePolygon !== false && !isFutures(symbol) && polygonTicker(symbol) && keyOf('polygon')));
+      if (addonRec && ab.interval === '1m' && !(paidReady && end < now - 600 && dayIncomplete(symbol, from, end))) return addonRec; // coarser add-on bars are used if nothing better is set up
       // 2. Databento (futures)
       const dbKey = cfg.useDatabento === false || noPaid ? null : keyOf('databento');
       if (dbKey && isFutures(symbol)) {
@@ -1246,6 +1287,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   handler.ticks = handler_ticks;
   handler.get = get; // shared views and snapshots (share.js)
   handler.lib = lib;
+  handler.addonBars = addonBars; // (tests)
   handler.wanted = wanted;
   handler.history = { start: startHistory, continuous, jobs: () => jobs, coverage, chartWant, chartDone };
   handler.writeWantedFiles = writeWantedFiles;

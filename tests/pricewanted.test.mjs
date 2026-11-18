@@ -424,3 +424,33 @@ test('ticks are saved gzipped; plain files from earlier versions still read, and
   h2.ticks.compressOld();
   assert.ok(fs.existsSync(`${p3}.gz`) && !fs.existsSync(p3));
 });
+
+test('a day one platform only covers in part: the gaps are filled from earlier bars and downloaded history', () => {
+  const { dir, h } = setup({ cfg: { autoTicks: false } });
+  const day = dayWindow('2026-11-04', TZ);
+  // ATAS sent only the last hours of the day; bars saved by an earlier version cover the morning; history covers it all
+  h.ingestBars({ source: 'atas', symbol: 'ES', bars: bars(day.to - 9 * 3600, 9 * 60) });
+  const earlier = path.join(dir, 'bars', '_earlier', 'ES');
+  fs.mkdirSync(earlier, { recursive: true });
+  const morning = bars(day.from, 600);
+  const byUtcDay = {};
+  for (const r of morning) { const k = new Date(r[0] * 1000).toISOString().slice(0, 10); (byUtcDay[k] ||= {})[r[0]] = r; }
+  for (const [k, v] of Object.entries(byUtcDay)) fs.writeFileSync(path.join(earlier, `${k}.json`), JSON.stringify(v));
+  const r = h.addonBars('MES', day.from, day.to);
+  assert.equal(r.candles[0][0], day.from, 'the morning is there');
+  assert.equal(r.candles[r.candles.length - 1][0], day.to - 60, 'and the evening');
+  assert.equal(r.candles.length, 600 + 9 * 60);
+});
+
+test('ATAS is asked for its chart history when a recent trade day of that market has a part missing', () => {
+  const now = Math.floor(Date.now() / 1000);
+  let back = 2; while (![2, 3, 4].includes(new Date((now - back * 86400) * 1000).getUTCDay())) back++; // a Tuesday–Thursday
+  const date = new Date((now - back * 86400) * 1000).toLocaleDateString('en-CA', { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const { h } = setup({ trades: [{ symbol: 'MNQ', source: 'atas', entry: `${date}T06:40:00` }], cfg: { autoTicks: false } });
+  const day = dayWindow(date, tz);
+  h.ingestBars({ source: 'atas', symbol: 'NQ', bars: bars(day.to - 9 * 3600, 9 * 60) }); // only the evening
+  assert.deepEqual(h.history.chartWant('atas', 'NQZ6'), { want: true, gaps: true });
+  assert.deepEqual(h.history.chartWant('atas', 'NQZ6'), { want: false }, 'then not again for 30 minutes');
+  assert.deepEqual(h.history.chartWant('atas', 'ESZ6'), { want: false }, 'not a market with gaps');
+});
