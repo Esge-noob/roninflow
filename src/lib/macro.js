@@ -11,7 +11,7 @@ export function useMacro(url, { poll = 0 } = {}) {
     if (!url) return; // nothing to load (e.g. the top-bar pill is switched off)
     if (!quiet) setSt((s) => ({ ...s, loading: true }));
     try {
-      const data = IS_DEMO ? (await import('./macroDemo')).demoMacro(url) : await fetch(url, { cache: 'no-store' }).then(async (r) => {
+      const data = IS_DEMO ? await (await import('./macroDemo')).demoMacro(url) : await fetch(url, { cache: 'no-store' }).then(async (r) => {
         const j = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
         if (!r.ok) throw new Error(j?.error || `RoninFlow’s server didn’t answer (${r.status})`);
         return j;

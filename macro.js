@@ -503,6 +503,7 @@ export function createMacroHandler(dataDir, { log = () => {}, fetchImpl = (...a)
       return send(res, 502, { error: e.message });
     }
   };
+  handler.events = async (from, to) => (await calendar(from, to)).events || []; // the News service turns releases into headlines
   handler.refreshCalendar = refreshCalendar;
   handler.refreshCot = refreshCot;
   return handler;

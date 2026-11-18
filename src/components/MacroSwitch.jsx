@@ -1,10 +1,13 @@
 // The Macro page's title doubles as a menu for switching between its pages.
-import { CalendarDays, ChartColumnStacked, Check, ChevronDown, Magnet } from 'lucide-react';
+import { CalendarDays, ChartColumnStacked, Check, ChevronDown, Magnet, Newspaper, Grid3x3, BellRing } from 'lucide-react';
 import { Popover } from './ui';
 import { navigate } from '../store/store';
 
 export const MACRO_PAGES = [
   { id: 'calendar', label: 'Economic Calendar', desc: 'Releases, forecasts and actuals', icon: CalendarDays },
+  { id: 'news', label: 'News Flow', desc: 'Headlines sorted into stories, traced to your markets', icon: Newspaper },
+  { id: 'heatmap', label: 'Heat Map', desc: 'Every macro driver for your market on one screen', icon: Grid3x3 },
+  { id: 'agents', label: 'News Agents', desc: 'Alerts when a headline matters to your trade', icon: BellRing },
   { id: 'cot', label: 'COT Report', desc: 'Futures positioning from the CFTC', icon: ChartColumnStacked },
   { id: 'gex', label: 'GEX', desc: 'Options dealer gamma, vanna and charm levels', icon: Magnet },
 ];

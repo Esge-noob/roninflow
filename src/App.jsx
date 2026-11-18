@@ -21,6 +21,9 @@ import Connections from './views/Connections';
 import EconCalendar from './views/EconCalendar';
 import Cot from './views/Cot';
 import Gex from './views/Gex';
+import NewsFlow from './views/NewsFlow';
+import NewsHeatmap from './views/NewsHeatmap';
+import NewsAgents from './views/NewsAgents';
 import Backtest from './views/Backtest';
 
 function Router() {
@@ -73,8 +76,8 @@ function Router() {
       view = <Payouts />;
       break;
     case 'macro':
-      crumbs = [{ label: 'Macro', href: '#/macro/calendar' }, { label: sub === 'cot' ? 'COT Report' : sub === 'gex' ? 'GEX' : 'Economic Calendar' }];
-      view = sub === 'cot' ? <Cot /> : sub === 'gex' ? <Gex /> : <EconCalendar />;
+      crumbs = [{ label: 'Macro', href: '#/macro/calendar' }, { label: { cot: 'COT Report', gex: 'GEX', news: 'News Flow', heatmap: 'Heat Map', agents: 'News Agents' }[sub] || 'Economic Calendar' }];
+      view = { cot: <Cot />, gex: <Gex />, news: <NewsFlow />, heatmap: <NewsHeatmap />, agents: <NewsAgents /> }[sub] || <EconCalendar />;
       break;
     case 'connections':
       crumbs = [{ label: 'Connections' }];

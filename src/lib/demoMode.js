@@ -63,7 +63,7 @@ export function installDemoFetch() {
         return reply(200, { fut, date, levels });
       });
     }
-    if (url.startsWith('/api/macro/')) return import('./macroDemo').then(({ demoMacro }) => reply(200, demoMacro(url))); // sample macro data
+    if (url.startsWith('/api/macro/')) return import('./macroDemo').then(async ({ demoMacro }) => { let b = null; try { b = init?.body ? JSON.parse(init.body) : null; } catch { /* not JSON */ } return reply(200, await demoMacro(url, b)); }); // sample macro data
     if (url.startsWith('/api/candles')) return reply(404, { error: 'Not available in the demo.' });
     return reply(404, { error: 'Not available in the demo — this needs RoninFlow running on your computer.' });
   };

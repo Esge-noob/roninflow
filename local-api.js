@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import { createCandleHandler } from './candles.js';
 import { createMacroHandler } from './macro.js';
 import { createGexHandler, futuresFromCandles } from './gex.js';
+import { createNewsHandler } from './news.js';
 import { createConnectHandler } from './connect.js';
 import { createVault } from './secrets.js';
 import path from 'node:path';
@@ -395,12 +396,15 @@ export default function localApiPlugin() {
   const candles = createCandleHandler(dataDir, { vault, tokenOk: () => true });
   const macro = createMacroHandler(dataDir);
   const gex = createGexHandler(dataDir, { vault, futuresAt: futuresFromCandles(candles) });
+  const readJournal = () => { try { const j = JSON.parse(fs.readFileSync(path.join(dataDir, 'journal.json'), 'utf8')); return j.state || j; } catch { return {}; } };
+  const news = createNewsHandler(dataDir, { vault, candles, macro, readTrades: () => readJournal().trades || [], readSettings: () => readJournal().settings || {} });
+  news.start();
   const ctx = (req) => ({ loopback: isLocalPc(req) });
   const mount = (server) => {
     server.middlewares.use('/api/data', (req, res, next) => data(req, res, next, ctx(req)));
     server.middlewares.use('/api/net', (req, res, next) => net(req, res, next, ctx(req)));
     server.middlewares.use('/api/candles', (req, res) => candles(req, res));
-    server.middlewares.use('/api/macro', (req, res) => (req.originalUrl?.startsWith('/api/macro/gex') ? gex(Object.assign(req, { url: req.originalUrl }), res) : macro(req, res)));
+    server.middlewares.use('/api/macro', (req, res) => (req.originalUrl?.startsWith('/api/macro/gex') ? gex(Object.assign(req, { url: req.originalUrl }), res) : req.originalUrl?.startsWith('/api/macro/news') ? news(Object.assign(req, { url: req.originalUrl }), res) : macro(req, res)));
     server.middlewares.use('/api/connect', (req, res) => connect(req, res, { trusted: true, loopback: true }));
   };
   return { name: 'tj-local-api', configureServer: mount, configurePreviewServer: mount };
