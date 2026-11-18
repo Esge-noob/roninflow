@@ -401,3 +401,26 @@ test('background ticks can be switched off in Settings', async () => {
   assert.equal(JSON.parse(body).autoTicks, false);
   assert.deepEqual(h.ticks.wanted('ninjatrader'), []);
 });
+
+test('ticks are saved gzipped; plain files from earlier versions still read, and get compressed', async () => {
+  const { dir, h } = setup({ cfg: { autoTicks: false } });
+  const H = Date.parse('2026-11-13T15:00:00Z') / 1000;
+  const ticks = Array.from({ length: 2000 }, (_, i) => [(H + i) * 1000, 6000 + (i % 8) * 0.25, 1 + (i % 3), i % 2 ? 1 : -1]);
+  h.ticks.store({ source: 'ninjatrader', symbol: 'ES', from: H, to: H + 3600, ticks });
+  const gz = path.join(dir, 'ticks', 'ninjatrader', 'ES', '2026-11-13T15.json.gz');
+  assert.ok(fs.existsSync(gz) && !fs.existsSync(gz.slice(0, -3)));
+  assert.ok(fs.statSync(gz).size < JSON.stringify(ticks).length / 5, 'much smaller than plain JSON');
+  assert.equal((await h.ticks.get('ES', H, H + 3600)).ticks.length, 2000);
+  // an hour an earlier version saved as plain JSON
+  const H2 = H + 3600, plain = path.join(dir, 'ticks', 'ninjatrader', 'ES', '2026-11-13T16.json');
+  fs.writeFileSync(plain, JSON.stringify([[(H2 + 1) * 1000, 6001, 1, 1]]));
+  fs.writeFileSync(path.join(dir, 'ticks-covered.json'), JSON.stringify({ 'ninjatrader|ES': { [H]: 2000, [H2]: 1 } }));
+  const h2 = createCandleHandler(dir, { readTrades: () => [], readConnTrades: () => [], dropDirs: () => [] });
+  assert.equal((await h2.ticks.get('ES', H2, H2 + 3600)).ticks.length, 1, 'still read');
+  assert.ok(fs.existsSync(`${plain}.gz`) && !fs.existsSync(plain), 'and compressed on the way');
+  // the background pass compresses the rest
+  const p3 = path.join(dir, 'ticks', 'ninjatrader', 'ES', '2026-11-13T17.json');
+  fs.writeFileSync(p3, JSON.stringify([[1, 2, 3, 0]]));
+  h2.ticks.compressOld();
+  assert.ok(fs.existsSync(`${p3}.gz`) && !fs.existsSync(p3));
+});

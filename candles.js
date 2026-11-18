@@ -896,7 +896,45 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   // and not asked for again. Sources: Databento (fetched here, with a key) and ATAS (its indicator answers requests).
   const ticksDir = path.join(dataDir, 'ticks');
   const HOUR = 3600;
-  const tickFile = (src, root, h) => path.join(ticksDir, srcId(src), root.replace(/[^\w.-]/g, '_'), `${new Date(h * 1000).toISOString().slice(0, 13)}.json`);
+  // one gzipped JSON file per hour (≈17× smaller than plain JSON: a busy ES hour is ~0.6 MB instead of ~10 MB)
+  const tickFile = (src, root, h) => path.join(ticksDir, srcId(src), root.replace(/[^\w.-]/g, '_'), `${new Date(h * 1000).toISOString().slice(0, 13)}.json.gz`);
+  const plainOf = (f) => f.slice(0, -3); // how earlier versions saved them
+  function writeTicks(f, list) {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmpf = `${f}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpf, zlib.gzipSync(JSON.stringify(list), { level: 6 }));
+    fs.renameSync(tmpf, f);
+  }
+  /** An hour of ticks ([ms, price, size, side]), or null. A plain .json from an earlier version is compressed on the way. */
+  function readTicks(f) {
+    try { return JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString('utf8')); } catch { /* not compressed yet, or none */ }
+    const old = readCache(plainOf(f));
+    if (!Array.isArray(old)) return null;
+    try { writeTicks(f, old); fs.rmSync(plainOf(f), { force: true }); } catch { /* keep the plain file */ }
+    return old;
+  }
+  const dropTicks = (f) => { for (const x of [f, plainOf(f)]) { try { fs.rmSync(x, { force: true }); } catch { /* */ } } };
+  /** Compress the plain tick files earlier versions saved — one file at a time in the background. */
+  function compressOldTicks() {
+    const todo = [];
+    const walk = (d) => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const x = path.join(d, e.name); if (e.isDirectory()) walk(x); else if (e.name.endsWith('.json')) todo.push(x); } };
+    walk(ticksDir);
+    if (!todo.length) return;
+    let n = 0, before = 0, after = 0;
+    const next = () => {
+      const x = todo.shift();
+      if (!x) { if (n) log(`[ticks] compressed ${n} hour${n === 1 ? '' : 's'} of saved ticks: ${(before / 1e6).toFixed(1)} MB → ${(after / 1e6).toFixed(1)} MB`); return; }
+      try {
+        const size = fs.statSync(x).size;
+        const gz = `${x}.gz`;
+        if (!fs.existsSync(gz)) { const list = readCache(x); if (Array.isArray(list)) writeTicks(gz, list); }
+        if (fs.existsSync(gz)) { fs.rmSync(x, { force: true }); n++; before += size; after += fs.statSync(gz).size; }
+      } catch (e) { log('[ticks] could not compress', x, e.message); }
+      setTimeout(next, 50).unref?.();
+    };
+    next();
+  }
+  if (!dropDirs) setTimeout(compressOldTicks, 20000).unref?.();
   const tickCoverFile = path.join(dataDir, 'ticks-covered.json');
   let tickCover = {};
   try { tickCover = JSON.parse(fs.readFileSync(tickCoverFile, 'utf8')) || {}; } catch { /* first run */ }
@@ -913,7 +951,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     from = Math.floor(Number(from)); to = Math.floor(Number(to));
     if (!root || !Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > 6 * HOUR) return 0;
     const hours = hoursIn(from, to);
-    if (Number(part) === 0) for (const h of hours) { try { fs.rmSync(tickFile(src, root, h), { force: true }); } catch { /* */ } }
+    if (Number(part) === 0) for (const h of hours) dropTicks(tickFile(src, root, h));
     const byHour = new Map();
     for (const t of Array.isArray(ticks) ? ticks : []) {
       const ms = Number(t?.[0]), px = Number(t?.[1]);
@@ -926,16 +964,17 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     let n = 0;
     for (const [h, list] of byHour) {
       const f = tickFile(src, root, h);
-      const old = readCache(f) || [];
+      // parts arrive plain and are compressed once, with the last part (re-compressing every part is slow)
+      const old = readCache(plainOf(f)) || (() => { try { return JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString('utf8')); } catch { return []; } })();
       const all = old.concat(list).sort((a, b) => a[0] - b[0]);
-      fs.mkdirSync(path.dirname(f), { recursive: true });
-      fs.writeFileSync(f, JSON.stringify(all));
+      if (last) { writeTicks(f, all); try { fs.rmSync(plainOf(f), { force: true }); } catch { /* */ } } else { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(plainOf(f), JSON.stringify(all)); try { fs.rmSync(f, { force: true }); } catch { /* */ } }
       n += list.length;
     }
     if (last) {
+      for (const h of hours) { const f = tickFile(src, root, h); if (!byHour.has(h) && fs.existsSync(plainOf(f))) readTicks(f); }
       const k = `${src}|${root}`;
       tickCover[k] = tickCover[k] || {};
-      for (const h of hours) { tickCover[k][h] = (readCache(tickFile(src, root, h)) || []).length; delete tickWant[`${root}|${h}`]; if (TWIN[root]) delete tickWant[`${TWIN[root]}|${h}`]; }
+      for (const h of hours) { tickCover[k][h] = (readTicks(tickFile(src, root, h)) || []).length; delete tickWant[`${root}|${h}`]; if (TWIN[root]) delete tickWant[`${TWIN[root]}|${h}`]; }
       saveTickCover();
     }
     return n;
@@ -974,7 +1013,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       }
       if (cov) {
         have.push(h); sources.add(cov.src);
-        for (const t of readCache(tickFile(cov.src, cov.root, h)) || []) if (t[0] >= from * 1000 && t[0] < to * 1000) out.push(t);
+        for (const t of readTicks(tickFile(cov.src, cov.root, h)) || []) if (t[0] >= from * 1000 && t[0] < to * 1000) out.push(t);
       } else if (atas2) {
         pending.push(h);
         const k = `${root}|${h}`;
@@ -1081,6 +1120,7 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
     const have = list.filter((w) => coveredBy(w.root, w.h)).length;
     return { hours: list.length, have, days: AUTO_TICK_DAYS };
   }
+  handler_ticks.compressOld = compressOldTicks;
   handler_ticks.store = storeTicks; handler_ticks.get = ticksFor; handler_ticks.ask = tickAsk; handler_ticks.wanted = tickWanted;
 
   const send = (res, code, obj) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(obj)); };
