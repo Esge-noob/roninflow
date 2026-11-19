@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseOcc, bsGreeks, computeGex, computeVannaCharm, expiryMs, createGexHandler } from '../gex.js';
+import { parseOcc, bsGreeks, computeGex, computeVannaCharm, expiryMs, createGexHandler, futuresFromCandles } from '../gex.js';
 
 const NOW = Date.parse('2026-11-18T15:00:00Z'); // 10:00 AM New York
 const EXP = '2026-11-18', EXP2 = '2026-12-18';
@@ -167,4 +167,14 @@ test('after the cash close the index sits at its close, so futures are converted
   assert.ok(Math.abs(b.fut.ratio - 1.005) < 1e-9, `ratio from the close, not from after-hours futures: ${b.fut.ratio}`);
   assert.equal(b.fut.atClose, true);
   assert.ok(Math.abs(b.implied.spot - 6090 / 1.005) < 1e-6); assert.equal(b.implied.fut, 6090);
+});
+
+test('no ES bars (you didn’t trade ES that day): the add-on is asked for them', async () => {
+  const asked = [];
+  const candles = { get: async () => ({ candles: [], interval: '1m' }), requestDay: (...a) => asked.push(a) };
+  assert.equal(await futuresFromCandles(candles)('ES', NOW), null);
+  assert.deepEqual(asked, [['ES', '2026-11-18', 'America/New_York']]);
+  const have = { get: async () => ({ candles: [[NOW / 1000 - 60, 1, 1, 1, 6030]], interval: '1m' }), requestDay: (...a) => asked.push(a) };
+  assert.equal((await futuresFromCandles(have)('ES', NOW)).price, 6030);
+  assert.equal(asked.length, 1);
 });

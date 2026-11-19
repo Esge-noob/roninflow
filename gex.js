@@ -56,10 +56,16 @@ function normCboe(j) {
 
 /** futuresAt(root, ms) from the journal's price data (your platform's / Yahoo's 1-minute bars; never a paid source). */
 export const futuresFromCandles = (candles) => async (fut, atMs) => {
-  const rec = await candles?.get?.(fut, nyDate(atMs), 'America/New_York', { noPaid: true });
+  const date = nyDate(atMs);
+  const rec = await candles?.get?.(fut, date, 'America/New_York', { noPaid: true }).catch(() => null);
   const c = (rec?.candles || []).filter((r) => r[0] * 1000 <= atMs + 60e3);
   const last = c[c.length - 1];
-  if (!last || atMs - last[0] * 1000 > 30 * 60e3 || !/m$/.test(rec.interval || '1m')) return null;
+  if (!last || atMs - last[0] * 1000 > 30 * 60e3 || !/m$/.test(rec.interval || '1m')) {
+    // your platform only sends the markets you traded that day: ask its add-on for this one too (it arrives within a
+    // minute or two while the platform is open)
+    candles?.requestDay?.(fut, date, 'America/New_York');
+    return null;
+  }
   return { price: last[4], at: last[0] * 1000 };
 };
 

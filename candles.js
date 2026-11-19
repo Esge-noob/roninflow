@@ -436,8 +436,9 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
       const { from, to } = dayWindow(r.date, validTz(r.tz) ? r.tz : Intl.DateTimeFormat().resolvedOptions().timeZone);
       if (from > now) continue;
       const end = Math.min(to, now);
-      if (coveredTo(`${source}|${r.symbol}`, from) >= end) continue;
-      out.push({ symbol: r.symbol, contract, from, to: end });
+      const have = coveredTo(`${source}|${r.symbol}`, from);
+      if (have >= end - (end === now ? 90 : 0)) continue; // today: refreshed every ~minute and a half
+      out.push({ symbol: r.symbol, contract, from: have > from ? Math.max(from, have - 600) : from, to: end });
     }
     if (changed) saveRequested();
     return out;
@@ -1307,7 +1308,8 @@ export function createCandleHandler(dataDir, { readTrades, readConnTrades, log =
   };
   handler.ingestBars = ingestBars;
   handler.ticks = handler_ticks;
-  handler.get = get; // shared views and snapshots (share.js)
+  handler.get = get;
+  handler.requestDay = requestDay; // the GEX page asks for a market you didn't trade that day (ES for SPX) // shared views and snapshots (share.js)
   handler.lib = lib;
   handler.addonBars = addonBars; // (tests)
   handler.wanted = wanted;
