@@ -13,7 +13,13 @@ Each release's notes on GitHub come from its section here (`## x.y.z`, newest fi
 - **Optional AI for news:** built-in rules read every headline for free; switch on AI to have your Trading Coach's provider read the important lines and your sentence agents (with an hourly cap).
 - The news follows every market you've traded in the last 120 days, plus any you add.
 - Live demo: the GEX page, the indicator and the news pages work with sample data.
+- **Converting to your futures:** after the 4 PM cash close the index's price stays at its close while futures keep trading, so the levels are converted with the futures' price at the close (not an after-hours price) and the page shows where the index would be now from the futures' latest price. ES, NQ or RTY prices are requested from your platform's add-on even on days you didn't trade that market.
+- **News alerts** can be dismissed one by one or all at once, and the top-bar pill marks today's events as high-impact scheduled releases.
+- Fixes: the GEX data time showed 8 hours off (Cboe's time is UTC); the what-if time boxes fit AM/PM.
 
+**Updating:** nothing to reinstall — the add-ons from 1.8.1 already fetch the extra futures prices.
+
+## 1.8.1
 
 - **Ticks around your trades, automatically:** your platform add-on now sends every tick from the hour before your first trade to the hour after your last, for the last 14 days, in the background — the way it sends 1-minute bars — so replays of those days go tick by tick straight away. A replay you're watching always comes first, and it never slows the platform while you trade. Switch it off in Settings → Price data.
 - **Ticks take ~17× less space:** they're saved compressed (a busy ES hour: ~0.6 MB instead of ~10 MB — about 300 MB for a year of one market). Ticks you already have are compressed in the background after the update.
