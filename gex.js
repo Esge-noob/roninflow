@@ -169,6 +169,17 @@ export function createGexHandler(dataDir, { log = () => {}, vault = null, fetchI
     } catch { return null; }
   }
 
+  /** Is the US cash market open at ms? If not, when did it last close (4:00 PM New York)? */
+  function cashState(ms) {
+    const ny = new Date(new Date(ms).toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const mins = ny.getHours() * 60 + ny.getMinutes(), wd = ny.getDay();
+    if (wd > 0 && wd < 6 && mins >= 570 && mins < 960) return { open: true };
+    let d = new Date(Date.parse(`${nyDate(ms)}T12:00:00Z`));
+    if (!(wd > 0 && wd < 6 && mins >= 960)) d = new Date(d.getTime() - 864e5); // before today's open (or a weekend): an earlier day's close
+    while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d = new Date(d.getTime() - 864e5);
+    return { open: false, close: expiryMs(d.toISOString().slice(0, 10)) };
+  }
+
   async function report(symbol, exps, { source = cfg.source } = {}) {
     const free = await cboeChain(symbol).catch((e) => ({ error: e.message }));
     let all = free.rows ? free.rows : [];
@@ -188,12 +199,28 @@ export function createGexHandler(dataDir, { log = () => {}, vault = null, fetchI
     const spot = main.spot > 0 ? main.spot : free.spot;
     const at = main.at || now();
     const gex = computeGex(main.rows, { spot, now: at, exps });
+    // the index's price and the futures' must be from the same moment: outside cash hours the index sits at its
+    // close while the futures keep trading, so convert with the futures' price at the close
+    const cs = cashState(at);
+    const ratioAt = cs.open ? at : Math.min(at, cs.close);
     const near = all.length ? computeVannaCharm(all, { spot: free.spot || spot, now: free.at || at, minDte: 0, maxDte: 45 }) : null;
     const regime = all.length ? computeVannaCharm(all, { spot: free.spot || spot, now: free.at || at, minDte: 46, maxDte: 180 }) : null;
-    const fut = await ratioFor(symbol, spot, at);
+    const fut = await ratioFor(symbol, spot, ratioAt);
+    // where the index would be now, from the futures' live price (after hours, or while the data is delayed)
+    let implied = null;
+    if (fut) {
+      try {
+        const p = await futuresAt(fut.fut, now());
+        if (p?.price > 0 && Math.abs((p.at || now()) - ratioAt) > 2 * 60e3) implied = { spot: p.price / fut.ratio, fut: p.price, at: p.at || now() };
+      } catch { /* none */ }
+    }
+    if (implied && gex.profile?.length) { // the regime where price is now
+      const near2 = gex.profile.reduce((a, q) => (Math.abs(q.price - implied.spot) < Math.abs(a.price - implied.spot) ? q : a));
+      if (Math.abs(near2.price - implied.spot) / implied.spot < 0.01) gex.zone = near2.gex >= 0 ? 'positive' : 'negative';
+    }
     const out = {
       symbol, spot, at, source: main.source, delayed: main.source === 'cboe', liveError, expirations: list, exps,
-      ...gex, near, regime, fut,
+      ...gex, near, regime, fut: fut ? { ...fut, atClose: !cs.open } : null, implied, cashOpen: cs.open, closeAt: cs.close || null,
     };
     remember(symbol, out);
     return out;

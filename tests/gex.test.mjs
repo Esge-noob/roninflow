@@ -152,3 +152,19 @@ test('Cboe’s timestamp is UTC (it doesn’t say so)', async () => {
   const r = res(); await h(req(`/api/macro/gex?symbol=SPX&exp=${EXP}`), r);
   assert.equal(new Date(r.body.at).toISOString(), '2026-11-18T14:45:00.000Z');
 });
+
+test('after the cash close the index sits at its close, so futures are converted at the close and price now comes from the futures', async () => {
+  const dir = tmp();
+  const close = Date.parse('2026-11-18T21:00:00Z'); // 4:00 PM New York
+  const late = Date.parse('2026-11-18T23:50:00Z');
+  const json = { ...cboeJson(), timestamp: '2026-11-18 21:15:00' };
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(json) });
+  const futuresAt = async (fut, at) => (at <= close ? { price: 6030, at: close - 60e3 } : { price: 6090, at: late - 60e3 });
+  const h = createGexHandler(dir, { fetchImpl, now: () => late, futuresAt });
+  const r = res(); await h(req('/api/macro/gex?symbol=SPX&exp=2026-11-19'), r);
+  const b = r.body;
+  assert.equal(b.cashOpen, false); assert.equal(b.closeAt, close);
+  assert.ok(Math.abs(b.fut.ratio - 1.005) < 1e-9, `ratio from the close, not from after-hours futures: ${b.fut.ratio}`);
+  assert.equal(b.fut.atClose, true);
+  assert.ok(Math.abs(b.implied.spot - 6090 / 1.005) < 1e-6); assert.equal(b.implied.fut, 6090);
+});

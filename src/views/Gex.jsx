@@ -89,7 +89,7 @@ function GexChart({ data, ratio, fut, show }) {
     setHover(near);
   };
   // labels on two rows when two levels sit close together
-  const marks = [[data.putWall, 'put', 'Put wall'], [data.callWall, 'call', 'Call wall'], [data.flip, 'flip', 'Flip'], [spot, 'spot', 'Price']]
+  const marks = [[data.putWall, 'put', 'Put wall'], [data.callWall, 'call', 'Call wall'], [data.flip, 'flip', 'Flip'], [data.implied?.spot || spot, 'spot', data.implied ? 'Price now' : 'Price']]
     .filter(([v]) => v != null && v >= span[0] && v <= span[1]).sort((a, b) => a[0] - b[0]);
   let lastX = -1e9, row = 0;
   const marked = marks.map(([v, cls, label]) => { const px = x(v); row = px - lastX < 70 ? 1 - row : 0; lastX = px; return { v, cls, label, row }; });
@@ -352,7 +352,9 @@ export default function Gex() {
       ) : (
         <>
           <div className="gx-kpis">
-            <Kpi label={`${symbol} price`} v={fmtPx(data.spot)} sub={F(data.spot) && `${fut} ${F(data.spot)}`} />
+            {data.implied
+              ? <Kpi label={`${symbol} now (from ${data.fut.fut})`} v={fmtPx(data.implied.spot)} sub={`${fut} ${fmtPx(data.implied.fut)} · ${symbol} ${data.cashOpen ? 'at data time' : 'closed at'} ${fmtPx(data.spot)}`} title={`The options data is from ${data.cashOpen ? 'a delayed snapshot' : 'the cash close'}; this is where ${symbol} would be at ${fut}’s latest price`} />
+              : <Kpi label={`${symbol} price`} v={fmtPx(data.spot)} sub={F(data.spot) && `${fut} ${F(data.spot)}`} />}
             <Kpi label="Gamma zone" v={data.zone === 'positive' ? '+γ positive' : '−γ negative'} sub={data.zone === 'positive' ? 'mean-reverting' : 'trending / volatile'} cls={data.zone === 'positive' ? 'pos' : 'neg'} />
             <Kpi label="Total GEX" v={fmtUsd(data.total)} sub="per 1% move" />
             <Kpi label="Call wall" v={fmtPx(data.callWall, 0)} sub={F(data.callWall) && `${fut} ${F(data.callWall)}`} cls="call" title="The strike with the most call gamma — often resistance" />
@@ -362,7 +364,7 @@ export default function Gex() {
 
           {futRoot && (
             <div className="gx-futline muted">
-              {data.fut ? <>Converted to <b>{fut}</b>: {fmtPx(data.fut.price)} ÷ {fmtPx(data.spot)} = ×{data.fut.ratio.toFixed(4)} <span>(your price data at {new Date(data.fut.at || data.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })})</span></>
+              {data.fut ? <>Converted to <b>{fut}</b>: {fmtPx(data.fut.price)} ÷ {fmtPx(data.spot)} = ×{data.fut.ratio.toFixed(4)} <span>({data.fut.atClose ? `${fut} at the ${symbol} cash close, ` : 'your price data at '}{new Date(data.fut.at || data.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}{data.fut.atClose ? ' — the index doesn’t trade after hours, so both prices are from the same moment' : ''})</span></>
                 : (
                   <form className="row gap6" onSubmit={(e) => { e.preventDefault(); const v = Number(e.currentTarget.fp.value); if (v > 0 && data.spot > 0) setSetting('gexFut', { ...(s.gexFut || {}), [symbol]: { price: v, ratio: v / data.spot, at: Date.now() } }); }}>
                     <span>No {fut} prices from your platform for {data.delayed ? 'the time of this data' : 'now'}. {manual ? <>Using ×{manual.ratio.toFixed(4)} you entered.</> : 'Type the futures price to convert the levels:'}</span>
