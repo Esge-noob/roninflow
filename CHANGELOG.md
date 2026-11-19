@@ -7,6 +7,7 @@ Each release's notes on GitHub come from its section here (`## x.y.z`, newest fi
 - **Trading Coach → Context:** narrow what the coach looks at by strategy, the day's market condition (from your Diary check-in), tags and edge blockers (any blocker, none — your disciplined trades — or specific ones), on top of account and period. The panel shows how many trades are in context, and the AI is told exactly which trades it's looking at.
 - **Your own tags and edge blockers:** an Edit button next to them on every trade — add, rename, reorder or remove. A rename carries over onto your past trades; removing one leaves trades that already have it alone.
 - Fix: the hover box on P&L charts (e.g. an account's chart near the right edge) stays inside the chart instead of being cut off.
+- Fix: the coach's Context menu is no longer cut off — it opens on the side it fits (and scrolls on small screens).
 
 ## 1.9.0
 
