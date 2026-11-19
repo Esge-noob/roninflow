@@ -366,17 +366,17 @@ export function makeEngine() {
     const n = trades.length;
     const r2 = (v) => Math.round(v * 100) / 100;
     let net = 0, gp = 0, gl = 0, w = 0, l = 0, even = 0, fees = 0, peak = 0, eq = 0, dd = 0, ddIntra = 0, runUp = 0, trough = 0, runUpIntra = 0;
-    let streakL = 0, streakW = 0, maxL = 0, maxW = 0, largestWin = 0, largestLoss = 0, barsW = 0, barsL = 0, barsAll = 0, mae = 0, mfe = 0;
+    let streakL = 0, streakW = 0, maxL = 0, maxW = 0, largestWin = 0, largestLoss = 0, barsW = 0, barsL = 0, barsDecided = 0, maeDecided = 0, mfeDecided = 0;
     let ddStart = null, longestDD = 0, inDD = false;
     const byDay = new Map();
-    const side = { long: { n: 0, net: 0, w: 0 }, short: { n: 0, net: 0, w: 0 } };
+    const side = { long: { n: 0, d: 0, net: 0, w: 0 }, short: { n: 0, d: 0, net: 0, w: 0 } };
     for (const t of trades) {
       if (t.mae != null) ddIntra = Math.max(ddIntra, peak - (eq + Math.min(0, t.mae)));
       if (t.mfe != null) runUpIntra = Math.max(runUpIntra, eq + Math.max(0, t.mfe) - trough);
-      net += t.pnl; eq += t.pnl; fees += t.fee || 0; barsAll += t.bars || 0; mae += t.mae || 0; mfe += t.mfe || 0;
-      const sd = t.d > 0 ? side.long : side.short; sd.n++; sd.net += t.pnl; if (t.pnl > 0) sd.w++;
-      if (t.pnl > 0) { gp += t.pnl; w++; streakW++; streakL = 0; maxW = Math.max(maxW, streakW); largestWin = Math.max(largestWin, t.pnl); barsW += t.bars || 0; }
-      else if (t.pnl < 0) { gl -= t.pnl; l++; streakL++; streakW = 0; maxL = Math.max(maxL, streakL); largestLoss = Math.min(largestLoss, t.pnl); barsL += t.bars || 0; }
+      net += t.pnl; eq += t.pnl; fees += t.fee || 0;
+      const sd = t.d > 0 ? side.long : side.short; sd.n++; sd.net += t.pnl;
+      if (t.pnl > 0) { gp += t.pnl; w++; sd.d++; sd.w++; barsDecided += t.bars || 0; maeDecided += t.mae || 0; mfeDecided += t.mfe || 0; streakW++; streakL = 0; maxW = Math.max(maxW, streakW); largestWin = Math.max(largestWin, t.pnl); barsW += t.bars || 0; }
+      else if (t.pnl < 0) { gl -= t.pnl; l++; sd.d++; barsDecided += t.bars || 0; maeDecided += t.mae || 0; mfeDecided += t.mfe || 0; streakL++; streakW = 0; maxL = Math.max(maxL, streakL); largestLoss = Math.min(largestLoss, t.pnl); barsL += t.bars || 0; }
       else { even++; }
       if (eq > peak) { // a new high ends a drawdown: how long it lasted (calendar days)
         if (inDD) { longestDD = Math.max(longestDD, (t.x - ddStart) / 86400); inDD = false; }
@@ -385,7 +385,7 @@ export function makeEngine() {
       dd = Math.max(dd, peak - eq);
       trough = Math.min(trough, eq);
       runUp = Math.max(runUp, eq - trough);
-      byDay.set(t.day, (byDay.get(t.day) || 0) + t.pnl);
+      if (t.pnl !== 0) byDay.set(t.day, (byDay.get(t.day) || 0) + t.pnl);
     }
     if (inDD && n) longestDD = Math.max(longestDD, (trades[n - 1].x - ddStart) / 86400);
     ddIntra = Math.max(ddIntra, dd);
@@ -394,23 +394,25 @@ export function makeEngine() {
     const mean = dayP.length ? dayP.reduce((a, b) => a + b, 0) / dayP.length : 0;
     const sdv = dayP.length > 1 ? Math.sqrt(dayP.reduce((a, b) => a + (b - mean) ** 2, 0) / (dayP.length - 1)) : 0;
     const down = dayP.length > 1 ? Math.sqrt(dayP.reduce((a, b) => a + Math.min(0, b) ** 2, 0) / (dayP.length - 1)) : 0;
-    // per trade: t-statistic of the average trade, and the chance of a result this good from luck alone
-    const avg = n ? net / n : 0;
-    const sdT = n > 1 ? Math.sqrt(trades.reduce((a, t) => a + (t.pnl - avg) ** 2, 0) / (n - 1)) : 0;
-    const tstat = sdT ? avg / (sdT / Math.sqrt(n)) : 0;
+    // per trade (break-even excluded): t-statistic of the average trade, and the chance of a result this good from luck alone
+    const decided = w + l;
+    const nonBe = trades.filter((t) => t.pnl !== 0);
+    const avg = decided ? net / decided : 0;
+    const sdT = decided > 1 ? Math.sqrt(nonBe.reduce((a, t) => a + (t.pnl - avg) ** 2, 0) / (decided - 1)) : 0;
+    const tstat = sdT ? avg / (sdT / Math.sqrt(decided)) : 0;
     const years = (extra.span || (n ? (trades[n - 1].x - trades[0].e) / 86400 : 0)) / 365.25;
     const ret = initial ? net / initial : 0;
     return {
-      trades: n, net: r2(net), grossProfit: r2(gp), grossLoss: r2(-gl), fees: r2(fees), wins: w, losses: l, even, winRate: n ? (w / n) * 100 : 0,
+      trades: n, decided, net: r2(net), grossProfit: r2(gp), grossLoss: r2(-gl), fees: r2(fees), wins: w, losses: l, even, winRate: decided ? (w / decided) * 100 : 0,
       pf: gl ? gp / gl : gp > 0 ? Infinity : 0, avgWin: w ? gp / w : 0, avgLoss: l ? -gl / l : 0, exp: avg, ratioWL: l && w ? (gp / w) / (gl / l) : 0,
       largestWin: r2(largestWin), largestLoss: r2(largestLoss), largestWinPct: gp ? (largestWin / gp) * 100 : 0, largestLossPct: gl ? (-largestLoss / gl) * 100 : 0,
-      avgBars: n ? barsAll / n : 0, avgBarsWin: w ? barsW / w : 0, avgBarsLoss: l ? barsL / l : 0, maxConsecWins: maxW, maxConsecLosses: maxL, worstStreak: maxL,
+      avgBars: decided ? barsDecided / decided : 0, avgBarsWin: w ? barsW / w : 0, avgBarsLoss: l ? barsL / l : 0, maxConsecWins: maxW, maxConsecLosses: maxL, worstStreak: maxL,
       maxDD: r2(dd), maxDDIntra: r2(ddIntra), ddPct: initial ? (ddIntra / initial) * 100 : 0, longestDD, maxRunUp: r2(runUp), maxRunUpIntra: r2(Math.max(runUpIntra, runUp)),
       sharpe: sdv ? (mean / sdv) * Math.sqrt(252) : 0, sortino: down ? (mean / down) * Math.sqrt(252) : 0,
       days: byDay.size, retDD: dd ? net / dd : net > 0 ? Infinity : 0, returnPct: ret * 100, cagr: years > 0.05 && 1 + ret > 0 ? (Math.pow(1 + ret, 1 / years) - 1) * 100 : null,
-      avgMae: n ? mae / n : 0, avgMfe: n ? mfe / n : 0, tstat, pLuck: n > 1 ? 1 - normCdf(tstat) : 1,
-      long: { trades: side.long.n, net: r2(side.long.net), winRate: side.long.n ? (side.long.w / side.long.n) * 100 : 0 },
-      short: { trades: side.short.n, net: r2(side.short.net), winRate: side.short.n ? (side.short.w / side.short.n) * 100 : 0 },
+      avgMae: decided ? maeDecided / decided : 0, avgMfe: decided ? mfeDecided / decided : 0, tstat, pLuck: decided > 1 ? 1 - normCdf(tstat) : 1,
+      long: { trades: side.long.n, net: r2(side.long.net), winRate: side.long.d ? (side.long.w / side.long.d) * 100 : 0 },
+      short: { trades: side.short.n, net: r2(side.short.net), winRate: side.short.d ? (side.short.w / side.short.d) * 100 : 0 },
       exposure: extra.exposure ?? null, buyHold: extra.buyHold ?? null,
     };
   }

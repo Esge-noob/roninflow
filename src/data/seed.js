@@ -20,7 +20,7 @@ export const DASHBOARD_WIDGETS = [
   { id: 'hold', label: 'Average hold time & recent trades' },
   { id: 'daily', label: 'Daily P&L' },
   { id: 'weekday', label: 'P&L by weekday' },
-  { id: 'hour', label: 'P&L by hour' },
+  { id: 'halfHour', label: 'P&L by half hour' },
   { id: 'symbols', label: 'Symbols' },
   { id: 'avgday', label: 'Average winning / losing day' },
   { id: 'avgtrade', label: 'Average win / loss' },

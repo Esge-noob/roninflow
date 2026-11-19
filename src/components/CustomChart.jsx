@@ -26,7 +26,8 @@ function niceTicks(min, max, n = 4) {
 
 export default function CustomChart({ item, c, title }) {
   const { trades, state } = c;
-  const dim = DIMENSION[item.opts?.dim] ? item.opts.dim : 'symbol';
+  const rawDim = item.opts?.dim === 'hour' ? 'halfHour' : item.opts?.dim;
+  const dim = DIMENSION[rawDim] ? rawDim : 'symbol';
   const series = (Array.isArray(item.opts?.series) && item.opts.series.length ? item.opts.series : DEFAULT_SERIES).filter((s) => METRIC[s.m]).slice(0, 3);
   const setSeries = (next) => c.setOpt(item.id, 'series', next);
   const ctx = useMemo(() => ({

@@ -52,6 +52,7 @@ export function PnlCalendar({ days, onDay, initial, compact = false }) {
           const wd = wk.map((d) => map[keyOf(d)]).filter(Boolean);
           const wNet = wd.reduce((s, d) => s + d.net, 0);
           const wTrades = wd.reduce((s, d) => s + d.count, 0);
+          const wDecided = wd.reduce((s, d) => s + (d.decided ?? (d.wins + d.losses)), 0);
           const wWins = wd.reduce((s, d) => s + d.wins, 0);
           return (
             <div className="cal-week" key={wi}>
@@ -88,7 +89,7 @@ export function PnlCalendar({ days, onDay, initial, compact = false }) {
                     <div className={`wk-pnl ${wNet >= 0 ? 'pos' : 'neg'}`} style={{ fontSize: 16, fontWeight: 500, marginTop: 'auto', marginBottom: 6, filter: priv ? 'blur(6px)' : undefined }}>
                       <Fit short={`${wNet > 0 ? '+' : ''}${fmtCompact(wNet)}`}>{fmtMoney(wNet, { sign: true })}</Fit>
                     </div>
-                    <div className="muted" style={{ fontWeight: 500 }}>{wTrades}t · {Math.round((wWins / wTrades) * 100)}%</div>
+                    <div className="muted" style={{ fontWeight: 500 }}>{wTrades}t · {wDecided ? `${Math.round((wWins / wDecided) * 100)}%` : '—'}</div>
                   </>
                 )}
               </div>

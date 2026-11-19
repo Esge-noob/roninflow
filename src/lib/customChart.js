@@ -1,5 +1,5 @@
 // Custom chart widget: group trades by a dimension (symbol, weekday, month, strategy …) and plot up to three metrics.
-import { toDate, keyOf, holdSeconds, groupByDay, WEEKDAYS } from './stats.js';
+import { toDate, keyOf, holdSeconds, groupByDay, WEEKDAYS, halfHourKey } from './stats.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const HOLD = [[60, '< 1 min'], [300, '1–5 min'], [900, '5–15 min'], [3600, '15–60 min'], [14400, '1–4 h'], [Infinity, '> 4 h']];
@@ -12,7 +12,7 @@ export const DIMENSIONS = [
   { key: 'week', label: 'Each week', of: (t) => weekStart(toDate(t.entry)), order: 'time', fmt: (k) => `Wk of ${short(k)}` },
   { key: 'month', label: 'Each month', of: (t) => String(t.entry).slice(0, 7), order: 'time', fmt: (k) => `${MONTHS[Number(k.slice(5, 7)) - 1]} ${k.slice(2, 4)}` },
   { key: 'weekday', label: 'Day of week', of: (t) => WEEKDAYS[toDate(t.entry).getDay()], order: [1, 2, 3, 4, 5, 6, 0].map((d) => WEEKDAYS[d]) },
-  { key: 'hour', label: 'Hour of day', of: (t) => `${String(toDate(t.entry).getHours()).padStart(2, '0')}:00`, order: 'time' },
+  { key: 'halfHour', label: 'Half hour of day', of: (t) => halfHourKey(t.entry), order: 'time' },
   { key: 'monthOfYear', label: 'Month of year', of: (t) => MONTHS[toDate(t.entry).getMonth()], order: MONTHS },
   { key: 'symbol', label: 'Symbol', of: (t) => t.symbol || '—', order: 'count' },
   { key: 'strategy', label: 'Strategy', of: (t, c) => c.strategies?.get(t.strategyId) || 'No strategy', order: 'count' },
@@ -24,6 +24,7 @@ export const DIMENSIONS = [
 ];
 
 const sum = (l, f) => l.reduce((a, t) => a + f(t), 0);
+const nonBe = (l) => l.filter((t) => t.pnl !== 0);
 const wins = (l) => l.filter((t) => t.pnl > 0);
 const losses = (l) => l.filter((t) => t.pnl < 0);
 const avg = (l, f) => (l.length ? sum(l, f) / l.length : 0);
@@ -37,8 +38,8 @@ function dd(l) {
 export const METRICS = [
   { key: 'net', label: 'Net P&L', unit: '$', group: 'Profit', f: (l) => sum(l, (t) => t.pnl) },
   { key: 'cum', label: 'Cumulative net P&L', unit: '$', group: 'Profit', cumulative: true, f: (l) => sum(l, (t) => t.pnl) },
-  { key: 'avgTrade', label: 'Avg trade (expectancy)', unit: '$', group: 'Profit', f: (l) => avg(l, (t) => t.pnl) },
-  { key: 'avgDaily', label: 'Avg daily net P&L', unit: '$', group: 'Profit', f: (l) => { const d = groupByDay(l); return d.length ? sum(d, (x) => x.net) / d.length : 0; } },
+  { key: 'avgTrade', label: 'Avg trade (expectancy)', unit: '$', group: 'Profit', f: (l) => avg(nonBe(l), (t) => t.pnl) },
+  { key: 'avgDaily', label: 'Avg daily net P&L', unit: '$', group: 'Profit', f: (l) => { const d = groupByDay(l).filter((x) => x.decided > 0); return d.length ? sum(d, (x) => x.net) / d.length : 0; } },
   { key: 'grossProfit', label: 'Gross profit', unit: '$', group: 'Profit', f: (l) => sum(wins(l), (t) => t.pnl) },
   { key: 'grossLoss', label: 'Gross loss', unit: '$', group: 'Profit', f: (l) => sum(losses(l), (t) => t.pnl) },
   { key: 'avgWin', label: 'Avg win', unit: '$', group: 'Profit', f: (l) => avg(wins(l), (t) => t.pnl) },
@@ -46,23 +47,23 @@ export const METRICS = [
   { key: 'largestWin', label: 'Largest win', unit: '$', group: 'Profit', f: (l) => Math.max(0, ...l.map((t) => t.pnl)) },
   { key: 'largestLoss', label: 'Largest loss', unit: '$', group: 'Profit', f: (l) => Math.min(0, ...l.map((t) => t.pnl)) },
   { key: 'fees', label: 'Fees', unit: '$', group: 'Profit', f: (l) => sum(l, (t) => Number(t.fees) || 0) },
-  { key: 'winRate', label: 'Win %', unit: '%', group: 'Quality', f: (l) => (l.length ? (wins(l).length / l.length) * 100 : 0) },
-  { key: 'dayWinRate', label: 'Winning days %', unit: '%', group: 'Quality', f: (l) => { const d = groupByDay(l); return d.length ? (d.filter((x) => x.net > 0).length / d.length) * 100 : 0; } },
+  { key: 'winRate', label: 'Win %', unit: '%', group: 'Quality', f: (l) => { const d = nonBe(l); return d.length ? (wins(l).length / d.length) * 100 : 0; } },
+  { key: 'dayWinRate', label: 'Winning days %', unit: '%', group: 'Quality', f: (l) => { const d = groupByDay(l).filter((x) => x.net !== 0); return d.length ? (d.filter((x) => x.net > 0).length / d.length) * 100 : 0; } },
   { key: 'pf', label: 'Profit factor', unit: 'x', group: 'Quality', f: (l) => { const g = sum(wins(l), (t) => t.pnl), b = -sum(losses(l), (t) => t.pnl); return b ? g / b : g ? 5 : 0; } },
   { key: 'wlRatio', label: 'Avg win / avg loss', unit: 'x', group: 'Quality', f: (l) => { const a = avg(wins(l), (t) => t.pnl), b = -avg(losses(l), (t) => t.pnl); return b ? a / b : a ? 5 : 0; } },
   { key: 'maxDD', label: 'Max drawdown', unit: '$', group: 'Risk', f: dd },
   { key: 'count', label: 'Trade count', unit: 'n', group: 'Activity', f: (l) => l.length },
   { key: 'contracts', label: 'Contracts traded', unit: 'n', group: 'Activity', f: (l) => sum(l, (t) => Number(t.qty) || 0) },
-  { key: 'avgSize', label: 'Avg position size', unit: 'n', group: 'Activity', f: (l) => avg(l, (t) => Number(t.qty) || 0) },
-  { key: 'longPct', label: 'Long %', unit: '%', group: 'Activity', f: (l) => (l.length ? (l.filter((t) => t.direction !== 'Short').length / l.length) * 100 : 0) },
-  { key: 'avgHold', label: 'Avg hold time', unit: 'min', group: 'Time', f: (l) => avg(l, (t) => holdSeconds(t)) / 60 },
+  { key: 'avgSize', label: 'Avg position size', unit: 'n', group: 'Activity', f: (l) => avg(nonBe(l), (t) => Number(t.qty) || 0) },
+  { key: 'longPct', label: 'Long %', unit: '%', group: 'Activity', f: (l) => { const d = nonBe(l); return d.length ? (d.filter((t) => t.direction !== 'Short').length / d.length) * 100 : 0; } },
+  { key: 'avgHold', label: 'Avg hold time', unit: 'min', group: 'Time', f: (l) => avg(nonBe(l), (t) => holdSeconds(t)) / 60 },
 ];
 export const METRIC = Object.fromEntries(METRICS.map((m) => [m.key, m]));
 export const DIMENSION = Object.fromEntries(DIMENSIONS.map((d) => [d.key, d]));
 
 /** Groups → rows: [{ key, label, n, values: { metricKey: number } }] in the dimension's order. */
 export function customRows(trades, dimKey, metricKeys, ctx = {}) {
-  const dim = DIMENSION[dimKey] || DIMENSION.symbol;
+  const dim = DIMENSION[dimKey === 'hour' ? 'halfHour' : dimKey] || DIMENSION.symbol;
   const by = new Map();
   for (const t of trades) for (const k of [].concat(dim.of(t, ctx))) { if (!by.has(k)) by.set(k, []); by.get(k).push(t); }
   let keys = [...by.keys()];

@@ -141,7 +141,7 @@ function Headline({ m }) {
       <div className="panel rv-hcard">
         <div className="rv-tile-l"><StatLabel k="ev" v={m.ev} ctx={m}>EV</StatLabel> <span className="muted2">· expectancy per trade</span></div>
         <div className={`rv-hval ${tone.money(m.ev)}`}><Private>{fmtMoney(m.ev, { sign: true })}</Private></div>
-        <div className="muted" style={{ fontSize: 12.5 }}>{nTrades(m.count)} · net ÷ trades</div>
+        <div className="muted" style={{ fontSize: 12.5 }}>{nTrades(m.decided)} · net ÷ decided trades{m.be ? ` (${m.be} BE excl.)` : ''}</div>
       </div>
       <div className="panel rv-hcard">
         <div className="rv-tile-l"><StatLabel k="perfRatio" v={m.perfRatio} ctx={m}>Performance Ratio</StatLabel></div>
@@ -163,7 +163,7 @@ function Headline({ m }) {
 function useDayMap(trades) {
   return useMemo(() => Object.fromEntries(groupByDay(trades).map((d) => [d.date, d])), [trades]);
 }
-const wr = (d) => (d.count ? Math.round((d.wins / d.count) * 100) : 0);
+const wr = (d) => Math.round(d.winRate);
 
 /** Month grid. variant: full (P&L + trades + win rate, week column) | mini (compact P&L) | heat (colour only). */
 function MonthCal({ year, month, dayMap, variant = 'full', onDay: onDayProp }) {
@@ -196,6 +196,7 @@ function MonthCal({ year, month, dayMap, variant = 'full', onDay: onDayProp }) {
         const inWeek = wk.map((d) => dayMap[keyOf(d)]).filter((d) => d && d.date.startsWith(prefix));
         const wNet = inWeek.reduce((s, d) => s + d.net, 0);
         const wCount = inWeek.reduce((s, d) => s + d.count, 0);
+        const wDecided = inWeek.reduce((s, d) => s + (d.decided ?? (d.wins + d.losses)), 0);
         const wWins = inWeek.reduce((s, d) => s + d.wins, 0);
         return (
           <div className="rv-cal-row" key={wi}>
@@ -225,7 +226,7 @@ function MonthCal({ year, month, dayMap, variant = 'full', onDay: onDayProp }) {
                 {inWeek.length > 0 && (
                   <>
                     <div className={`pv ${wNet >= 0 ? 'pos' : 'neg'}`}>{variant === 'mini' ? <Fit className={priv ? 'hidden-val' : ''}>{short(wNet)}</Fit> : <Fit className={priv ? 'hidden-val' : ''} short={short(wNet)}>{fmtMoney(wNet, { sign: true, dp: 0 })}</Fit>}</div>
-                    {variant === 'full' && <div className="rv-day-meta"><span>{wCount}t</span><span>WR {Math.round((wWins / wCount) * 100)}%</span></div>}
+                    {variant === 'full' && <div className="rv-day-meta"><span>{wCount}t</span><span>WR {wDecided ? `${Math.round((wWins / wDecided) * 100)}%` : '—'}</span></div>}
                   </>
                 )}
               </div>
@@ -405,7 +406,7 @@ function WeekDays({ period, dayMap }) {
     if (i < 5 || dayMap[k]) days.push({ d, k, day: dayMap[k] });
   }
   const list = days.map((x) => x.day).filter(Boolean);
-  const net = list.reduce((s, d) => s + d.net, 0), n = list.reduce((s, d) => s + d.count, 0), w = list.reduce((s, d) => s + d.wins, 0);
+  const net = list.reduce((s, d) => s + d.net, 0), n = list.reduce((s, d) => s + d.count, 0), dec = list.reduce((s, d) => s + (d.decided ?? (d.wins + d.losses)), 0), w = list.reduce((s, d) => s + d.wins, 0);
   const today = keyOf(new Date());
   return (
     <div className="rv-week" style={{ '--n': days.length + 1 }}>
@@ -415,13 +416,13 @@ function WeekDays({ period, dayMap }) {
           <div className={`rv-wday-v ${day ? (day.net >= 0 ? 'pos' : 'neg') : 'muted2'}`} style={day ? { '--len': fmtMoney(day.net, { sign: true, dp: 0 }).length } : undefined}>
             {day ? <span className={priv ? 'hidden-val' : ''}>{fmtMoney(day.net, { sign: true, dp: 0 })}</span> : '—'}
           </div>
-          <div className="rv-wday-f">{day ? <><span>{nTrades(day.count)}</span><span>{wr(day)}%</span></> : <span className="muted2">No trades</span>}</div>
+          <div className="rv-wday-f">{day ? <><span>{nTrades(day.count)}</span><span>{day.decided ? `${wr(day)}%` : '—'}</span></> : <span className="muted2">No trades</span>}</div>
         </div>
       ))}
       <div className={`rv-wday total ${list.length ? (net >= 0 ? 'win' : 'loss') : ''}`}>
         <div className="rv-wday-h"><span>Week</span></div>
         <div className={`rv-wday-v ${list.length ? (net >= 0 ? 'pos' : 'neg') : 'muted2'}`} style={list.length ? { '--len': fmtMoney(net, { sign: true, dp: 0 }).length } : undefined}>{list.length ? <span className={priv ? 'hidden-val' : ''}>{fmtMoney(net, { sign: true, dp: 0 })}</span> : '—'}</div>
-        <div className="rv-wday-f">{list.length ? <><span>{nTrades(n)}</span><span>WR {Math.round((w / n) * 100)}%</span></> : <span className="muted2">—</span>}</div>
+        <div className="rv-wday-f">{list.length ? <><span>{nTrades(n)}</span><span>WR {dec ? `${Math.round((w / dec) * 100)}%` : '—'}</span></> : <span className="muted2">—</span>}</div>
       </div>
     </div>
   );
@@ -485,7 +486,7 @@ function Weekly({ period, trades }) {
       <TileStats.Provider value={m}>
       <div className="rv-tiles eight">
         <Tile label="Net P&L" value={<Private>{money0(m.net)}</Private>} t={tone.money(m.net)} big />
-        <Tile label="Win rate" value={`${Math.round(m.winRate)}%`} t={m.count ? tone.winRate(m.winRate) : ''} sub={`${m.wins}W · ${m.losses}L`} big />
+        <Tile label="Win rate" value={m.decided ? `${Math.round(m.winRate)}%` : '—'} t={m.decided ? tone.winRate(m.winRate) : ''} sub={m.be ? `${m.wins}W · ${m.losses}L · ${m.be} BE excl.` : `${m.wins}W · ${m.losses}L`} big />
         <Tile label="Profit factor" value={pfText(m.profitFactor)} t={m.count ? tone.pf(m.profitFactor) : ''} big />
         <Tile label="Performance Ratio" value={ratioText(m.perfRatio)} t={m.count ? tone.pr(m.perfRatio) : ''} big title="win% × avg win ÷ avg loss" />
         <Tile label="ROMAD" value={ratioText(m.romad)} t={m.count ? tone.romad(m.romad) : ''} big title="P&L ÷ max drawdown" />

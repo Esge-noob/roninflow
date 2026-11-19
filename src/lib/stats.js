@@ -49,6 +49,16 @@ export const fmtTime24 = (iso) => {
   const d = toDate(iso);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
+/** Half-hour entry bucket label, e.g. "09:00", "09:30", "10:00". */
+export const halfHourKey = (iso) => {
+  const d = toDate(iso);
+  return `${pad(d.getHours())}:${d.getMinutes() < 30 ? '00' : '30'}`;
+};
+/** Half-hour window label, e.g. "09:00–09:29" or "09:30–09:59". */
+export const halfHourRange = (key) => {
+  const [h, m] = String(key).split(':');
+  return `${h}:${m}–${h}:${m === '00' ? '29' : '59'}`;
+};
 export const holdSeconds = (t) => Math.max(0, (toDate(t.exit) - toDate(t.entry)) / 1000);
 /** Trades open longer than this are left out of hold-time averages (usually broken fill pairing, e.g. an exit missed for days). */
 export const HOLD_CAP_SECONDS = 6 * 3600;
@@ -140,6 +150,7 @@ export function fmtCompact(v, opts = {}) {
 export const fmtPct = (v, dp = 1, sign = true) => `${sign && v > 0 ? '+' : ''}${v.toFixed(dp)}%`;
 
 // ---------- trade math ----------
+export const isBreakEven = (t) => Number(t?.pnl) === 0;
 export const result = (t) => (t.pnl > 0 ? 'win' : t.pnl < 0 ? 'loss' : 'be');
 
 export function computePnl({ symbol, direction, entryPrice, exitPrice, qty, fees }) {
@@ -160,17 +171,19 @@ export function summarize(trades) {
   const net = Math.round(trades.reduce((s, t) => s + t.pnl, 0) * 100) / 100;
   const avg = (arr, f) => (arr.length ? arr.reduce((s, t) => s + f(t), 0) / arr.length : 0);
   const count = trades.length;
+  const decided = wins.length + losses.length;
   return {
     count,
+    decided,
     net,
     wins: wins.length,
     losses: losses.length,
     be: be.length,
-    winRate: count ? (wins.length / count) * 100 : 0,
+    winRate: decided ? (wins.length / decided) * 100 : 0,
     grossProfit,
     grossLoss,
     profitFactor: grossLoss ? grossProfit / grossLoss : grossProfit ? Infinity : 0,
-    avgTrade: count ? net / count : 0,
+    avgTrade: decided ? net / decided : 0,
     avgWin: avg(wins, (t) => t.pnl),
     avgLoss: avg(losses, (t) => t.pnl),
     largestWin: wins.length ? Math.max(...wins.map((t) => t.pnl)) : 0,
@@ -335,7 +348,8 @@ export function maxDrawdown(trades) {
 }
 /** Performance Ratio = win% × (avg win / avg loss). >0.5 good, >0.75 great. */
 export function perfRatio(s) {
-  if (!s.count) return 0;
+  const n = s.decided ?? (s.wins != null && s.losses != null ? s.wins + s.losses : s.count);
+  if (!n) return 0;
   if (!s.avgLoss) return s.avgWin ? Infinity : 0;
   return (s.winRate / 100) * (s.avgWin / Math.abs(s.avgLoss));
 }
@@ -348,24 +362,29 @@ export const ratioText = (v, dp = 2) => (v === Infinity ? '∞' : v === -Infinit
 
 /**
  * Everything the review pages show for a set of trades.
+ * Break-even trades (pnl === 0) are excluded from calculations.
  * Discipline: trades flagged with an edge blocker (on the trade itself) are undisciplined, all others disciplined;
  * trades flagged with a sizing blocker ("Bad Sizing") count against size management.
  */
 export function periodMetrics(trades, { blockers = [] } = {}) {
   const s = summarize(trades);
+  const nonBe = trades.filter((t) => t.pnl !== 0);
   const days = [...groupByDay(trades)].reverse(); // oldest → newest
-  const nets = days.map((d) => d.net);
-  const winD = days.filter((d) => d.net > 0), lossD = days.filter((d) => d.net < 0);
+  const calcDays = days.filter((d) => d.decided > 0);
+  const nets = calcDays.map((d) => d.net);
+  const winD = calcDays.filter((d) => d.net > 0), lossD = calcDays.filter((d) => d.net < 0);
+  const decidedDays = winD.length + lossD.length;
   const mean = nets.length ? nets.reduce((a, b) => a + b, 0) / nets.length : 0;
   const sd = nets.length > 1 ? Math.sqrt(nets.reduce((a, v) => a + (v - mean) ** 2, 0) / (nets.length - 1)) : 0;
   let cw = 0, cl = 0, mw = 0, ml = 0;
   for (const v of nets) {
-    if (v > 0) { cw++; cl = 0; } else if (v < 0) { cl++; cw = 0; } else { cw = 0; cl = 0; }
+    if (v === 0) continue;
+    if (v > 0) { cw++; cl = 0; } else { cl++; cw = 0; }
     mw = Math.max(mw, cw); ml = Math.max(ml, cl);
   }
   // discipline: trades flagged with an edge blocker are undisciplined; every other trade counts as disciplined
   let flagged = 0, sizing = 0, flaggedPnl = 0;
-  for (const t of trades) {
+  for (const t of nonBe) {
     const b = Array.isArray(t.blockers) ? t.blockers.filter((x) => !blockers.length || blockers.includes(x)) : [];
     if (!b.length) continue;
     flagged++; flaggedPnl += t.pnl;
@@ -375,7 +394,7 @@ export function periodMetrics(trades, { blockers = [] } = {}) {
   const avgOf = (arr) => (arr.length ? arr.reduce((a, d) => a + d.net, 0) / arr.length : 0);
   return {
     ...s,
-    days: days.length,
+    days: calcDays.length,
     dayList: days,
     ev: s.avgTrade,
     perfRatio: perfRatio(s),
@@ -385,16 +404,16 @@ export function periodMetrics(trades, { blockers = [] } = {}) {
     avgWinDay: avgOf(winD),
     avgLossDay: avgOf(lossD),
     avgDay: mean,
-    bestDay: days.length ? Math.max(...nets) : 0,
-    worstDay: days.length ? Math.min(...nets) : 0,
+    bestDay: nets.length ? Math.max(...nets) : 0,
+    worstDay: nets.length ? Math.min(...nets) : 0,
     maxWinStreak: mw,
     maxLossStreak: ml,
-    winDaysPct: days.length ? (winD.length / days.length) * 100 : 0,
+    winDaysPct: decidedDays ? (winD.length / decidedDays) * 100 : 0,
     flaggedTrades: flagged,
     flaggedPnl: Math.round(flaggedPnl * 100) / 100,
     sizingTrades: sizing,
-    discipline: s.count ? ((s.count - flagged) / s.count) * 100 : null,
-    sizeMgmt: s.count ? ((s.count - sizing) / s.count) * 100 : null,
+    discipline: s.decided ? ((s.decided - flagged) / s.decided) * 100 : null,
+    sizeMgmt: s.decided ? ((s.decided - sizing) / s.decided) * 100 : null,
   };
 }
 

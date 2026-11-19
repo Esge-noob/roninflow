@@ -34,7 +34,7 @@ export const WIDGETS = {
   daily: { name: 'Daily P&L Chart', cat: 'chart', w: 12, h: 6, minW: 4, minH: 4, desc: 'Net P&L for each session' },
   drawdown: { name: 'Max Drawdown', cat: 'chart', w: 6, h: 6, minW: 4, minH: 4, desc: 'How far below its peak your P&L has been' },
   weekday: { name: 'Performance by Day', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results for each day of the week', options: [PNL_OR_RATE] },
-  hour: { name: 'Performance by Hour', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results by the hour you entered', options: [PNL_OR_RATE] },
+  halfHour: { name: 'Performance by Half Hour', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results by the half hour you entered', options: [PNL_OR_RATE] },
   holdDur: { name: 'Performance by Hold Duration', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results by how long the trade was held', options: [PNL_OR_RATE] },
   symbols: { name: 'Performance by Symbol', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per symbol, with largest win and loss', options: [PNL_OR_RATE] },
   strategy: { name: 'Strategy Performance', cat: 'chart', w: 4, h: 6, minW: 3, minH: 4, desc: 'Results per strategy from your playbook', options: [PNL_OR_RATE] },
@@ -65,7 +65,7 @@ export const DEFAULT_LAYOUT = [
   { id: 'netpnl', x: 0, y: 11, w: 6, h: 8 },
   { id: 'hold', x: 6, y: 11, w: 6, h: 4 },
   { id: 'blockers', x: 6, y: 15, w: 6, h: 4 },
-  { id: 'weekday', x: 0, y: 19, w: 4, h: 5 }, { id: 'hour', x: 4, y: 19, w: 4, h: 5 }, { id: 'symbols', x: 8, y: 19, w: 4, h: 5 },
+  { id: 'weekday', x: 0, y: 19, w: 4, h: 5 }, { id: 'halfHour', x: 4, y: 19, w: 4, h: 5 }, { id: 'symbols', x: 8, y: 19, w: 4, h: 5 },
   { id: 'avgday', x: 0, y: 24, w: 4, h: 7 }, { id: 'avgtrade', x: 4, y: 24, w: 4, h: 7 }, { id: 'streaks', x: 8, y: 24, w: 4, h: 7 },
   { id: 'risk', x: 0, y: 31, w: 6, h: 5 }, { id: 'drawdown', x: 6, y: 31, w: 6, h: 5 },
   { id: 'calendar', x: 0, y: 36, w: 12, h: 18 },
@@ -88,12 +88,12 @@ export function freeName(list, base = 'New dashboard') {
 
 const PRESETS = {
   Performance: ['net', 'winRate', 'profitFactor', 'netpnl', 'equity', 'daily', 'calendar'],
-  Risk: ['net', 'romad', 'perfRatio', 'progress', 'drawdown', 'hold', 'symbols', 'avgday', 'avgtrade', 'streaks', 'hour'],
-  Psychology: ['winRate', 'longShort', 'streaks', 'weekday', 'hour', 'holdDur', 'blockers', 'tags', 'calendar'],
+  Risk: ['net', 'romad', 'perfRatio', 'progress', 'drawdown', 'hold', 'symbols', 'avgday', 'avgtrade', 'streaks', 'halfHour'],
+  Psychology: ['winRate', 'longShort', 'streaks', 'weekday', 'halfHour', 'holdDur', 'blockers', 'tags', 'calendar'],
 };
 
 // widget ids from the old fixed dashboard (settings.dashboardWidgets) → the widgets that replaced them
-const OLD_IDS = { kpis: KPIS, hold: ['hold', 'recent'], blockers: ['risk', 'blockers'] };
+const OLD_IDS = { kpis: KPIS, hold: ['hold', 'recent'], blockers: ['risk', 'blockers'], hour: ['halfHour'] };
 
 /** The layout a dashboard starts with before it's been customised. */
 export function presetLayout(name, oldWidgets) {
@@ -106,7 +106,11 @@ export function presetLayout(name, oldWidgets) {
 /** A dashboard's layout: the saved one, or its preset. */
 export function layoutFor(settings, name) {
   const saved = settings?.dashLayouts?.[name];
-  return saved ? normalize(saved, WIDGETS) : presetLayout(name, name === 'My Dashboard' ? settings?.dashboardWidgets : undefined);
+  if (!saved) return presetLayout(name, name === 'My Dashboard' ? settings?.dashboardWidgets : undefined);
+  const migrated = Array.isArray(saved)
+    ? saved.map((i) => (i && i.id === 'hour' ? { ...i, id: 'halfHour' } : i))
+    : saved;
+  return normalize(migrated, WIDGETS);
 }
 
 /** A widget's option value (falls back to the option's default). */

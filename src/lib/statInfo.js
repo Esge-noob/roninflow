@@ -14,21 +14,22 @@ export const STATS = {
     what: 'What you made or lost after commissions, from every trade closed in this period.',
     how: 'Sum of every closed trade’s P&L (fees included)',
     read: (v, c, $) => {
-      if (!c?.count) return none();
-      const per = v / c.count;
+      const n = c?.decided ?? c?.count;
+      if (!n) return none();
+      const per = v / n;
       return v > 0
-        ? { tone: 'good', verdict: 'In profit', text: `You’re up ${$(v)} over ${c.count} trade${c.count === 1 ? '' : 's'} — about ${$(per)} a trade. Check Profit factor and ROMAD to see how much risk it took to get there.` }
-        : v < 0 ? { tone: 'bad', verdict: 'Down', text: `You’re down ${$(Math.abs(v))} over ${c.count} trades (${$(per)} a trade). Look at Win rate against your break-even win rate, and at your average loss — one of the two is usually the leak.` }
+        ? { tone: 'good', verdict: 'In profit', text: `You’re up ${$(v)} over ${n} decided trade${n === 1 ? '' : 's'} — about ${$(per)} a trade. Check Profit factor and ROMAD to see how much risk it took to get there.` }
+        : v < 0 ? { tone: 'bad', verdict: 'Down', text: `You’re down ${$(Math.abs(v))} over ${n} decided trades (${$(per)} a trade). Look at Win rate against your break-even win rate, and at your average loss — one of the two is usually the leak.` }
         : { tone: 'ok', verdict: 'Flat', text: 'Break-even so far.' };
     },
   },
   winRate: {
     name: 'Win rate',
-    what: 'The share of your trades that made money. On its own it says little: a 40% win rate is great if winners are much bigger than losers, and 70% can still lose money if losers are bigger.',
-    how: 'Winning trades ÷ all trades',
+    what: 'The share of your decided trades that made money (break-even trades are excluded). On its own it says little: a 40% win rate is great if winners are much bigger than losers, and 70% can still lose money if losers are bigger.',
+    how: 'Winning trades ÷ (wins + losses), break-even excluded',
     bench: 'Compare it with your break-even win rate (below) rather than with a fixed number.',
     read: (v, c) => {
-      if (!c?.count) return none();
+      if (!(c?.decided ?? c?.count)) return none();
       const be = breakEvenWR(c);
       if (be == null || !c.losses || !c.wins) return { tone: v >= 50 ? 'good' : 'ok', verdict: pct(v), text: c.losses ? 'No winners yet to compare against.' : 'No losing trades yet in this period.' };
       const gap = v - be;
@@ -58,7 +59,7 @@ export const STATS = {
     how: 'Win rate × (average win ÷ average loss)',
     bench: 'Above 0.5 good · above 0.75 great',
     read: (v, c) => {
-      if (!c?.count) return none();
+      if (!(c?.decided ?? c?.count)) return none();
       if (v === Infinity) return { tone: 'good', verdict: 'No losses yet', text: 'No losing trades in this period.' };
       const p = payoff(c);
       const tail = p != null ? ` Your winners average ${num(p)}× your losers.` : '';
@@ -84,10 +85,10 @@ export const STATS = {
   },
   ev: {
     name: 'EV (expectancy)',
-    what: 'What an average trade is worth to you — the number your edge comes down to.',
-    how: 'Net P&L ÷ number of trades',
+    what: 'What an average decided trade is worth to you (break-even trades excluded) — the number your edge comes down to.',
+    how: 'Net P&L ÷ decided trades (break-even excluded)',
     read: (v, c, $) => {
-      if (!c?.count) return none();
+      if (!(c?.decided ?? c?.count)) return none();
       return v > 0 ? { tone: 'good', verdict: 'Positive edge', text: `Each trade adds ${$(v)} on average — about ${$(v * 100)} over the next 100 if nothing changes. Keep taking the same quality of setup.` }
         : v < 0 ? { tone: 'bad', verdict: 'Negative edge', text: `Each trade costs you ${$(Math.abs(v))} on average, so more trades means more losses. Fewer, higher-quality trades usually help before anything else.` }
         : { tone: 'ok', verdict: 'Break-even', text: 'Your average trade is worth about zero.' };
@@ -205,7 +206,7 @@ export const STATS = {
   },
   breakEven: {
     name: 'Break-even win rate', what: 'The win rate you need to break even with your current average win and loss.', how: 'Average loss ÷ (average win + average loss)',
-    read: (v, c) => (v == null || !c?.count ? none() : c.winRate >= v
+    read: (v, c) => (v == null || !(c?.decided ?? c?.count) ? none() : c.winRate >= v
       ? { tone: 'good', verdict: `You’re ${Math.round(c.winRate - v)} pts above`, text: `You need ${pct(v)} and you win ${pct(c.winRate)} of the time.` }
       : { tone: 'bad', verdict: `You’re ${Math.round(v - c.winRate)} pts below`, text: `You need ${pct(v)} but win ${pct(c.winRate)} of the time. Either raise the win rate or bring this number down by growing winners relative to losers.` }),
   },

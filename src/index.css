@@ -2555,3 +2555,11 @@ button.nw-tone:hover { text-decoration: underline; }
 /* What-if: room for the hours, minutes and AM/PM */
 .wi-times { flex-wrap: wrap; }
 .wi-time { flex: 1 1 132px; min-width: 132px; max-width: 170px; padding-right: 6px; font-variant-numeric: tabular-nums; }
+
+/* Filter popover: Include / Exclude toggle */
+.flt-mode { display: inline-flex; padding: 2px; border: 1px solid var(--border-2); background: var(--card-2); border-radius: 2px; gap: 2px; }
+.flt-mode button { height: 20px; padding: 0 7px; font-size: 11px; color: var(--muted); border-radius: 2px; cursor: pointer; }
+.flt-mode button:hover { color: var(--fg); }
+.flt-mode button.on { background: var(--card-3); color: var(--fg); font-weight: 500; }
+.flt-mode button.on.neg { background: var(--neg-bg); color: var(--neg); }
+

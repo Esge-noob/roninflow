@@ -22,7 +22,8 @@ export function roninScore(trades, initial = 50000) {
   const recovery = s.net <= 0 ? 0 : dd > 0 ? s.net / dd : Infinity;
   const ddPct = initial > 0 ? (dd / initial) * 100 : 0;
   const best = Math.max(0, ...days.map((d) => d.net));
-  const greenRate = days.length ? days.filter((d) => d.net > 0).length / days.length : 0;
+  const activeDays = days.filter((d) => d.decided > 0 && d.net !== 0);
+  const greenRate = activeDays.length ? activeDays.filter((d) => d.net > 0).length / activeDays.length : 0;
   const values = { win: s.winRate, pf: s.profitFactor, wl, recovery, dd: ddPct, consistency: s.net > 0 ? best / s.net : greenRate };
   const parts = {
     win: clamp((s.winRate / 60) * 100),
@@ -32,8 +33,8 @@ export function roninScore(trades, initial = 50000) {
     dd: clamp(100 - ddPct * 10),
     consistency: s.net > 0 ? clamp(((1 - best / s.net) / 0.7) * 100) : clamp(greenRate * 50),
   };
-  const score = trades.length ? RONIN_PARTS.reduce((sum, p) => sum + parts[p.key] * p.weight, 0) / 100 : 0;
-  return { score, parts, values, trades: trades.length, days: days.length, net: s.net, maxDD: dd, bestDay: best, avgWin: s.avgWin || 0, avgLoss: avgLoss, netUp: s.net > 0, greenRate };
+  const score = s.decided ? RONIN_PARTS.reduce((sum, p) => sum + parts[p.key] * p.weight, 0) / 100 : 0;
+  return { score, parts, values, trades: s.decided, days: days.filter((d) => d.decided > 0).length, net: s.net, maxDD: dd, bestDay: best, avgWin: s.avgWin || 0, avgLoss: avgLoss, netUp: s.net > 0, greenRate };
 }
 
 const money = (v) => `${v < 0 ? '-' : ''}$${Math.abs(Math.round(v)).toLocaleString()}`;
@@ -50,7 +51,7 @@ export function roninInsights(r) {
       meaning: v.win >= 60 ? 'You pick winners more often than most traders.'
         : v.win >= 45 ? 'About half your trades win — normal for most styles.'
           : `You win fewer than ${v.win < 35 ? '1 in 3' : '1 in 2'} trades, so your winners have to be much bigger than your losers to pay off (yours are ${r2(v.wl)}× as big).`,
-      tip: 'Review your losing trades for entries taken before your setup was complete, and trades outside your best hours or setups — cutting those lifts win rate fastest.',
+      tip: 'Review your losing trades for entries taken before your setup was complete, and trades outside your best half-hour windows or setups — cutting those lifts win rate fastest.',
     },
     pf: {
       value: `profit factor ${r2(v.pf)}`,

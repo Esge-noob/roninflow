@@ -151,10 +151,11 @@ export function regimeStats(trades, diary, regimes, lookback = 90) {
     const ds = days.filter((d) => diary[d.date]?.pre?.regime === r.id);
     const tr = ds.flatMap((d) => d.trades);
     const s = summarize(tr);
-    const up = ds.filter((d) => d.net > 0), dn = ds.filter((d) => d.net < 0);
+    const active = ds.filter((d) => d.decided > 0);
+    const up = active.filter((d) => d.net > 0), dn = active.filter((d) => d.net < 0);
     const avgUp = up.length ? up.reduce((a, d) => a + d.net, 0) / up.length : 0;
     const avgDn = dn.length ? dn.reduce((a, d) => a + d.net, 0) / dn.length : 0;
-    const n = ds.length;
+    const n = active.length;
     const ev = n ? (up.length / n) * avgUp + (dn.length / n) * avgDn : 0;
     return { ...r, days: n, winRate: s.winRate, net: s.net, pf: s.profitFactor, avgUp, avgDn, ev, trades: s.count };
   });

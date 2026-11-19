@@ -761,11 +761,11 @@ function LiveCompare({ bt, live, name }) {
         <thead><tr><th /><th>Backtest</th><th>Live · {name}</th></tr></thead>
         <tbody>
           {row('Trades', (x) => x.count)}
-          {row('Win rate', (x) => (x.count ? `${Math.round(x.winRate)}%` : '—'))}
-          {row('Profit factor', (x) => (x.count ? pfText(x.profitFactor) : '—'))}
+          {row('Win rate', (x) => (x.decided ? `${Math.round(x.winRate)}%` : '—'))}
+          {row('Profit factor', (x) => (x.decided ? pfText(x.profitFactor) : '—'))}
           {row('Average win', (x) => x.avgWin || 0, true)}
           {row('Average loss', (x) => -Math.abs(x.avgLoss || 0), true)}
-          {row('Average trade', (x) => (x.count ? x.net / x.count : 0), true)}
+          {row('Average trade', (x) => x.avgTrade, true)}
         </tbody>
       </table>
     </div>

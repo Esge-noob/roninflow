@@ -315,7 +315,7 @@ function Strategies({ lookback, setLookback }) {
     return state.strategies.filter((s) => !cat || s.category === cat).map((s) => {
       const trades = inRange.filter((t) => t.strategyId === s.id);
       const st = summarize(trades);
-      return { s, trades, st, ev: st.count ? st.net / st.count : 0 };
+      return { s, trades, st, ev: st.avgTrade };
     });
   }, [all, state.strategies, cat, lookback]);
   const ranked = rows.filter((r) => r.st.count >= 5);

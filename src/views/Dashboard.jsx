@@ -4,7 +4,7 @@ import { ChevronDown, ChartArea, ChartLine, ChartColumn, Trophy, Minus, Trending
 import { useStore, useAccountTrades, navigate } from '../store/store';
 import { AccountPicker, DateRange, Fit, Popover, Seg, TrendBadge, Private, useSize, Modal, ModalHead, Confirm } from '../components/ui';
 import { PnlChart, Sparkline, Gauge, RateBar, HBars, MarkerScale } from '../components/Charts';
-import { FilterButton, applyFilters, EMPTY_FILTERS } from '../components/Filters';
+import { FilterButton, applyFilters, EMPTY_FILTERS, hasActiveFilters } from '../components/Filters';
 import { PnlCalendar } from '../components/Calendar';
 import { useOpenDay } from '../lib/dayPopup';
 import { TradeDrawer } from '../components/TradeForms';
@@ -19,7 +19,7 @@ import { addItem, removeItem } from '../lib/grid';
 import { CATEGORIES, WIDGETS, dashboardList, freeName, layoutFor, optionOf, presetLayout, searchWidgets } from '../lib/widgets';
 import {
   summarize, equityCurve, inRange, mostTraded, fmtShortDate, fmtDate, fmtTime12, fmtTime24, fmtHold, pfText, groupByDay, sortByEntry, pctChange,
-  WEEKDAYS, toDate, fmtMoney, keyOf, HOLD_CAP_SECONDS, money0, perfRatio, maxDrawdown, romad, ratioText, holdSeconds,
+  WEEKDAYS, toDate, fmtMoney, keyOf, HOLD_CAP_SECONDS, money0, perfRatio, maxDrawdown, romad, ratioText, holdSeconds, halfHourKey,
 } from '../lib/stats';
 
 function previousRange(range, allTrades) {
@@ -99,7 +99,7 @@ export default function Dashboard() {
   const account = state.accounts.find((a) => a.id === state.settings.account);
   const initial = account?.initial || state.accounts.filter((a) => all.some((t) => t.accountId === a.id)).reduce((a, x) => a + x.initial, 0) || 50000;
   // all-time view: P&L = live balance − starting balance (the gap to the trades is shown underneath)
-  const unfiltered = !range.from && !range.to && JSON.stringify(filters) === JSON.stringify(EMPTY_FILTERS);
+  const unfiltered = !range.from && !range.to && !hasActiveFilters(filters);
   const gap = unfiltered ? balanceGap(state) : 0;
 
   const ctx = { trades, prevTrades, s, p, curve, dd, days, initial, gap, openDay, setOpenTrade, state, setOpt };
@@ -340,14 +340,14 @@ function WidgetView({ item, c }) {
     }
     case 'winRate':
       return (
-        <div className={`kpi wkpi ${s.winRate >= 50 ? 'posc' : 'negc'}`}>
-          <div className="kpi-head"><StatLabel k="winRate" v={s.winRate} ctx={sctx}>Win Rate</StatLabel> <TrendBadge value={prevTrades.length ? pctChange(s.winRate, p.winRate) : s.winRate - 50} /></div>
+        <div className={`kpi wkpi ${s.decided ? (s.winRate >= 50 ? 'posc' : 'negc') : ''}`}>
+          <div className="kpi-head"><StatLabel k="winRate" v={s.winRate} ctx={sctx}>Win Rate</StatLabel> <TrendBadge value={prevTrades.length && p.decided ? pctChange(s.winRate, p.winRate) : s.decided ? s.winRate - 50 : 0} /></div>
           <div className="row gap24 wkpi-mid">
-            <div className="kpi-val" style={{ margin: 0 }}>{Math.round(s.winRate)}%</div>
+            <div className="kpi-val" style={{ margin: 0 }}>{s.decided ? `${Math.round(s.winRate)}%` : '—'}</div>
             <div className="grow"><RateBar pct={s.winRate} /></div>
           </div>
           <div className="kpi-sub row gap16"><span className="neg">L: {s.losses}</span><span>BE: {s.be}</span><span className="pos">W: {s.wins}</span></div>
-          <div className="kpi-foot">{s.count} closed positions</div>
+          <div className="kpi-foot">{s.decided} decided{s.be ? ` · ${s.be} BE excl.` : ` (${s.count} closed)`}</div>
         </div>
       );
     case 'profitFactor':
@@ -406,12 +406,12 @@ function WidgetView({ item, c }) {
     case 'equity': return <EquityW c={c} />;
     case 'daily': return <DailyW days={days} />;
     case 'drawdown': return <DrawdownW curve={curve} dd={dd} ctx={sctx} />;
-    case 'weekday': case 'hour': case 'holdDur': case 'symbols': case 'strategy': case 'tags': return <Breakdown item={item} c={c} />;
+    case 'weekday': case 'halfHour': case 'holdDur': case 'symbols': case 'strategy': case 'tags': return <Breakdown item={item} c={c} />;
     case 'cross': return <CrossAnalysis item={item} c={c} />;
     case 'custom': case 'custom2': case 'custom3': return <CustomChart item={item} c={c} title={WIDGETS[item.id].name} />;
     case 'ronin': return <RoninScore trades={trades} initial={initial} />;
     case 'recent': return <Recent trades={trades} onOpen={c.setOpenTrade} priv={c.state.settings.privacy} />;
-    case 'avgtrade': return <AvgWinLoss title="Average Trade" unit="trade" win={s.avgWin} loss={Math.abs(s.avgLoss)} wins={s.wins} losses={s.losses} total={s.count} winRate={s.winRate} avg={s.avgTrade} rateLabel="Your win rate" />;
+    case 'avgtrade': return <AvgWinLoss title="Average Trade" unit="trade" win={s.avgWin} loss={Math.abs(s.avgLoss)} wins={s.wins} losses={s.losses} total={s.decided} winRate={s.winRate} avg={s.avgTrade} rateLabel="Your win rate" />;
     case 'avgday': return <AvgDayPanel days={days} />;
     case 'streaks': return <StreaksPanel trades={trades} />;
     case 'risk': return <RiskW />;
@@ -483,20 +483,21 @@ function DrawdownW({ curve, dd, ctx }) {
 
 const HOLD_BUCKETS = [[60, '< 1 min'], [300, '1–5 min'], [900, '5–15 min'], [3600, '15–60 min'], [14400, '1–4 h'], [Infinity, '> 4 h']];
 
-/** Results grouped by weekday / hour / hold time / symbol / strategy / tag. */
+/** Results grouped by weekday / half-hour / hold time / symbol / strategy / tag (break-even trades excluded from calculations). */
 function Breakdown({ item, c }) {
   const { trades, s, state } = c;
   const metric = optionOf(item, 'metric');
   const groups = useMemo(() => {
+    const decided = trades.filter((t) => t.pnl !== 0);
     const by = (keyFn, order) => {
       const m = new Map();
-      for (const t of trades) for (const k of [].concat(keyFn(t))) { if (!m.has(k)) m.set(k, []); m.get(k).push(t); }
+      for (const t of decided) for (const k of [].concat(keyFn(t))) { if (!m.has(k)) m.set(k, []); m.get(k).push(t); }
       const keys = order ? order.filter((k) => m.has(k)) : [...m.keys()];
       return keys.map((k) => ({ label: k, list: m.get(k) }));
     };
     switch (item.id) {
       case 'weekday': return by((t) => WEEKDAYS[toDate(t.entry).getDay()], [1, 2, 3, 4, 5, 6, 0].map((d) => WEEKDAYS[d]));
-      case 'hour': return by((t) => `${String(toDate(t.entry).getHours()).padStart(2, '0')}:00`).sort((a, b) => a.label.localeCompare(b.label));
+      case 'halfHour': return by((t) => halfHourKey(t.entry)).sort((a, b) => a.label.localeCompare(b.label));
       case 'holdDur': return by((t) => HOLD_BUCKETS.find(([max]) => holdSeconds(t) < max)[1], HOLD_BUCKETS.map((b) => b[1]));
       case 'symbols': return by((t) => t.symbol).sort((a, b) => b.list.length - a.list.length);
       case 'strategy': return by((t) => state.strategies.find((x) => x.id === t.strategyId)?.name || 'No strategy').sort((a, b) => b.list.length - a.list.length);
@@ -506,7 +507,7 @@ function Breakdown({ item, c }) {
   }, [trades, item.id, state.strategies]);
   const rows = groups.map(({ label, list }) => {
     const pnl = list.reduce((a, t) => a + t.pnl, 0);
-    const wr = (list.filter((t) => t.pnl > 0).length / list.length) * 100;
+    const wr = list.length ? (list.filter((t) => t.pnl > 0).length / list.length) * 100 : 0;
     return { label, value: metric === 'winRate' ? wr : metric === 'count' ? list.length : pnl, extra: metric === 'count' ? `${Math.round(wr)}%` : `${list.length} trade${list.length === 1 ? '' : 's'}` };
   });
   const bars = metric === 'winRate' ? <HBars rows={rows} fmt={(v) => `${v.toFixed(0)}%`} mid={50} oneSided /> : metric === 'count' ? <HBars rows={rows} fmt={(v) => String(v)} mid={null} oneSided /> : <HBars rows={rows} />;
@@ -541,6 +542,7 @@ function CrossAnalysis({ item, c }) {
   const rows = useMemo(() => {
     const by = new Map();
     for (const t of trades) {
+      if (t.pnl === 0) continue;
       if (!by.has(t.symbol)) by.set(t.symbol, { symbol: t.symbol, n: 0, cells: cols.map(() => ({ pnl: 0, n: 0, wins: 0 })) });
       const r = by.get(t.symbol);
       const cell = r.cells[of(toDate(t.entry))];
@@ -624,8 +626,8 @@ function Recent({ trades, onOpen, priv }) {
           <span>{fmtShortDate(t.entry)} &nbsp;•&nbsp; {fmtTime24(t.entry)}</span>
           <span><span className={`dir ${t.direction}`}>{t.direction}</span></span>
           <span>{t.symbol}</span>
-          <span className={`row gap6 ${t.pnl >= 0 ? 'pos' : 'neg'}`} style={{ justifyContent: 'flex-end' }}>
-            {t.pnl >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
+          <span className={`row gap6 ${t.pnl > 0 ? 'pos' : t.pnl < 0 ? 'neg' : 'muted'}`} style={{ justifyContent: 'flex-end' }}>
+            {t.pnl > 0 ? <TrendingUp size={13} /> : t.pnl < 0 ? <TrendingDown size={13} /> : <Minus size={13} />}
             <span className={priv ? 'hidden-val' : ''}>{fmtMoney(t.pnl, { sign: true })}</span>
           </span>
         </div>
@@ -635,7 +637,7 @@ function Recent({ trades, onOpen, priv }) {
 }
 
 function LongShort({ trades }) {
-  const side = (d) => { const l = trades.filter((t) => t.direction === d); return { n: l.length, pnl: l.reduce((a, t) => a + t.pnl, 0), wr: l.length ? (l.filter((t) => t.pnl > 0).length / l.length) * 100 : 0 }; };
+  const side = (d) => { const l = trades.filter((t) => t.direction === d && t.pnl !== 0); return { n: l.length, pnl: l.reduce((a, t) => a + t.pnl, 0), wr: l.length ? (l.filter((t) => t.pnl > 0).length / l.length) * 100 : 0 }; };
   const L = side('Long'), S = side('Short');
   const tot = L.n + S.n || 1;
   const Col = ({ label, v, cls }) => (
@@ -678,9 +680,11 @@ function RiskW() {
 }
 
 function AvgDayPanel({ days }) {
-  const up = days.filter((d) => d.net > 0), dn = days.filter((d) => d.net < 0);
+  const active = days.filter((d) => d.decided > 0);
+  const up = active.filter((d) => d.net > 0), dn = active.filter((d) => d.net < 0);
+  const decidedDays = up.length + dn.length;
   const avg = (a) => (a.length ? a.reduce((x, d) => x + d.net, 0) / a.length : 0);
-  return <AvgWinLoss title="Average Day" unit="day" win={avg(up)} loss={Math.abs(avg(dn))} wins={up.length} losses={dn.length} total={days.length} winRate={days.length ? (up.length / days.length) * 100 : 0} avg={avg(days)} rateLabel="Your green-day rate" />;
+  return <AvgWinLoss title="Average Day" unit="day" win={avg(up)} loss={Math.abs(avg(dn))} wins={up.length} losses={dn.length} total={decidedDays} winRate={decidedDays ? (up.length / decidedDays) * 100 : 0} avg={avg(active)} rateLabel="Your green-day rate" />;
 }
 
 /** Average winner vs average loser, with reward:risk and the hit rate needed to break even. */
@@ -722,16 +726,17 @@ function AvgWinLoss({ title, unit, win, loss, wins, losses, total, winRate, avg,
   );
 }
 
-/** Win/loss runs, by trade and by trading day. Break-even trades/days end a run. */
+/** Win/loss runs, by trade and by trading day. Break-even trades/days are excluded. */
 function runs(results) {
+  const decided = results.filter((v) => v !== 0);
   let cur = 0, curType = null, bestW = 0, bestL = 0, w = 0, l = 0;
-  for (const v of results) {
-    if (v > 0) { w++; l = 0; } else if (v < 0) { l++; w = 0; } else { w = 0; l = 0; }
+  for (const v of decided) {
+    if (v > 0) { w++; l = 0; } else { l++; w = 0; }
     bestW = Math.max(bestW, w); bestL = Math.max(bestL, l);
   }
-  for (let i = results.length - 1; i >= 0; i--) {
-    const t = results[i] > 0 ? 'win' : results[i] < 0 ? 'loss' : null;
-    if (!t || (curType && t !== curType)) break;
+  for (let i = decided.length - 1; i >= 0; i--) {
+    const t = decided[i] > 0 ? 'win' : 'loss';
+    if (curType && t !== curType) break;
     curType = t; cur++;
   }
   return { cur, curType, bestW, bestL };
@@ -740,7 +745,7 @@ function runs(results) {
 function StreaksPanel({ trades }) {
   const asc = useMemo(() => sortByEntry(trades, 'asc'), [trades]);
   const t = runs(asc.map((x) => x.pnl));
-  const d = runs([...groupByDay(trades)].reverse().map((x) => x.net));
+  const d = runs([...groupByDay(trades)].reverse().filter((x) => x.decided > 0).map((x) => x.net));
   const last = asc.slice(-24);
   const Cur = ({ r, unit }) => (
     <div className="stk-cur">

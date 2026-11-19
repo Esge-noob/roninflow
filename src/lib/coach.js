@@ -4,7 +4,7 @@
 import { chat } from './ai';
 import {
   summarize, groupByDay, sortByEntry, holdSeconds, fmtHold, fmtMoney, fmtDate, fmtTime12, toDate, WEEKDAYS, pfText, mostTraded, equityCurve, MONTHS_LONG, money0,
-  periodMetrics, keyOf,
+  periodMetrics, keyOf, halfHourKey, halfHourRange,
 } from './stats';
 import { periodOf, shiftPeriod, inPeriod, commitmentField, reviewPrompts } from './reviews';
 import { playbookOf } from './playbook';
@@ -84,9 +84,9 @@ export function buildContext(state, trades) {
     totals: { trades: s.count, net: s.net, winRate: +s.winRate.toFixed(1), profitFactor: s.profitFactor === Infinity ? 'inf' : +s.profitFactor.toFixed(2), avgWin: +s.avgWin.toFixed(2), avgLoss: +s.avgLoss.toFixed(2), holdWinSec: Math.round(s.holdWin), holdLossSec: Math.round(s.holdLoss), maxDrawdown: +dd.maxDd.toFixed(2), currentDrawdown: +dd.current.toFixed(2) },
     sessions: days.slice(0, 30).map((d) => ({ date: d.date, weekday: WEEKDAYS[toDate(d.date).getDay()], net: r2(d.net), trades: d.count, winRate: Math.round(d.winRate), pf: pfText(d.profitFactor), score: d.score, notes: state.diary[d.date]?.notes?.replace(/<[^>]+>/g, ' ').slice(0, 300) || undefined })),
     bySymbol: byKey(trades, (t) => t.symbol).map((x) => ({ symbol: x.key, trades: x.count, net: +x.net.toFixed(2), winRate: Math.round(x.winRate) })),
-    byWeekday: byKey(trades, (t) => toDate(t.entry).getDay(), (k) => WEEKDAYS[k]).map((x) => ({ day: x.label, net: +x.net.toFixed(2), trades: x.count })),
-    byHour: byKey(trades, (t) => toDate(t.entry).getHours()).map((x) => ({ hour: x.key, net: +x.net.toFixed(2), trades: x.count })),
-    byDirection: byKey(trades, (t) => t.direction).map((x) => ({ side: x.key, net: +x.net.toFixed(2), trades: x.count, winRate: Math.round(x.winRate) })),
+    byWeekday: byKey(trades, (t) => toDate(t.entry).getDay(), (k) => WEEKDAYS[k]).map((x) => ({ day: x.label, net: +x.net.toFixed(2), trades: x.decided })),
+    byHalfHour: byKey(trades, (t) => halfHourKey(t.entry)).sort((a, b) => a.key.localeCompare(b.key)).map((x) => ({ halfHour: x.key, net: +x.net.toFixed(2), trades: x.decided, winRate: Math.round(x.winRate) })),
+    byDirection: byKey(trades, (t) => t.direction).map((x) => ({ side: x.key, net: +x.net.toFixed(2), trades: x.decided, winRate: Math.round(x.winRate) })),
     strategies: state.strategies.map((st) => ({ name: st.name, ...(() => { const l = trades.filter((t) => t.strategyId === st.id); const q = summarize(l); return { trades: q.count, net: q.net, winRate: Math.round(q.winRate) }; })() })),
     accounts: state.accounts.map((a) => ({ id: a.id, status: a.status, initial: a.initial, net: +summarize(state.trades.filter((t) => t.accountId === a.id)).net.toFixed(2) })),
     recentTrades: sortByEntry(trades).slice(0, 40).map((t) => ({ time: t.entry, symbol: t.symbol, side: t.direction, qty: t.qty, pnl: t.pnl, holdSec: Math.round(holdSeconds(t)), tags: t.tags, notes: t.notes || undefined })),
@@ -98,7 +98,7 @@ export const coachSystemPrompt = ({ name, tone, context }) => `You are Trading C
 How to answer:
 1. Before writing, work out which fields of the journal data answer the question. Use ONLY that data; never invent trades, dates or figures.
 2. Numbers — accuracy matters more than anything else:
-   - Totals for periods are already calculated: "periods" (thisWeek, lastWeek, thisMonth, lastMonth, thisQuarter, thisYear), "weeklyTotals", "monthlyTotals", "totals", "bySymbol", "byHour", "byWeekday", "byDirection". Quote those numbers exactly. Do NOT add up daily or per-trade values yourself when a total exists — e.g. a week's P&L is periods.thisWeek.netPnl, and each day's "runningTotal" shows the cumulative sum.
+   - Totals for periods are already calculated: "periods" (thisWeek, lastWeek, thisMonth, lastMonth, thisQuarter, thisYear), "weeklyTotals", "monthlyTotals", "totals", "bySymbol", "byHalfHour", "byWeekday", "byDirection". Quote those numbers exactly. Do NOT add up daily or per-trade values yourself when a total exists — e.g. a week's P&L is periods.thisWeek.netPnl, and each day's "runningTotal" shows the cumulative sum.
    - If you truly must calculate something that isn't provided, do it step by step, then check it by recomputing in a different order. If the two results differ, recompute until they agree. Never state a number you have not verified.
    - Gains and losses: a loss of 78.45 is -78.45; the net is gains plus losses.
    - Money is in US dollars: write it like +$253.45 or -$78.45. Percentages to the nearest whole number.
@@ -161,14 +161,15 @@ export function localAnswer(q, state, trades) {
       `**Next step:** consider sizing down on ${g[g.length - 1].label}s until that day turns positive.`,
     ].join('\n');
   }
-  if (has('when do i trade', 'time of day', 'hour', 'best time')) {
-    const g = byKey(trades, (x) => toDate(x.entry).getHours(), (k) => `${String(k).padStart(2, '0')}:00–${String(k).padStart(2, '0')}:59`);
-    const sortedH = [...g].sort((a, b) => Number(a.key) - Number(b.key));
+  if (has('when do i trade', 'time of day', 'hour', 'half hour', '30 min', 'best time')) {
+    const decided = trades.filter((x) => x.pnl !== 0);
+    const g = byKey(decided.length ? decided : trades, (x) => halfHourKey(x.entry), halfHourRange);
+    const sortedH = [...g].sort((a, b) => a.key.localeCompare(b.key));
     return [
-      'P&L by entry hour:',
-      ...sortedH.map((x) => `- **${x.label}**: ${m(x.net)} (${x.count} trades, ${Math.round(x.winRate)}% win)`),
+      'P&L by half-hour window:',
+      ...sortedH.map((x) => `- **${x.label}**: ${m(x.net)} (${x.decided} trades, ${Math.round(x.winRate)}% win)`),
       `You trade best between **${g[0].label}** and worst between **${g[g.length - 1].label}**.`,
-      `**Next step:** restrict new entries to your best window for the next 5 sessions and compare.`,
+      `**Next step:** restrict new entries to your best half-hour window for the next 5 sessions and compare.`,
     ].join('\n');
   }
   if (has('drawdown')) {
@@ -227,7 +228,8 @@ export function localAnswer(q, state, trades) {
   const rev = revengeTrades(trades);
   const revNet = rev.reduce((a, r) => a + r.cur.pnl, 0);
   const sides = byKey(trades, (x) => x.direction);
-  const hrs = byKey(trades, (x) => toDate(x.entry).getHours(), (k) => `${String(k).padStart(2, '0')}:00`);
+  const decidedTrades = trades.filter((x) => x.pnl !== 0);
+  const hrs = byKey(decidedTrades.length ? decidedTrades : trades, (x) => halfHourKey(x.entry), halfHourRange);
   const syms = mostTraded(trades).sort((a, b) => a.pnl - b.pnl);
   const worstSym = syms[0];
   const lossDays = days.filter((d) => d.net < 0);
@@ -239,20 +241,20 @@ export function localAnswer(q, state, trades) {
     `- **You hold winners (${fmtHold(s.holdWin)}) much longer than losers (${fmtHold(s.holdLoss)}).** Good — but losers this short often mean entries without confirmation that get stopped immediately.`,
     rev.length ? `- **${rev.length} quick re-entries after a loss** (within 2 min) netted ${m(revNet)}. A mandatory 2-minute pause after a loss would have removed most of them.` : '',
     `- **${sides[0].key}s** made ${m(sides[0].net)} while **${sides[sides.length - 1].key}s** made ${m(sides[sides.length - 1].net)}.`,
-    `- Your weakest hour is **${hrs[hrs.length - 1].label}** (${m(hrs[hrs.length - 1].net)}); your best is **${hrs[0].label}** (${m(hrs[0].net)}).`,
+    `- Your weakest half hour is **${hrs[hrs.length - 1].label}** (${m(hrs[hrs.length - 1].net)}); your best is **${hrs[0].label}** (${m(hrs[0].net)}).`,
     worstSym && worstSym.pnl < 0 ? `- **${worstSym.symbol}** is your weakest symbol at ${m(worstSym.pnl)} over ${worstSym.count} trades.` : '',
     `- ${lossDays.length} of ${days.length} sessions were red, ${smallLossDays} of them small (under ${money0(150)}) — you're controlling daily damage well.`,
-    `**Focus next:** be more selective with entries — fewer, higher-quality setups in your best hour — and enforce a cool-down after every loss.`,
+    `**Focus next:** be more selective with entries — fewer, higher-quality setups in your best half-hour window — and enforce a cool-down after every loss.`,
   ];
   return lines.filter(Boolean).join('\n');
 }
 
 // ---------------------------------------------------------------- coach reviews (daily diary + review pages)
 // ---------- deeper breakdowns for coach reviews ----------
-const brief = (list) => { const q = summarize(list); return { trades: q.count, net: r2(q.net), winRate: Math.round(q.winRate), profitFactor: q.profitFactor === Infinity ? 'inf' : +q.profitFactor.toFixed(2), avgTrade: r2(q.count ? q.net / q.count : 0) }; };
+const brief = (list) => { const q = summarize(list); return { trades: q.decided, net: r2(q.net), winRate: Math.round(q.winRate), profitFactor: q.profitFactor === Infinity ? 'inf' : +q.profitFactor.toFixed(2), avgTrade: r2(q.avgTrade) }; };
 const groupBrief = (trades, keyFn, order) => {
   const g = {};
-  for (const t of trades) { const k = keyFn(t); if (k == null) continue; (g[k] ||= []).push(t); }
+  for (const t of trades) { if (t.pnl === 0) continue; const k = keyFn(t); if (k == null) continue; (g[k] ||= []).push(t); }
   const rows = Object.entries(g).map(([k, l]) => ({ key: k, ...brief(l) }));
   return order ? rows.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)) : rows.sort((a, b) => b.net - a.net);
 };
@@ -267,31 +269,34 @@ function patternPack(state, trades) {
   for (const list of Object.values(byDay)) {
     list.forEach((t, i) => {
       seq.push({ ...t, _n: i < 3 ? `trade #${i + 1} of day` : 'trade #4+ of day' });
-      if (i > 0) (list[i - 1].pnl < 0 ? afterLoss : afterWin).push(t);
+      if (i > 0 && list[i - 1].pnl !== 0) (list[i - 1].pnl < 0 ? afterLoss : afterWin).push(t);
     });
-    const net = list.reduce((a, t) => a + t.pnl, 0);
-    dayCount.push({ n: list.length, net });
+    const decidedList = list.filter((t) => t.pnl !== 0);
+    if (decidedList.length) {
+      const net = decidedList.reduce((a, t) => a + t.pnl, 0);
+      dayCount.push({ n: list.length, net });
+    }
   }
   const tcLabels = ['1–3 trades', '4–6 trades', '7–10 trades', '11+ trades'];
   const tc = {};
-  for (const d of dayCount) { const k = bucket(d.n, [4, 7, 11], tcLabels); (tc[k] ||= { days: 0, net: 0, green: 0 }); tc[k].days++; tc[k].net += d.net; if (d.net > 0) tc[k].green++; }
+  for (const d of dayCount) { const k = bucket(d.n, [4, 7, 11], tcLabels); (tc[k] ||= { days: 0, decidedDays: 0, net: 0, green: 0 }); tc[k].days++; tc[k].net += d.net; if (d.net !== 0) tc[k].decidedDays++; if (d.net > 0) tc[k].green++; }
   const holdLabels = ['under 1 min', '1–5 min', '5–15 min', '15+ min'];
   const blockerRows = {};
-  for (const t of trades) for (const b of t.blockers || []) { (blockerRows[b] ||= []).push(t); }
+  for (const t of trades) { if (t.pnl === 0) continue; for (const b of t.blockers || []) { (blockerRows[b] ||= []).push(t); } }
   const stratName = (t) => state.strategies.find((x) => x.id === t.strategyId)?.name || 'No strategy';
   return {
     byTradeOfDay: groupBrief(seq, (t) => t._n, ['trade #1 of day', 'trade #2 of day', 'trade #3 of day', 'trade #4+ of day']),
     nextTradeAfterLoss: brief(afterLoss),
     nextTradeAfterWin: brief(afterWin),
     quickReentriesAfterLoss: (() => { const r = revengeTrades(trades); return { count: r.length, net: r2(r.reduce((a, x) => a + x.cur.pnl, 0)) }; })(),
-    byTradesPerDay: tcLabels.filter((k) => tc[k]).map((k) => ({ bucket: k, days: tc[k].days, avgDayNet: r2(tc[k].net / tc[k].days), greenDaysPct: Math.round((tc[k].green / tc[k].days) * 100) })),
+    byTradesPerDay: tcLabels.filter((k) => tc[k]).map((k) => ({ bucket: k, days: tc[k].days, avgDayNet: r2(tc[k].net / tc[k].days), greenDaysPct: tc[k].decidedDays ? Math.round((tc[k].green / tc[k].decidedDays) * 100) : 0 })),
     byHoldTime: groupBrief(trades, (t) => bucket(holdSeconds(t), [60, 300, 900], holdLabels), holdLabels),
     bySide: groupBrief(trades, (t) => t.direction),
     bySymbol: groupBrief(trades, (t) => t.symbol),
-    byHour: groupBrief(trades, (t) => `${String(toDate(t.entry).getHours()).padStart(2, '0')}:00`).sort((a, b) => a.key.localeCompare(b.key)),
+    byHalfHour: groupBrief(trades, (t) => halfHourKey(t.entry)).sort((a, b) => a.key.localeCompare(b.key)),
     byWeekday: groupBrief(trades, (t) => WEEKDAYS[toDate(t.entry).getDay()], WEEKDAYS),
     byStrategy: groupBrief(trades, stratName),
-    byTag: (() => { const g = {}; for (const t of trades) for (const tag of t.tags || []) (g[tag] ||= []).push(t); return Object.entries(g).map(([k, l]) => ({ tag: k, ...brief(l) })).sort((a, b) => b.trades - a.trades).slice(0, 15); })(),
+    byTag: (() => { const g = {}; for (const t of trades) { if (t.pnl === 0) continue; for (const tag of t.tags || []) (g[tag] ||= []).push(t); } return Object.entries(g).map(([k, l]) => ({ tag: k, ...brief(l) })).sort((a, b) => b.trades - a.trades).slice(0, 15); })(),
     byContracts: groupBrief(trades, (t) => `${t.qty} contract${t.qty === 1 ? '' : 's'}`),
     edgeBlockers: Object.entries(blockerRows).map(([k, l]) => ({ blocker: k, ...brief(l) })).sort((a, b) => a.net - b.net),
     tradesWithoutBlockers: brief(trades.filter((t) => !t.blockers?.length)),
@@ -348,8 +353,8 @@ export function buildReviewContext(state, { kind, label, date, period, trades, p
     totals: { trades: s.count, netPnl: r2(s.net), winRate: +s.winRate.toFixed(1), profitFactor: s.profitFactor === Infinity ? 'inf' : +s.profitFactor.toFixed(2), avgWin: r2(s.avgWin), avgLoss: r2(s.avgLoss), largestWin: r2(s.largestWin), largestLoss: r2(s.largestLoss), holdWinSec: Math.round(s.holdWin), holdLossSec: Math.round(s.holdLoss), fees: r2(s.fees || 0) },
     discipline: { tradesWithEdgeBlockers: m.flaggedTrades, pnlOfThoseTrades: m.flaggedPnl, disciplinedPct: m.discipline == null ? null : Math.round(m.discipline), maxDrawdown: r2(m.maxDD), maxWinStreakDays: m.maxWinStreak, maxLossStreakDays: m.maxLossStreak },
     quickReentriesAfterLoss: revengeTrades(trades).length,
-    bySymbol: byKey(trades, (t) => t.symbol).map((x) => ({ symbol: x.key, trades: x.count, net: r2(x.net), winRate: Math.round(x.winRate) })),
-    byHour: byKey(trades, (t) => toDate(t.entry).getHours()).map((x) => ({ hour: x.key, net: r2(x.net), trades: x.count })),
+    bySymbol: byKey(trades, (t) => t.symbol).map((x) => ({ symbol: x.key, trades: x.decided, net: r2(x.net), winRate: Math.round(x.winRate) })),
+    byHalfHour: byKey(trades, (t) => halfHourKey(t.entry)).sort((a, b) => a.key.localeCompare(b.key)).map((x) => ({ halfHour: x.key, net: r2(x.net), trades: x.decided, winRate: Math.round(x.winRate) })),
     previousPeriod: prevTrades.length ? { trades: pv.count, netPnl: r2(pv.net), winRate: +pv.winRate.toFixed(1), profitFactor: pv.profitFactor === Infinity ? 'inf' : +pv.profitFactor.toFixed(2) } : null,
   };
   if (kind === 'day') {
@@ -399,7 +404,7 @@ const REVIEW_SHAPE = {
   risk: { words: '650–900', next: 'week of sessions', sections: [
     ['Account status', 'Where the account stands right now: balance vs start, current drawdown (and how it is measured: drawdownMode), distance to the firm\'s max drawdown (firmMaxDrawdown / roomToFirmMaxDrawdown), the current risk tier and the reasons for it. End with a clear verdict: on track, at risk, or off track — and why.'],
     ['Recent performance', 'The trend across the recent sessions: streaks, green/red days, days that hit the daily loss limit (dailyLossLimitHits), how today is going, and how this compares with the period before (previousPeriod).'],
-    ['What is driving it', 'The specific causes in the data — edge blockers, trading after losses, quick re-entries, worst hours/setups/symbols, oversized losers — each with dollars and counts. Also the strengths worth protecting.'],
+    ['What is driving it', 'The specific causes in the data — edge blockers, trading after losses, quick re-entries, worst half-hour windows/setups/symbols, oversized losers — each with dollars and counts. Also the strengths worth protecting.'],
     ['Risk discipline', 'Did losses and sizing respect the current tier (riskPerTrade, dailyLossLimit)? Name the trades/days that broke it (lossesBiggerThanTierRisk, dailyLossLimitHits) and what that cost.'],
     ['Plan', 'If off track or at risk: a step-by-step plan to get back on track — size to use, daily stop, max trades, what must happen to move up a tier (tierRules) and the dollar milestones (toNextTierUp / nextDrawdownThreshold / toClimbOutOfDrawdownTier / roomToFirmMaxDrawdown). If on track: how to protect the gains and what would justify sizing up.'],
     ['Rules for the next sessions', '3–5 concrete, checkable rules with numbers.'],
@@ -416,7 +421,7 @@ const REVIEW_SHAPE = {
     ['Day by day', 'One line per trading day: result and what defined it.'],
     ['What went well', '3–5 bullets with evidence.'],
     ['What needs work', '3–5 bullets with evidence.'],
-    ['Patterns', 'What the breakdowns show (trade # of the day, after losses, hold time, hour, setup, symbol, size). Only patterns with enough trades to matter; say how many.'],
+    ['Patterns', 'What the breakdowns show (trade # of the day, after losses, hold time, half hour, setup, symbol, size). Only patterns with enough trades to matter; say how many.'],
     ['Action items', '3–5 concrete, checkable rules for next week, including how to measure each.'],
   ] },
   monthly: { words: '900–1200', next: 'month', sections: [

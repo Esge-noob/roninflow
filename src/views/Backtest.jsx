@@ -240,11 +240,11 @@ function Compare({ bt, live, name }) {
           <thead><tr><th /><th>Backtest</th><th>Live</th></tr></thead>
           <tbody>
             {row('Trades', (s) => s.count)}
-            {row('Win rate', (s) => (s.count ? `${Math.round(s.winRate)}%` : '—'))}
-            {row('Profit factor', (s) => (s.count ? pfText(s.profitFactor) : '—'))}
+            {row('Win rate', (s) => (s.decided ? `${Math.round(s.winRate)}%` : '—'))}
+            {row('Profit factor', (s) => (s.decided ? pfText(s.profitFactor) : '—'))}
             {row('Average win', (s) => s.avgWin || 0, true)}
             {row('Average loss', (s) => -Math.abs(s.avgLoss || 0), true)}
-            {row('EV per trade', (s) => (s.count ? s.net / s.count : 0), true)}
+            {row('EV per trade', (s) => s.avgTrade, true)}
             {row('Net P&L', (s) => s.net, true)}
           </tbody>
         </table>

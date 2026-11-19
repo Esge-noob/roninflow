@@ -241,7 +241,7 @@ export function RateBar({ pct, width = '100%' }) {
   );
 }
 
-/** Horizontal labeled bars (weekday / hour / symbol breakdowns). */
+/** Horizontal labeled bars (weekday / half-hour / symbol breakdowns). */
 /** Horizontal bars. Money by default (diverging around zero); pass `fmt` for other numbers and
  *  `mid` to colour against a midpoint (e.g. 50 for a win rate) with bars growing from the left. */
 export function HBars({ rows, fmt, mid, oneSided = false }) {
