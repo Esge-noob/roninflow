@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSize } from './ui';
 import { useStore } from '../store/store';
 import { fmtCompact, fmtMoney, currency } from '../lib/stats';
@@ -46,6 +46,8 @@ const linePath = (pts) => pts.map((p, i) => `${i ? 'L' : 'M'}${p[0]},${p[1]}`).j
 export function PnlChart({ data, mode = 'area', height = 300, smooth = false, compact = false, yFmt, xLabels = 8, padLeft = 56, showZero = true, startAtZero = true, dotted = true, base: base0 = 0, guides: guides0 }) {
   const [ref, { w }] = useSize();
   const [hover, setHover] = useState(null);
+  const tipRef = useRef(null);
+  const [tipPos, setTipPos] = useState(null);
   const { state } = useStore();
   const uidRaw = useId().replace(/:/g, '');
   const priv = state.settings.privacy;
@@ -98,6 +100,17 @@ export function PnlChart({ data, mode = 'area', height = 300, smooth = false, co
     setHover(best);
   };
   const g = `g${uidRaw}`;
+  // keep the hover box inside the chart: centred over the point, pushed in at the edges, below the point near the top
+  const hx = hover !== null && pts[hover] ? pts[hover][0] : null, hy = hover !== null && pts[hover] ? pts[hover][1] : null;
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    if (hx == null || !el) { setTipPos(null); return; }
+    const tw = el.offsetWidth, th = el.offsetHeight;
+    const left = Math.max(2, Math.min(width - tw - 2, hx - tw / 2));
+    const top = hy - th - 12 >= 0 ? hy - th - 12 : Math.min(hy + 14, height - th);
+    setTipPos((p) => (p && p.left === left && p.top === top ? p : { left, top }));
+  }, [hx, hy, width, height, hover]);
+
   return (
     <div ref={ref} style={{ position: 'relative', width: '100%', height: H }}>
       {w > 0 && (
@@ -181,7 +194,7 @@ export function PnlChart({ data, mode = 'area', height = 300, smooth = false, co
         </svg>
       )}
       {hover !== null && !compact && series[hover] && (
-        <div className="chart-tip" style={{ left: pts[hover][0], top: pts[hover][1] }}>
+        <div ref={tipRef} className="chart-tip placed" style={tipPos ? { left: tipPos.left, top: tipPos.top } : { left: pts[hover][0], top: pts[hover][1], visibility: 'hidden' }}>
           <div className="muted" style={{ marginBottom: 2 }}>{series[hover].tip || series[hover].label}</div>
           {base ? (
             <div style={{ filter: priv ? 'blur(5px)' : undefined }}>

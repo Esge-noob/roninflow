@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, SquarePen, PanelLeftClose, PanelLeft, MessageCircle, Settings, Database, ChevronDown, ImagePlus, Mic, ArrowUp, Lightbulb, Plus, ChevronLeft, ChevronRight, Trash, X } from 'lucide-react';
+import { Check, Search, SquarePen, PanelLeftClose, PanelLeft, MessageCircle, Settings, Database, ChevronDown, ImagePlus, Mic, ArrowUp, Lightbulb, Plus, ChevronLeft, ChevronRight, Trash, X } from 'lucide-react';
 import { useStore, navigate } from '../store/store';
 import { Modal, ModalHead, Popover, useToast, fileToDataUrl } from '../components/ui';
 import { CoachLogo } from '../components/Layout';
@@ -8,6 +8,8 @@ import { localAnswer, askAI, buildContext } from '../lib/coach';
 import { PROVIDERS, providerConfig } from '../lib/ai';
 import CoachSettings from '../components/CoachSettings';
 import { uid, inRange, datePresets } from '../lib/stats';
+import { filterScope, filterCount, describeScope, EMPTY_FILTERS, ANY, NONE } from '../lib/coachScope';
+import { playbookOf } from '../lib/playbook';
 
 export function Markdown({ text }) {
   const inline = (s) => s.split(/(\*\*[^*]+\*\*)/g).map((p, i) => (p.startsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong> : <Fragment key={i}>{p}</Fragment>));
@@ -33,7 +35,7 @@ export function Markdown({ text }) {
 function useCoach() {
   const store = useStore();
   const { state, setChats, setSetting } = store;
-  const [ctx, setCtx] = useState({ account: 'current', range: 'All time' });
+  const [ctx, setCtx] = useState({ account: 'current', range: 'All time', ...EMPTY_FILTERS });
   const [busy, setBusy] = useState(false);
   const scopeTrades = useMemo(() => {
     const acc = ctx.account === 'current' ? state.settings.account : ctx.account;
@@ -41,8 +43,9 @@ function useCoach() {
     let list = acc === 'all' ? state.trades.filter((t) => !hidden?.has(t.accountId)) : state.trades.filter((t) => t.accountId === acc);
     const p = datePresets().find((x) => x.label === ctx.range);
     if (p) list = list.filter((t) => inRange(t, p));
-    return list;
-  }, [state.trades, state.accounts, state.settings.account, state.settings.hideBreached, ctx]);
+    return filterScope(list, state, ctx);
+  }, [state, ctx]);
+  const withScope = (c) => { const f = describeScope(state, ctx, playbookOf(state).regimes); return f ? { ...c, filters: { ...f, note: 'The user narrowed the context to these trades only — every number here is for them, not the whole journal.' } } : c; };
 
   /** onOpen(id) is called as soon as a new chat exists, so the view can switch to it before the answer arrives. */
   const send = async (chatId, question, image, onOpen, opts = {}) => {
@@ -66,7 +69,7 @@ function useCoach() {
         const history = (state.chats.find((x) => x.id === id)?.messages || []).slice(-10).map(({ role, content }) => ({ role, content }));
         // chats opened from a Coach Review keep that day's / period's detailed data
         const focus = state.chats.find((x) => x.id === id)?.focus || opts.focus;
-        const context = focus ? { ...buildContext(state, scopeTrades), reviewFocus: focus } : buildContext(state, scopeTrades);
+        const context = withScope(focus ? { ...buildContext(state, scopeTrades), reviewFocus: focus } : buildContext(state, scopeTrades));
         answer = await askAI({ provider, cfg: providerConfig(coach, provider), tone: coach.tone, name: state.user.name, question, history, context, image, thinking: coach.thinking || 'standard' });
         if (!answer?.trim()) throw new Error('The model returned an empty answer.');
       } else {
@@ -83,7 +86,71 @@ function useCoach() {
   return { state, ctx, setCtx, busy, send, scopeTrades };
 }
 
-function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null }) {
+
+function ContextPanel({ ctx, setCtx, count }) {
+  const { state } = useStore();
+  const pb = playbookOf(state);
+  const set = (k, v) => setCtx({ ...ctx, [k]: v });
+  const toggle = (k, v) => { const l = ctx[k] || []; set(k, l.includes(v) ? l.filter((x) => x !== v) : [...l.filter((x) => x !== ANY && x !== NONE), v]); };
+  const usedTags = useMemo(() => { const s = new Set(state.tags); for (const t of state.trades) for (const x of t.tags || []) s.add(x); return [...s]; }, [state.tags, state.trades]);
+  const n = filterCount(ctx);
+  return (
+    <div className="col gap8 ctx-panel">
+      <div className="ctx-grid">
+        <div className="field">
+          <label className="label">Account</label>
+          <select className="select" value={ctx.account} onChange={(e) => set('account', e.target.value)}>
+            <option value="current">Selected account</option>
+            <option value="all">All accounts</option>
+            {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label className="label">Period</label>
+          <select className="select" value={ctx.range} onChange={(e) => set('range', e.target.value)}>
+            {datePresets().map((p) => <option key={p.label}>{p.label}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label className="label">Strategy</label>
+          <select className="select" value={ctx.strategy} onChange={(e) => set('strategy', e.target.value)}>
+            <option value="">All strategies</option>
+            {state.strategies.map((st) => <option key={st.id} value={st.id}>{st.name}</option>)}
+            <option value={NONE}>No strategy set</option>
+          </select>
+        </div>
+        <div className="field">
+          <label className="label">Market condition</label>
+          <select className="select" value={ctx.regime} onChange={(e) => set('regime', e.target.value)} title="From each day's pre-session check-in in the Diary">
+            <option value="">Any market</option>
+            {pb.regimes.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            <option value={NONE}>Not logged</option>
+          </select>
+        </div>
+      </div>
+      <div className="field">
+        <label className="label">Tags <span className="muted" style={{ fontWeight: 400 }}>· any of</span></label>
+        <div className="row gap6 wrap ctx-chips">
+          {usedTags.length ? usedTags.map((t) => <button key={t} type="button" className={`chip ${ctx.tags.includes(t) ? 'on' : ''}`} onClick={() => toggle('tags', t)}>{ctx.tags.includes(t) && <Check size={11} />}{t}</button>) : <span className="muted2" style={{ fontSize: 12 }}>No tags yet</span>}
+        </div>
+      </div>
+      <div className="field">
+        <label className="label">Edge blockers</label>
+        <div className="row gap6 wrap ctx-chips">
+          <button type="button" className={`chip ${ctx.blockers.includes(ANY) ? 'on' : ''}`} onClick={() => set('blockers', ctx.blockers.includes(ANY) ? [] : [ANY])}>Any blocker</button>
+          <button type="button" className={`chip ${ctx.blockers.includes(NONE) ? 'on' : ''}`} onClick={() => set('blockers', ctx.blockers.includes(NONE) ? [] : [NONE])}>None (disciplined)</button>
+          {pb.blockers.map((b) => <button key={b} type="button" className={`chip ${ctx.blockers.includes(b) ? 'neg-on' : ''}`} onClick={() => toggle('blockers', b)}>{ctx.blockers.includes(b) && <Check size={11} />}{b}</button>)}
+        </div>
+      </div>
+      <div className="row between ctx-foot">
+        <span className="muted" style={{ fontSize: 12.5 }}><b style={{ color: 'var(--fg)' }}>{count}</b> trade{count === 1 ? '' : 's'} in context</span>
+        {n > 0 && <button type="button" className="btn xs ghost" onClick={() => setCtx({ ...ctx, ...EMPTY_FILTERS })}>Clear filters</button>}
+      </div>
+    </div>
+  );
+}
+
+function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, count = 0 }) {
   const { state } = useStore();
   const [text, setText] = useState('');
   const [image, setImage] = useState(null);
@@ -136,27 +203,12 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null }) 
         {!compact && (
           <Popover
             up
-            width={260}
+            width={380}
             trigger={({ toggle }) => (
-              <button className="row gap8 muted" onClick={toggle} style={{ fontSize: 15 }}><Database size={18} /> Context <ChevronDown size={14} /></button>
+              <button className="row gap8 muted" onClick={toggle} style={{ fontSize: 15 }}><Database size={18} /> Context{filterCount(ctx) > 0 && <span className="ctx-badge">{filterCount(ctx)}</span>} <ChevronDown size={14} /></button>
             )}
           >
-            <div className="col gap8" style={{ padding: 8 }}>
-              <div className="field">
-                <label className="label">Account</label>
-                <select className="select" style={{ height: 34 }} value={ctx.account} onChange={(e) => setCtx({ ...ctx, account: e.target.value })}>
-                  <option value="current">Selected account</option>
-                  <option value="all">All accounts</option>
-                  {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label className="label">Period</label>
-                <select className="select" style={{ height: 34 }} value={ctx.range} onChange={(e) => setCtx({ ...ctx, range: e.target.value })}>
-                  {datePresets().map((p) => <option key={p.label}>{p.label}</option>)}
-                </select>
-              </div>
-            </div>
+            <ContextPanel ctx={ctx} setCtx={setCtx} count={count} />
           </Popover>
         )}
         <div className="grow" />
@@ -202,7 +254,7 @@ function Thread({ chat, busy }) {
 }
 
 export default function Coach({ sub }) {
-  const { state, ctx, setCtx, busy, send } = useCoach();
+  const { state, ctx, setCtx, busy, send, scopeTrades } = useCoach();
   const { setChats, setTemplates, setSetting, update } = useStore();
   const [chatId, setChatId] = useState(null);
   const [q, setQ] = useState('');
@@ -271,7 +323,7 @@ export default function Coach({ sub }) {
             <div className="col coach-welcome" style={{ alignItems: 'center', padding: '48px 24px', maxWidth: 968, width: '100%', margin: '0 auto' }}>
               <CoachLogo />
               <h1 className="coach-hi" style={{ fontSize: 31, fontWeight: 500, letterSpacing: '-0.03em', margin: '48px 0 42px' }}>Hey {first}, I'm your Trading Coach</h1>
-              <Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} draft={draft} />
+              <Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} draft={draft} count={scopeTrades.length} />
               <div className="row between coach-tpl-head" style={{ width: '100%', margin: '64px 0 18px' }}>
                 <div className="row gap16"><b style={{ fontWeight: 500, fontSize: 15.5 }}>My Templates</b><button onClick={() => setAddTpl('')}><Plus size={18} /></button></div>
                 <div className="row gap12">
@@ -296,7 +348,7 @@ export default function Coach({ sub }) {
             <>
               <div className="coach-thread" style={{ flex: 1, padding: '24px 24px 0' }}><Thread chat={chat} busy={busy} /></div>
               <div className="coach-compose-dock" style={{ position: 'sticky', bottom: 0, padding: '12px 24px 24px', background: 'var(--bg)' }}>
-                <div style={{ maxWidth: 820, margin: '0 auto' }}><Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} /></div>
+                <div style={{ maxWidth: 820, margin: '0 auto' }}><Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} count={scopeTrades.length} /></div>
               </div>
             </>
           )}

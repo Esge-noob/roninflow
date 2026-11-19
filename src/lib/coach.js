@@ -89,7 +89,7 @@ export function buildContext(state, trades) {
     byDirection: byKey(trades, (t) => t.direction).map((x) => ({ side: x.key, net: +x.net.toFixed(2), trades: x.count, winRate: Math.round(x.winRate) })),
     strategies: state.strategies.map((st) => ({ name: st.name, ...(() => { const l = trades.filter((t) => t.strategyId === st.id); const q = summarize(l); return { trades: q.count, net: q.net, winRate: Math.round(q.winRate) }; })() })),
     accounts: state.accounts.map((a) => ({ id: a.id, status: a.status, initial: a.initial, net: +summarize(state.trades.filter((t) => t.accountId === a.id)).net.toFixed(2) })),
-    recentTrades: sortByEntry(trades).slice(0, 40).map((t) => ({ time: t.entry, symbol: t.symbol, side: t.direction, qty: t.qty, pnl: t.pnl, holdSec: Math.round(holdSeconds(t)), tags: t.tags, notes: t.notes || undefined })),
+    recentTrades: sortByEntry(trades).slice(0, 40).map((t) => ({ time: t.entry, symbol: t.symbol, side: t.direction, qty: t.qty, pnl: t.pnl, holdSec: Math.round(holdSeconds(t)), strategy: t.strategyId ? state.strategies.find((x) => x.id === t.strategyId)?.name : undefined, tags: t.tags?.length ? t.tags : undefined, edgeBlockers: t.blockers?.length ? t.blockers : undefined, notes: t.notes || undefined })),
   };
 }
 
