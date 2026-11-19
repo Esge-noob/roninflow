@@ -203,6 +203,7 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, co
         {!compact && (
           <Popover
             up
+            portal
             width={380}
             trigger={({ toggle }) => (
               <button className="row gap8 muted" onClick={toggle} style={{ fontSize: 15 }}><Database size={18} /> Context{filterCount(ctx) > 0 && <span className="ctx-badge">{filterCount(ctx)}</span>} <ChevronDown size={14} /></button>

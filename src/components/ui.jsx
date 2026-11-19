@@ -97,13 +97,15 @@ export function Popover({ trigger, children, align = 'left', width, className = 
       const w = Math.min(width || 260, window.innerWidth - 16);
       const left = Math.max(8, Math.min(window.innerWidth - w - 8, align === 'right' ? r.right - w : r.left));
       const below = window.innerHeight - r.bottom - 14, above = r.top - 14;
-      const flip = up || (below < 260 && above > below);
+      const need = popRef.current?.scrollHeight || 260; // the menu's own height once it's drawn
+      const flip = up ? (above >= need || above >= below) : (below < Math.min(need, 260) && above > below);
       setPos({ left, width: w, ...(flip ? { bottom: window.innerHeight - r.top + 6, maxHeight: above } : { top: r.bottom + 6, maxHeight: below }) });
     };
     place();
+    const raf = requestAnimationFrame(place); // again with the menu's real height
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
-    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); };
   }, [open, portal, width, align, up]);
   // in-place: nudge it sideways (and narrow it) so it never runs off the screen, e.g. on a phone
   const inRef = useRef(null);
