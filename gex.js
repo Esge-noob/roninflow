@@ -48,7 +48,9 @@ function normCboe(j) {
     if (!p) continue;
     rows.push({ exp: p.exp, type: p.type, strike: p.strike, oi: Number(o.open_interest) || 0, gamma: Number(o.gamma) || 0, iv: Number(o.iv) || 0, mult: 100 });
   }
-  const ts = Date.parse(String(j?.timestamp || d?.last_trade_time || '').replace(' ', 'T')) || null;
+  // Cboe writes its time in UTC without saying so ("2026-11-18 23:51:04")
+  const raw = String(j?.timestamp || d?.last_trade_time || '').trim().replace(' ', 'T');
+  const ts = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(raw) ? raw : `${raw}Z`) || null;
   return { spot, rows, at: ts };
 }
 
@@ -202,7 +204,7 @@ export function createGexHandler(dataDir, { log = () => {}, vault = null, fetchI
   function remember(symbol, r) {
     if (!r.exps?.length || r.exps[0] !== r.expirations?.[0] || r.exps.length !== 1) return; // only the nearest expiration (what the indicator shows)
     const date = nyDate(r.at), f = levelFile(symbol, date);
-    const list = readJson(f, []);
+    const list = readJson(f, []).filter((p) => p.t <= now() + 30 * 60e3); // (points saved with a wrong clock)
     const last = list[list.length - 1];
     if (last && r.at - last.t < 10 * 60e3) list.pop();
     list.push({ t: r.at, spot: r.spot, callWall: r.callWall, putWall: r.putWall, flip: r.flip, total: r.total, zone: r.zone, ratio: r.fut?.ratio ?? null, exp: r.exps[0] });

@@ -307,7 +307,7 @@ function WhatIf() {
           <div className="wi-sec">When you trade</div>
           <div className="row gap6 wrap">{DAYS.map(([d, l]) => <button key={d} className={`chip ${rules.days.includes(d) ? 'on' : ''}`} onClick={() => toggle('days', d)}>{l}</button>)}</div>
           <div className="wi-line row gap8"><span className="grow">Only trades taken between</span>{(rules.from || rules.to) && <button className="btn xs ghost" onClick={() => setRules({ from: '', to: '' })}>Any time</button>}</div>
-          <div className="row gap8 wi-line"><input className="input" type="time" value={rules.from} onChange={(e) => setRules({ from: e.target.value })} aria-label="From" /><span className="muted">–</span><input className="input" type="time" value={rules.to} onChange={(e) => setRules({ to: e.target.value })} aria-label="Until" /></div>
+          <div className="row gap8 wi-line wi-times"><input className="input wi-time" type="time" value={rules.from} onChange={(e) => setRules({ from: e.target.value })} aria-label="From" /><span className="muted">–</span><input className="input wi-time" type="time" value={rules.to} onChange={(e) => setRules({ to: e.target.value })} aria-label="Until" /></div>
           <div className="wi-line"><Seg value={rules.side} onChange={(v) => setRules({ side: v })} options={[{ value: 'both', label: 'Both sides' }, { value: 'long', label: 'Longs' }, { value: 'short', label: 'Shorts' }]} /></div>
           <div className="wi-sec">Each day</div>
           <div className="wi-line row gap8"><span className="grow">Max trades a day</span>{numIn('maxTrades', '—')}</div>

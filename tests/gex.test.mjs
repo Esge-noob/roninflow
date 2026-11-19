@@ -67,7 +67,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tj-gex-'));
 const res = () => { const r = { headers: {}, setHeader: (k, v) => { r.headers[k] = v; }, end: (b) => { r.body = JSON.parse(String(b)); } }; return r; };
 const req = (url, method = 'GET', body) => ({ url, method, on(ev, cb) { if (ev === 'data' && body) cb(JSON.stringify(body)); if (ev === 'end') cb(); } });
 const occ = (r) => `SPXW${r.exp.slice(2).replace(/-/g, '')}${r.type}${String(Math.round(r.strike * 1000)).padStart(8, '0')}`;
-const cboeJson = () => ({ timestamp: '2026-11-18 09:45:00', data: { symbol: '_SPX', current_price: 6000, options: chain().map((r) => ({ option: occ(r), open_interest: r.oi, iv: r.iv, gamma: r.gamma, delta: 0.5 })) } });
+const cboeJson = () => ({ timestamp: '2026-11-18 14:45:00', data: { symbol: '_SPX', current_price: 6000, options: chain().map((r) => ({ option: occ(r), open_interest: r.oi, iv: r.iv, gamma: r.gamma, delta: 0.5 })) } });
 
 test('the page’s report from Cboe: expirations, levels, vanna/charm, futures prices, and levels kept for the charts', async () => {
   const dir = tmp(); const asked = [];
@@ -144,4 +144,11 @@ test('Polygon snapshot pages are followed (indices as I:SPX)', async () => {
   assert.equal(r.body.strikes.length, rows.length / 2);
   assert.ok(asked.some((u) => u.includes('/v3/snapshot/options/I%3ASPX?expiration_date=2026-11-18')));
   assert.ok(asked.some((u) => u.includes('cursor=2&apiKey=pk')));
+});
+
+test('Cboe’s timestamp is UTC (it doesn’t say so)', async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(cboeJson()) });
+  const h = createGexHandler(tmp(), { fetchImpl, now: () => NOW });
+  const r = res(); await h(req(`/api/macro/gex?symbol=SPX&exp=${EXP}`), r);
+  assert.equal(new Date(r.body.at).toISOString(), '2026-11-18T14:45:00.000Z');
 });

@@ -2551,3 +2551,7 @@ button.nw-tone:hover { text-decoration: underline; }
 .mp-hi { flex-shrink: 0; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #fff; background: var(--neg); padding: 1px 5px; border-radius: 2px; line-height: 1.5; }
 .mp-ev .mp-t { width: 66px; white-space: nowrap; }
 .mp-row.past .mp-hi { background: var(--muted-2); }
+
+/* What-if: room for the hours, minutes and AM/PM */
+.wi-times { flex-wrap: wrap; }
+.wi-time { flex: 1 1 132px; min-width: 132px; max-width: 170px; padding-right: 6px; font-variant-numeric: tabular-nums; }
