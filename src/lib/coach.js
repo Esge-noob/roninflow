@@ -9,6 +9,85 @@ import {
 import { periodOf, shiftPeriod, inPeriod, commitmentField, reviewPrompts } from './reviews';
 import { playbookOf } from './playbook';
 
+const stripHtml = (h) => (h || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** Human-readable color name from #rrggbb so vision models can match chart lines/zones reliably. */
+export function describeColor(hex) {
+  const m = String(hex || '').trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!m) return '';
+  const n = parseInt(m[1], 16);
+  const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  const l = (max + min) / 2;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  if (l > 0.92) return 'White';
+  if (l < 0.12) return 'Black';
+  if (s < 0.14) return l > 0.65 ? 'Light Gray' : l < 0.35 ? 'Dark Gray' : 'Gray';
+  let h = 0;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+  else if (max === g) h = ((b - r) / d + 2) * 60;
+  else h = ((r - g) / d + 4) * 60;
+  const base = h < 15 || h >= 345 ? 'Red'
+    : h < 42 ? 'Orange'
+      : h < 68 ? 'Yellow'
+        : h < 168 ? 'Green'
+          : h < 198 ? 'Cyan'
+            : h < 252 ? 'Blue'
+              : h < 292 ? 'Purple'
+                : h < 328 ? 'Magenta' : 'Pink';
+  if (l > 0.72) return `Light ${base}`;
+  if (l < 0.34) return `Dark ${base}`;
+  return base;
+}
+
+/** Structured chart legend for the AI Coach (lines with solid/dotted/dashed + color, and shaded zones + color). */
+export function buildChartLegendContext(coach) {
+  const items = (coach?.chartLegend || [])
+    .filter((x) => x && (x.label || x.meaning || '').trim())
+    .map((x) => {
+      const kind = x.kind === 'zone' ? 'zone' : 'line';
+      const colorName = (x.colorName || '').trim() || describeColor(x.color);
+      const color = colorName && x.color ? `${colorName} (${x.color})` : colorName || x.color || undefined;
+      return {
+        type: kind,
+        ...(kind === 'line' ? { lineStyle: x.lineStyle || 'solid' } : { shape: 'shaded zone / rectangle' }),
+        color,
+        represents: (x.label || '').trim() || undefined,
+        ...(x.meaning?.trim() ? { howUsed: x.meaning.trim() } : {}),
+      };
+    });
+  const notes = (coach?.chartNotes || '').trim();
+  if (!items.length && !notes) return undefined;
+  return {
+    ...(notes ? { generalChartMarkup: notes } : {}),
+    ...(items.length ? { elements: items } : {}),
+  };
+}
+
+function strategyPlaybookEntry(st, trades) {
+  const l = trades.filter((t) => t.strategyId === st.id);
+  const q = summarize(l);
+  const desc = stripHtml(st.description).slice(0, 1200);
+  const notes = stripHtml(st.notes).slice(0, 1200);
+  return {
+    name: st.name,
+    trades: q.count,
+    net: r2(q.net),
+    winRate: Math.round(q.winRate),
+    ...(st.category ? { category: st.category } : {}),
+    ...(st.timeframes?.length ? { timeframes: st.timeframes } : {}),
+    ...(st.conditions?.length ? { marketConditions: st.conditions } : {}),
+    ...(st.rr ? { targetRR: st.rr } : {}),
+    ...(st.tags?.length ? { tags: st.tags } : {}),
+    ...(st.entryRules?.length ? { entryRules: st.entryRules } : {}),
+    ...(st.exitRules?.length ? { exitRules: st.exitRules } : {}),
+    ...(st.riskRules?.length ? { riskRules: st.riskRules } : {}),
+    ...(desc ? { description: desc } : {}),
+    ...(notes ? { notes } : {}),
+    ...(st.media?.length ? { referenceScreenshots: st.media.length } : {}),
+  };
+}
+
 const r2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : v === Infinity ? 'infinite' : null);
 /** Ready-made totals for a period so the model never has to add numbers up itself. */
 function periodSummary(trades, p, withDays = false) {
@@ -87,8 +166,9 @@ export function buildContext(state, trades) {
     byWeekday: byKey(trades, (t) => toDate(t.entry).getDay(), (k) => WEEKDAYS[k]).map((x) => ({ day: x.label, net: +x.net.toFixed(2), trades: x.decided })),
     byHalfHour: byKey(trades, (t) => halfHourKey(t.entry)).sort((a, b) => a.key.localeCompare(b.key)).map((x) => ({ halfHour: x.key, net: +x.net.toFixed(2), trades: x.decided, winRate: Math.round(x.winRate) })),
     byDirection: byKey(trades, (t) => t.direction).map((x) => ({ side: x.key, net: +x.net.toFixed(2), trades: x.decided, winRate: Math.round(x.winRate) })),
-    strategies: state.strategies.map((st) => ({ name: st.name, ...(() => { const l = trades.filter((t) => t.strategyId === st.id); const q = summarize(l); return { trades: q.count, net: q.net, winRate: Math.round(q.winRate) }; })() })),
-    accounts: state.accounts.map((a) => ({ id: a.id, status: a.status, initial: a.initial, net: +summarize(state.trades.filter((t) => t.accountId === a.id)).net.toFixed(2) })),
+    strategies: state.strategies.map((st) => strategyPlaybookEntry(st, trades)),
+    ...(buildChartLegendContext(state.settings?.coach) ? { chartLegend: buildChartLegendContext(state.settings.coach) } : {}),
+    accounts: state.accounts.map((a) => ({ id: a.id, name: a.name || a.id, status: a.status, initial: a.initial, net: +summarize(state.trades.filter((t) => t.accountId === a.id)).net.toFixed(2) })),
     recentTrades: sortByEntry(trades).slice(0, 40).map((t) => ({ time: t.entry, symbol: t.symbol, side: t.direction, qty: t.qty, pnl: t.pnl, holdSec: Math.round(holdSeconds(t)), strategy: t.strategyId ? state.strategies.find((x) => x.id === t.strategyId)?.name : undefined, tags: t.tags?.length ? t.tags : undefined, edgeBlockers: t.blockers?.length ? t.blockers : undefined, notes: t.notes || undefined })),
   };
 }
@@ -104,16 +184,20 @@ How to answer:
    - Money is in US dollars: write it like +$253.45 or -$78.45. Percentages to the nearest whole number.
 3. If the user disputes a number, re-check it against the data and say plainly whether they or you are right — don't just agree, and don't defend a wrong figure.
 4. Weeks run Monday–Friday. Today is ${context.today}.
-5. Keep answers concise (under 220 words), use short paragraphs and "- " bullet lists, and end with one specific, actionable next step.
+5. Keep answers concise (under 220 words, or up to 350 words when grading a chart screenshot against strategy rules and chart levels), use short paragraphs and "- " bullet lists, and end with one specific, actionable next step.
 6. If the data has "reviewFocus", this conversation is about that specific day or period (a coach review you already wrote is in the history). Answer from reviewFocus first — it has every trade, the plan and the notes for it.
+7. Strategies & playbook rules: "strategies" includes each strategy's description, entryRules, exitRules, riskRules, timeframes, marketConditions, targetRR, and notes. Whenever evaluating a trade or chart for a strategy, explicitly check whether the execution respected those rules and call out which rules were met or broken.
+8. Chart screenshots & Chart Legend:
+   - If "chartLegend" is present in the journal data, you MUST read every attached chart using that exact key — do NOT only read candlesticks/bars. Identify the trader's horizontal/trend lines by BOTH color and line style (solid vs. dotted vs. dashed) and identify shaded zones by color, then reference those exact named levels and zones when judging entry location, stop placement, targets, and exits.
+   - If multiple images are attached (for example, strategy reference examples alongside the trade/session chart), check the image labels and visually compare the trade chart against the strategy's reference examples to judge setup alignment.
 
 Journal data (JSON):
 ${JSON.stringify(context)}`;
 
 /** Ask the configured AI provider (OpenAI, Gemini, Claude, Ollama). */
-export async function askAI({ provider, cfg, tone, name, question, history, context, image, thinking = 'standard' }) {
+export async function askAI({ provider, cfg, tone, name, question, history, context, image, images, thinking = 'standard' }) {
   const system = coachSystemPrompt({ name, tone, context });
-  return chat(provider, cfg, { system, history: history.map((h) => ({ role: h.role, content: h.content })), question, image, thinking });
+  return chat(provider, cfg, { system, history: history.map((h) => ({ role: h.role, content: h.content })), question, image, images, thinking });
 }
 
 /** Local, data-driven answers for when no API key is configured. */
@@ -348,6 +432,11 @@ export function buildReviewContext(state, { kind, label, date, period, trades, p
   const s = summarize(trades);
   const m = periodMetrics(trades, { blockers: playbookOf(state).blockers });
   const pv = summarize(prevTrades);
+  const usedStratIds = new Set(trades.map((t) => t.strategyId).filter(Boolean));
+  const stratDefs = state.strategies
+    .filter((st) => usedStratIds.size === 0 || usedStratIds.has(st.id))
+    .map((st) => strategyPlaybookEntry(st, trades));
+  const legend = buildChartLegendContext(state.settings?.coach);
   const base = {
     reviewing: label, kind, today: keyOf(new Date()),
     totals: { trades: s.count, netPnl: r2(s.net), winRate: +s.winRate.toFixed(1), profitFactor: s.profitFactor === Infinity ? 'inf' : +s.profitFactor.toFixed(2), avgWin: r2(s.avgWin), avgLoss: r2(s.avgLoss), largestWin: r2(s.largestWin), largestLoss: r2(s.largestLoss), holdWinSec: Math.round(s.holdWin), holdLossSec: Math.round(s.holdLoss), fees: r2(s.fees || 0) },
@@ -355,6 +444,8 @@ export function buildReviewContext(state, { kind, label, date, period, trades, p
     quickReentriesAfterLoss: revengeTrades(trades).length,
     bySymbol: byKey(trades, (t) => t.symbol).map((x) => ({ symbol: x.key, trades: x.decided, net: r2(x.net), winRate: Math.round(x.winRate) })),
     byHalfHour: byKey(trades, (t) => halfHourKey(t.entry)).sort((a, b) => a.key.localeCompare(b.key)).map((x) => ({ halfHour: x.key, net: r2(x.net), trades: x.decided, winRate: Math.round(x.winRate) })),
+    ...(stratDefs.length ? { strategyPlaybook: stratDefs } : {}),
+    ...(legend ? { chartLegend: legend } : {}),
     previousPeriod: prevTrades.length ? { trades: pv.count, netPnl: r2(pv.net), winRate: +pv.winRate.toFixed(1), profitFactor: pv.profitFactor === Infinity ? 'inf' : +pv.profitFactor.toFixed(2) } : null,
   };
   if (kind === 'day') {
@@ -468,6 +559,7 @@ Rules:
 - Never invent trades, times, setups or figures. Quote totals and breakdown figures exactly as given; don't re-add them yourself.
 - Go beyond restating numbers: explain what they mean, connect related findings (e.g. losses cluster after 7 AM AND on 7+ trade days), and name causes the data supports. Say so when a pattern rests on only a few trades.
 - Be specific: every point cites evidence — a date, a time, a trade, a dollar amount, a count, or the trader's own words from notes/reviews.
+- If "strategyPlaybook" is present, judge trades and notes against those defined strategy entryRules, exitRules, riskRules, and descriptions where relevant.
 - Prioritise: lead each section with the most important point. Avoid generic advice that could apply to anyone.
 - Money in US dollars like +$253.45 / -$78.45. Percentages rounded.
 

@@ -20,8 +20,8 @@ export async function imageToDataUrl(src, max = 1800) {
 }
 
 /** Open the Trading Coach with this image attached and a question ready to edit. focus = detailed data for follow-ups. */
-export async function askCoachAboutImage({ src, text, focus = null, title = null }) {
+export async function askCoachAboutImage({ src, text, focus = null, title = null, strategyId = null }) {
   const image = await imageToDataUrl(src);
-  pending = { image, text, focus, title, at: Date.now() };
+  pending = { image, text, focus, title, strategyId, at: Date.now() };
   navigate('coach?ask=1');
 }

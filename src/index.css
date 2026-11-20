@@ -560,6 +560,23 @@ code { font-size: 12px; background: var(--card-3); padding: 1px 4px; border-radi
 .prov.on { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); background: color-mix(in srgb, var(--primary) 14%, transparent); }
 .prov b { font-weight: 600; }
 
+/* ---------------- coach chart legend ---------------- */
+.cl-row { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.cl-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cl-bottom { display: grid; grid-template-columns: 1.2fr 1fr; gap: 8px; }
+.cl-bottom .input { height: 34px; font-size: 13px; }
+.cl-preview { width: 52px; height: 34px; flex-shrink: 0; border: 1px solid var(--border-2); background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 0 7px; }
+.cl-line { width: 100%; border-top-width: 2.5px; display: block; }
+.cl-zone { width: 100%; height: 16px; border: 1px solid; display: block; }
+.cl-kind { width: 96px; height: 34px; font-size: 13px; }
+.cl-style { width: 132px; height: 34px; font-size: 13px; }
+.cl-style-tag { width: 132px; height: 34px; display: flex; align-items: center; padding: 0 10px; border: 1px solid var(--border); background: var(--card-2); font-size: 12.5px; }
+.cl-color { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 8px 0 4px; border: 1px solid var(--border-2); background: var(--input); cursor: pointer; }
+.cl-color input[type='color'] { width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; }
+.cl-hex { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: var(--fg-2); }
+.cl-cname { flex: 1; min-width: 130px; height: 34px; font-size: 13px; }
+@media (max-width: 720px) { .cl-bottom { grid-template-columns: 1fr; } }
+
 /* ---------------- storage banners / phone ---------------- */
 .storage-banner { display: flex; align-items: center; gap: 12px; padding: 9px 24px; font-size: 13px; border-bottom: 1px solid var(--border); }
 .storage-banner button { color: inherit; text-decoration: underline; display: inline-flex; }

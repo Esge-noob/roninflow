@@ -54,7 +54,7 @@ export function initialState() {
       account: 'all',
       setupDone: false, // first-run setup (src/components/Setup.jsx)
       dashboardWidgets: DASHBOARD_WIDGETS.map((w) => w.id),
-      coach: { provider: 'local', providers: {}, tone: 'Direct', requestsUsed: 0, requestsLimit: 200 },
+      coach: { provider: 'local', providers: {}, tone: 'Direct', requestsUsed: 0, requestsLimit: 200, chartLegend: [], chartNotes: '', includeStrategyMedia: true },
       sync: { enabled: true, cursor: 0, tz: 'auto', detectedTz: null, skip: [] },
       playbook: null,
       risk: null,

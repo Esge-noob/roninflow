@@ -247,12 +247,14 @@ export function TradeDrawer({ trade, onClose, siblings = null, onNavigate }) {
   const askAboutShot = (src) => {
     const day = t.entry.slice(0, 10);
     const dayTrades = state.trades.filter((x) => x.accountId === t.accountId && x.entry.slice(0, 10) === day);
+    const strat = t.strategyId ? state.strategies.find((x) => x.id === t.strategyId) : null;
     const label = `${t.symbol} ${t.direction} · ${fmtDate(t.entry)} ${fmtTime12(t.entry)}`;
     askCoachAboutImage({
       src,
       title: `Chart · ${label}`,
-      text: `This is the chart for my ${t.symbol} ${t.direction} trade on ${fmtDate(t.entry)} at ${fmtTime12(t.entry)} (${fmtMoney(t.pnl, { sign: true })}), with my execution, market structure and order flow. Was the entry and exit well placed relative to the structure and order flow? What should I have done differently?`,
-      focus: { ...buildReviewContext(state, { kind: 'day', label: fmtDate(t.entry), date: day, trades: dayTrades }), focusTrade: { time: t.entry, exit: t.exit, symbol: t.symbol, side: t.direction, qty: t.qty, entryPrice: t.entryPrice, exitPrice: t.exitPrice, pnl: t.pnl, edgeBlockers: t.blockers, tags: t.tags, notes: t.notes || undefined } },
+      strategyId: strat?.id || null,
+      text: `This is the chart for my ${t.symbol} ${t.direction} trade${strat ? ` (${strat.name})` : ''} on ${fmtDate(t.entry)} at ${fmtTime12(t.entry)} (${fmtMoney(t.pnl, { sign: true })}), with my execution, chart lines/zones, market structure and order flow. Was the entry and exit well placed relative to my chart levels, zones, and strategy rules? What should I have done differently?`,
+      focus: { ...buildReviewContext(state, { kind: 'day', label: fmtDate(t.entry), date: day, trades: dayTrades }), focusTrade: { time: t.entry, exit: t.exit, symbol: t.symbol, side: t.direction, qty: t.qty, entryPrice: t.entryPrice, exitPrice: t.exitPrice, pnl: t.pnl, strategy: strat?.name, edgeBlockers: t.blockers, tags: t.tags, notes: t.notes || undefined } },
     }).catch(() => {});
   };
   const addShots = async (e) => {

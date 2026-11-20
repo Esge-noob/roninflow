@@ -98,8 +98,22 @@ export async function listModels(id, cfg) {
 
 const splitDataUrl = (d) => ({ mime: d.slice(5, d.indexOf(';')), data: d.slice(d.indexOf(',') + 1) });
 
+function normalizeImages(image, images) {
+  const raw = Array.isArray(images) && images.length ? images : image ? [image] : [];
+  return raw
+    .map((item) => {
+      const dataUrl = typeof item === 'string' ? item : item?.dataUrl;
+      if (!dataUrl || !dataUrl.startsWith('data:')) return null;
+      const { mime, data } = splitDataUrl(dataUrl);
+      const label = typeof item === 'object' ? item?.label || '' : '';
+      return { mime, data, dataUrl, label };
+    })
+    .filter(Boolean);
+}
+
 /**
- * Send a chat turn. history: [{role:'user'|'assistant', content}], image: data URL or null.
+ * Send a chat turn. history: [{role:'user'|'assistant', content}],
+ * image: data URL or null, images: [{ dataUrl, label? }] or data URL strings.
  * Returns the assistant's text.
  */
 export const THINKING = [
@@ -136,11 +150,11 @@ function thinkingFor(id, model, level) {
 }
 
 /** One chat turn. Returns the answer text. thinking: 'off' | 'standard' | 'deep'. */
-export async function chat(id, cfg, { system, history = [], question, image, thinking = 'standard', maxTokens = 1500, longContext = false }) {
+export async function chat(id, cfg, { system, history = [], question, image, images, thinking = 'standard', maxTokens = 1500, longContext = false }) {
   if (PROVIDERS[id]?.needsKey && !cfg.apiKey) throw new Error(`Add your ${PROVIDERS[id].label} API key in Customization Settings.`);
   if (!cfg.model) throw new Error('Choose a model in Customization Settings.');
   const h = headersFor(id, cfg);
-  const img = image ? splitDataUrl(image) : null;
+  const imgs = normalizeImages(image, images);
   const extra0 = thinkingFor(id, cfg.model, thinking);
   // Anthropic: thinking budget + room for the answer itself
   const extra = extra0?.max_tokens ? { ...extra0, max_tokens: extra0.thinking.budget_tokens + maxTokens } : extra0;
@@ -155,20 +169,42 @@ export async function chat(id, cfg, { system, history = [], question, image, thi
   };
 
   if (id === 'anthropic') {
-    const content = img ? [{ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.data } }, { type: 'text', text: question }] : question;
+    const content = imgs.length
+      ? [
+        ...imgs.flatMap((im, idx) => [
+          ...(im.label ? [{ type: 'text', text: `[Image ${idx + 1}: ${im.label}]` }] : []),
+          { type: 'image', source: { type: 'base64', media_type: im.mime, data: im.data } },
+        ]),
+        { type: 'text', text: question },
+      ]
+      : question;
     const res = await send(`${cfg.base}/v1/messages`, { model: cfg.model, max_tokens: maxTokens, system, messages: [...history, { role: 'user', content }] });
     if (!res.ok) throw new Error(errText(res, 'Anthropic'));
     return (res.json.content || []).filter((c) => c.type === 'text').map((c) => c.text || '').join('');
   }
   if (id === 'openai') {
-    const content = img ? [{ type: 'text', text: question }, { type: 'image_url', image_url: { url: image } }] : question;
+    const content = imgs.length
+      ? [
+        { type: 'text', text: question },
+        ...imgs.flatMap((im, idx) => [
+          ...(im.label ? [{ type: 'text', text: `[Image ${idx + 1}: ${im.label}]` }] : []),
+          { type: 'image_url', image_url: { url: im.dataUrl } },
+        ]),
+      ]
+      : question;
     const res = await send(`${cfg.base}/chat/completions`, { model: cfg.model, messages: [{ role: 'system', content: system }, ...history, { role: 'user', content }] });
     if (!res.ok) throw new Error(errText(res, 'OpenAI'));
     const msg = res.json.choices?.[0]?.message?.content;
     return Array.isArray(msg) ? msg.map((p) => p.text || '').join('') : msg || '';
   }
   if (id === 'google') {
-    const parts = [{ text: question }, ...(img ? [{ inline_data: { mime_type: img.mime, data: img.data } }] : [])];
+    const parts = [
+      { text: question },
+      ...imgs.flatMap((im, idx) => [
+        ...(im.label ? [{ text: `[Image ${idx + 1}: ${im.label}]` }] : []),
+        { inline_data: { mime_type: im.mime, data: im.data } },
+      ]),
+    ];
     const contents = [...history.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), { role: 'user', parts }];
     const res = await send(`${cfg.base}/models/${encodeURIComponent(cfg.model)}:generateContent`, { systemInstruction: { parts: [{ text: system }] }, contents });
     if (!res.ok) throw new Error(errText(res, 'Gemini'));
@@ -177,7 +213,10 @@ export async function chat(id, cfg, { system, history = [], question, image, thi
     return (cand.content?.parts || []).filter((p) => !p.thought).map((p) => p.text || '').join('');
   }
   if (id === 'ollama' || id === 'ollamaCloud') {
-    const last = { role: 'user', content: question, ...(img ? { images: [img.data] } : {}) };
+    const imgKey = imgs.some((im) => im.label)
+      ? `Attached images in order:\n${imgs.map((im, idx) => `${idx + 1}. ${im.label || `Image ${idx + 1}`}`).join('\n')}\n\n`
+      : '';
+    const last = { role: 'user', content: `${imgKey}${question}`, ...(imgs.length ? { images: imgs.map((im) => im.data) } : {}) };
     const res = await send(`${cfg.base}/api/chat`, { model: cfg.model, stream: false, ...(longContext ? { options: { num_ctx: 32768 } } : {}), messages: [{ role: 'system', content: system }, ...history, last] });
     if (!res.ok) throw new Error(errText(res, PROVIDERS[id].label));
     return res.json.message?.content || '';

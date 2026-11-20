@@ -3,7 +3,7 @@ import { Check, Search, SquarePen, PanelLeftClose, PanelLeft, MessageCircle, Set
 import { useStore, navigate } from '../store/store';
 import { Modal, ModalHead, Popover, useToast, fileToDataUrl } from '../components/ui';
 import { CoachLogo } from '../components/Layout';
-import { takePendingAsk } from '../lib/askCoach';
+import { takePendingAsk, imageToDataUrl } from '../lib/askCoach';
 import { localAnswer, askAI, buildContext } from '../lib/coach';
 import { PROVIDERS, providerConfig } from '../lib/ai';
 import CoachSettings from '../components/CoachSettings';
@@ -70,7 +70,20 @@ function useCoach() {
         // chats opened from a Coach Review keep that day's / period's detailed data
         const focus = state.chats.find((x) => x.id === id)?.focus || opts.focus;
         const context = withScope(focus ? { ...buildContext(state, scopeTrades), reviewFocus: focus } : buildContext(state, scopeTrades));
-        answer = await askAI({ provider, cfg: providerConfig(coach, provider), tone: coach.tone, name: state.user.name, question, history, context, image, thinking: coach.thinking || 'standard' });
+        let images;
+        if (image) {
+          images = [{ dataUrl: image, label: 'Trade / session chart to analyze' }];
+          const stratId = opts.strategyId || (ctx.strategy && ctx.strategy !== NONE ? ctx.strategy : null);
+          const strat = stratId ? state.strategies.find((s) => s.id === stratId) : null;
+          const allowRefs = opts.includeRefs !== undefined ? opts.includeRefs : coach.includeStrategyMedia !== false;
+          if (allowRefs && strat?.media?.length) {
+            const refs = await Promise.all(strat.media.slice(0, 3).map((src) => imageToDataUrl(src, 1200).catch(() => null)));
+            refs.filter(Boolean).forEach((dataUrl, idx) => {
+              images.push({ dataUrl, label: `Strategy reference example ${idx + 1} for "${strat.name}"` });
+            });
+          }
+        }
+        answer = await askAI({ provider, cfg: providerConfig(coach, provider), tone: coach.tone, name: state.user.name, question, history, context, image, images, thinking: coach.thinking || 'standard' });
         if (!answer?.trim()) throw new Error('The model returned an empty answer.');
       } else {
         await new Promise((r) => setTimeout(r, 650));
@@ -150,26 +163,36 @@ function ContextPanel({ ctx, setCtx, count }) {
   );
 }
 
-function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, count = 0 }) {
+function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, count = 0, onOpenLegend }) {
   const { state } = useStore();
   const [text, setText] = useState('');
   const [image, setImage] = useState(null);
+  const [refsOverride, setRefsOverride] = useState(null);
   const taRef = useRef(null);
   // a chart handed over from "Ask coach about this chart"
   useEffect(() => {
     if (!draft) return;
     setText(draft.text || ''); setImage(draft.image || null);
+    setRefsOverride(null);
+    if (draft.strategyId) setCtx((prev) => ({ ...prev, strategy: draft.strategyId }));
     setTimeout(() => { const el = taRef.current || document.querySelector('.composer textarea'); el?.focus(); el?.setSelectionRange?.(el.value.length, el.value.length); }, 50);
-  }, [draft]);
-  const noVision = image && (state.settings.coach.provider || 'local') === 'local';
+  }, [draft]); // eslint-disable-line react-hooks/exhaustive-deps
+  const coachCfg = state.settings.coach || {};
+  const useRefs = refsOverride !== null ? refsOverride : coachCfg.includeStrategyMedia !== false;
+  const noVision = image && (coachCfg.provider || 'local') === 'local';
+  const legendCount = (coachCfg.chartLegend || []).filter((x) => (x.label || x.meaning || '').trim()).length;
+  const activeStratId = draft?.strategyId || (ctx.strategy && ctx.strategy !== NONE ? ctx.strategy : null);
+  const activeStrat = activeStratId ? state.strategies.find((s) => s.id === activeStratId) : null;
+  const refCount = activeStrat?.media?.length ? Math.min(3, activeStrat.media.length) : 0;
   const [listening, setListening] = useState(false);
   const fileRef = useRef(null);
   const toast = useToast();
   const submit = () => {
     if (!text.trim() || busy) return;
-    onSend(text.trim(), image);
+    onSend(text.trim(), image, { includeRefs: useRefs });
     setText('');
     setImage(null);
+    setRefsOverride(null);
   };
   const mic = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -185,9 +208,31 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, co
   return (
     <div className="composer" style={compact ? { padding: '10px 10px 8px 14px' } : undefined}>
       {image && (
-        <div style={{ position: 'relative', display: 'inline-block', marginBottom: 8 }}>
-          <img src={image} alt="" style={{ height: 60, border: '1px solid var(--border-2)' }} />
-          <button className="close-x" style={{ position: 'absolute', top: -6, right: -6 }} onClick={() => setImage(null)}><X size={11} /></button>
+        <div className="row gap10 wrap" style={{ alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <img src={image} alt="" style={{ height: 60, border: '1px solid var(--border-2)', display: 'block' }} />
+            <button className="close-x" style={{ position: 'absolute', top: -6, right: -6 }} onClick={() => setImage(null)}><X size={11} /></button>
+          </div>
+          {!compact && !noVision && (
+            <div className="col gap4" style={{ fontSize: 12 }}>
+              <div className="row gap8 wrap" style={{ alignItems: 'center' }}>
+                <span className="muted">
+                  Chart legend: <b style={{ color: 'var(--fg)' }}>{legendCount > 0 ? `${legendCount} item${legendCount === 1 ? '' : 's'} active` : 'not set'}</b>
+                </span>
+                {onOpenLegend && (
+                  <button type="button" className="accent" style={{ fontSize: 12, textDecoration: 'underline' }} onClick={onOpenLegend}>
+                    {legendCount > 0 ? 'Edit' : 'Configure lines & zones'}
+                  </button>
+                )}
+              </div>
+              {refCount > 0 && (
+                <label className="row gap6 muted" style={{ cursor: 'pointer' }}>
+                  <input type="checkbox" className="cbx" checked={useRefs} onChange={(e) => setRefsOverride(e.target.checked)} />
+                  <span>Include {refCount} example screenshot{refCount === 1 ? '' : 's'} from <b style={{ color: 'var(--fg)' }}>{activeStrat.name}</b></span>
+                </label>
+              )}
+            </div>
+          )}
         </div>
       )}
       {noVision && <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>No AI provider is set up, so the coach can't look at the image. Choose OpenAI, Gemini or Claude in Customization Settings.</div>}
@@ -264,6 +309,8 @@ export default function Coach({ sub }) {
   const [tplPage, setTplPage] = useState(0);
   const [addTpl, setAddTpl] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(sub === 'settings');
+  const [settingsTab, setSettingsTab] = useState('ai');
+  const openSettings = (tab = 'ai') => { setSettingsTab(tab); setSettingsOpen(true); };
   // "Chat more with the coach" from a Coach Review opens #/coach?chat=<id>;
   // "Ask coach about this chart" opens #/coach?ask=1 with the image waiting in the message box
   const [draft, setDraft] = useState(null);
@@ -278,13 +325,13 @@ export default function Coach({ sub }) {
   const pages = Math.max(1, Math.ceil(state.templates.length / 4));
   const tpls = state.templates.slice(tplPage * 4, tplPage * 4 + 4);
   const chats = state.chats.filter((c) => c.title.toLowerCase().includes(q.toLowerCase()));
-  const go = (text, image) => {
-    const opts = !chatId && draft ? { focus: draft.focus, title: draft.title } : {};
+  const go = (text, image, extra = {}) => {
+    const opts = { ...extra, ...(!chatId && draft ? { focus: draft.focus, title: draft.title, strategyId: draft.strategyId } : {}) };
     if (!chatId) setDraft(null);
     return send(chatId, text, image, setChatId, opts);
   };
 
-  useEffect(() => { if (sub === 'settings') setSettingsOpen(true); }, [sub]);
+  useEffect(() => { if (sub === 'settings') openSettings('ai'); }, [sub]);
 
   return (
     <>
@@ -298,7 +345,7 @@ export default function Coach({ sub }) {
         <div className="progress cb-progress" style={{ width: 186 }}><i style={{ width: `${Math.min(100, (coach.requestsUsed / coach.requestsLimit) * 100)}%` }} /></div>
         <span style={{ fontSize: 15 }}>{coach.requestsUsed}<span className="muted">/{coach.requestsLimit}</span></span>
         <div className="sep-v cb-sep" style={{ margin: '14px 10px' }} />
-        <button className="row gap8" onClick={() => setSettingsOpen(true)} title="Customization Settings"><Settings size={18} /> <span className="cb-settings-label">Customization Settings</span></button>
+        <button className="row gap8" onClick={() => openSettings('ai')} title="Customization Settings"><Settings size={18} /> <span className="cb-settings-label">Customization Settings</span></button>
       </div>
       <div className="coach" style={!sideOpen ? { gridTemplateColumns: '0 1fr' } : undefined}>
         {mobileSide && <div className="overlay coach-side-scrim" onMouseDown={() => setMobileSide(false)} />}
@@ -324,7 +371,7 @@ export default function Coach({ sub }) {
             <div className="col coach-welcome" style={{ alignItems: 'center', padding: '48px 24px', maxWidth: 968, width: '100%', margin: '0 auto' }}>
               <CoachLogo />
               <h1 className="coach-hi" style={{ fontSize: 31, fontWeight: 500, letterSpacing: '-0.03em', margin: '48px 0 42px' }}>Hey {first}, I'm your Trading Coach</h1>
-              <Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} draft={draft} count={scopeTrades.length} />
+              <Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} draft={draft} count={scopeTrades.length} onOpenLegend={() => openSettings('legend')} />
               <div className="row between coach-tpl-head" style={{ width: '100%', margin: '64px 0 18px' }}>
                 <div className="row gap16"><b style={{ fontWeight: 500, fontSize: 15.5 }}>My Templates</b><button onClick={() => setAddTpl('')}><Plus size={18} /></button></div>
                 <div className="row gap12">
@@ -349,7 +396,7 @@ export default function Coach({ sub }) {
             <>
               <div className="coach-thread" style={{ flex: 1, padding: '24px 24px 0' }}><Thread chat={chat} busy={busy} /></div>
               <div className="coach-compose-dock" style={{ position: 'sticky', bottom: 0, padding: '12px 24px 24px', background: 'var(--bg)' }}>
-                <div style={{ maxWidth: 820, margin: '0 auto' }}><Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} count={scopeTrades.length} /></div>
+                <div style={{ maxWidth: 820, margin: '0 auto' }}><Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} count={scopeTrades.length} onOpenLegend={() => openSettings('legend')} /></div>
               </div>
             </>
           )}
@@ -364,7 +411,7 @@ export default function Coach({ sub }) {
           <button className="btn white" disabled={!addTpl?.trim()} onClick={() => { setTemplates((l) => [addTpl.trim(), ...l]); setAddTpl(null); setTplPage(0); }}>Save template</button>
         </div>
       </Modal>
-      <CoachSettings open={settingsOpen} onClose={() => { setSettingsOpen(false); if (sub === 'settings') navigate('coach'); }} coach={coach} save={(c, name) => { setSetting('coach', c); update((s) => ({ ...s, user: { ...s.user, name } })); }} name={state.user.name} />
+      <CoachSettings open={settingsOpen} initialTab={settingsTab} onClose={() => { setSettingsOpen(false); if (sub === 'settings') navigate('coach'); }} coach={coach} save={(c, name) => { setSetting('coach', c); update((s) => ({ ...s, user: { ...s.user, name } })); }} name={state.user.name} />
     </>
   );
 }
