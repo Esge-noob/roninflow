@@ -11,11 +11,27 @@ import { playbookOf } from './playbook';
 
 const stripHtml = (h) => (h || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
-/** Human-readable color name from #rrggbb so vision models can match chart lines/zones reliably. */
+/** Parse #RGB, #RRGGBB, #AARRGGBB (ATAS/NinjaTrader/WPF), or rgb()/rgba() into normalized #rrggbb (or null). */
+export function parseColorCode(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const h = s.replace(/^#/, '');
+  if (/^[0-9a-f]{6}$/i.test(h)) return `#${h.toLowerCase()}`;
+  if (/^[0-9a-f]{8}$/i.test(h)) return `#${h.slice(2, 8).toLowerCase()}`;
+  if (/^[0-9a-f]{3}$/i.test(h)) return `#${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`.toLowerCase();
+  const rgb = s.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*[,/]\s*[\d.%]+)?\s*\)$/i);
+  if (rgb) {
+    const hex = [rgb[1], rgb[2], rgb[3]].map((v) => Math.max(0, Math.min(255, Number(v))).toString(16).padStart(2, '0')).join('');
+    return `#${hex}`;
+  }
+  return null;
+}
+
+/** Human-readable color name from a hex/rgb color so vision models can match chart lines/zones reliably. */
 export function describeColor(hex) {
-  const m = String(hex || '').trim().match(/^#?([0-9a-f]{6})$/i);
-  if (!m) return '';
-  const n = parseInt(m[1], 16);
+  const parsed = parseColorCode(hex);
+  if (!parsed) return '';
+  const n = parseInt(parsed.slice(1), 16);
   const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
   const l = (max + min) / 2;

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Check, Eye, EyeOff, RefreshCw, TriangleExclamationPoint as TriangleAlert, ExternalLink, Cpu, Cloud, Sparkles, Zap, Bot, Server, Plus, Trash, Minus, Square } from 'lucide-react';
 import { Modal, ModalHead, Switch } from './ui';
 import { PROVIDERS, providerConfig, testConnection, THINKING, VAULT, vaultKeys } from '../lib/ai';
-import { describeColor } from '../lib/coach';
+import { describeColor, parseColorCode } from '../lib/coach';
 import { uid } from '../lib/stats';
 
 const ICONS = { local: Cpu, anthropic: Sparkles, openai: Zap, google: Bot, ollama: Server, ollamaCloud: Cloud };
@@ -28,6 +28,55 @@ function LegendPreview({ item }) {
   return (
     <div className="cl-preview" title={`${style} line preview`}>
       <span className="cl-line" style={{ borderTopStyle: style, borderTopColor: color }} />
+    </div>
+  );
+}
+
+function ColorCodeInput({ value, onChange }) {
+  const hex = parseColorCode(value) || '#f5c542';
+  const [draft, setDraft] = useState(hex.toUpperCase());
+  const [focused, setFocused] = useState(false);
+  const shown = focused ? draft : hex.toUpperCase();
+
+  return (
+    <div className="cl-color">
+      <input
+        type="color"
+        value={hex}
+        title="Pick color"
+        aria-label="Pick color"
+        onChange={(e) => {
+          const next = e.target.value;
+          setDraft(next.toUpperCase());
+          onChange(next);
+        }}
+      />
+      <input
+        type="text"
+        className="cl-hex-input"
+        value={shown}
+        spellCheck={false}
+        placeholder="#RRGGBB"
+        aria-label="Color code"
+        title="Type or paste a color code (#RRGGBB, #AARRGGBB like #FF00FF00, #RGB, or rgb())"
+        onFocus={(e) => {
+          setFocused(true);
+          setDraft(hex.toUpperCase());
+          e.target.select();
+        }}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDraft(raw);
+          const parsed = parseColorCode(raw);
+          if (parsed) onChange(parsed);
+        }}
+        onBlur={() => {
+          const parsed = parseColorCode(draft);
+          if (parsed) onChange(parsed);
+          setDraft((parsed || hex).toUpperCase());
+          setFocused(false);
+        }}
+      />
     </div>
   );
 }
@@ -297,19 +346,14 @@ export default function CoachSettings({ open, initialTab = 'ai', onClose, coach,
                           ) : (
                             <div className="cl-style-tag muted">Shaded area</div>
                           )}
-                          <label className="cl-color" title="Pick color">
-                            <input
-                              type="color"
-                              value={item.color || '#f5c542'}
-                              onChange={(e) => {
-                                const nextHex = e.target.value;
-                                const prevAuto = describeColor(item.color);
-                                const keepCustom = item.colorName && item.colorName !== prevAuto;
-                                updLegend(item.id, { color: nextHex, ...(keepCustom ? {} : { colorName: describeColor(nextHex) }) });
-                              }}
-                            />
-                            <span className="cl-hex">{(item.color || '#f5c542').toUpperCase()}</span>
-                          </label>
+                          <ColorCodeInput
+                            value={item.color || '#f5c542'}
+                            onChange={(nextHex) => {
+                              const prevAuto = describeColor(item.color);
+                              const keepCustom = item.colorName && item.colorName !== prevAuto;
+                              updLegend(item.id, { color: nextHex, ...(keepCustom ? {} : { colorName: describeColor(nextHex) }) });
+                            }}
+                          />
                           <input
                             className="input cl-cname"
                             value={item.colorName || ''}
