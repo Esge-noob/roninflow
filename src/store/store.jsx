@@ -319,6 +319,18 @@ export function StoreProvider({ children }) {
         }),
       deleteTrades: (ids) => update((s) => ({ ...s, trades: s.trades.filter((t) => !ids.includes(t.id)) })),
       addTag: (tag) => update((s) => (s.tags.includes(tag) ? s : { ...s, tags: [...s.tags, tag] })),
+      /** Replace your tag list or edge-blocker list; `renames` ({ old: new }) carry over onto past trades. */
+      setLabelList: (kind, items, renames = {}) => update((s) => {
+        const field = kind === 'blockers' ? 'blockers' : 'tags';
+        const ren = Object.entries(renames).filter(([a, b]) => a && b && a !== b);
+        const trades = ren.length ? s.trades.map((t) => {
+          const l = t[field];
+          if (!Array.isArray(l) || !l.some((x) => renames[x])) return t;
+          return { ...t, [field]: [...new Set(l.map((x) => renames[x] || x))] };
+        }) : s.trades;
+        if (field === 'tags') return { ...s, tags: items, trades };
+        return { ...s, trades, settings: { ...s.settings, playbook: { ...(s.settings.playbook || {}), blockers: items } } };
+      }),
       // accounts
       addAccount: (a) => update((s) => ({ ...s, accounts: [...s.accounts, { id: a.name, autoSync: false, status: 'Active', createdAt: new Date().toISOString().slice(0, 10), ...a }] })),
       updateAccount: (id, patch) => patchList('accounts', id, patch),

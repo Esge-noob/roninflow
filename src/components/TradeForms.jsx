@@ -5,7 +5,7 @@ import { Trash, Pencil, ImagePlus, Clock, Check, X, Plus, MessageCircle, Chevron
 import { useStore } from '../store/store';
 import { Modal, ModalHead, Drawer, Money, Stars, Seg, useToast, Confirm, fileToDataUrl } from './ui';
 import { computePnl, fmtDate, fmtTime12, fmtHold, holdSeconds, POINT_VALUE, pad, fmtMoney } from '../lib/stats';
-import { BlockerPicker } from './Playbook';
+import { BlockerPicker, LabelListEditor } from './Playbook';
 import ExecChart from './ExecChart';
 import { askCoachAboutImage } from '../lib/askCoach';
 import { buildReviewContext } from '../lib/coach';
@@ -15,15 +15,19 @@ const SYMBOLS = Object.keys(POINT_VALUE);
 export function TagPicker({ value = [], onChange }) {
   const { state, addTag } = useStore();
   const [txt, setTxt] = useState('');
+  const [editing, setEditing] = useState(false);
   const toggle = (t) => onChange(value.includes(t) ? value.filter((x) => x !== t) : [...value, t]);
+  const extra = value.filter((t) => !state.tags.includes(t)); // removed from the list — still shown so it can be cleared
   return (
     <div className="col gap8">
+      <LabelListEditor kind="tags" open={editing} onClose={() => setEditing(false)} />
       <div className="row gap6 wrap">
-        {state.tags.map((t) => (
+        {[...state.tags, ...extra].map((t) => (
           <button key={t} className={`chip ${value.includes(t) ? 'on' : ''}`} onClick={() => toggle(t)} type="button">
             {value.includes(t) && <Check size={12} />} {t}
           </button>
         ))}
+        <button type="button" className="chip ghost-chip" title="Add, rename or remove tags" onClick={() => setEditing(true)}><Pencil size={11} /> Edit</button>
       </div>
       <form
         className="row gap8"

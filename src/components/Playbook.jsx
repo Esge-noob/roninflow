@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Check, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Minus, Plus, Trash, ShieldCheck, TrendingDown, Lightbulb, Pencil, X } from 'lucide-react';
 import { balanceGap } from '../lib/balance';
 import { useStore, useAccountTrades, navigate } from '../store/store';
@@ -105,14 +106,66 @@ export function dayBlockerSummary(trades, blockers) {
   return { rows: blockers.filter((b) => map[b]).map((b) => map[b]), flagged, flaggedPnl };
 }
 
+/** Add, rename, reorder and remove your tags or edge blockers. A rename carries over onto past trades. */
+export function LabelListEditor({ kind, open, onClose }) {
+  const { state, setLabelList } = useStore();
+  const isTags = kind === 'tags';
+  const current = isTags ? state.tags : playbookOf(state).blockers;
+  const [rows, setRows] = useState(null);
+  const list = rows || current.map((name) => ({ orig: name, name }));
+  const edit = (fn) => setRows(fn(list));
+  const used = useMemo(() => {
+    const m = {};
+    for (const t of state.trades) for (const x of (isTags ? t.tags : t.blockers) || []) m[x] = (m[x] || 0) + 1;
+    return m;
+  }, [state.trades, isTags]);
+  const names = list.map((r) => r.name.trim()).filter(Boolean);
+  const dupe = names.find((n, i) => names.indexOf(n) !== i);
+  const close = () => { setRows(null); onClose(); };
+  const save = () => {
+    const renames = Object.fromEntries(list.filter((r) => r.orig && r.name.trim() && r.name.trim() !== r.orig).map((r) => [r.orig, r.name.trim()]));
+    setLabelList(kind, [...new Set(names)], renames);
+    close();
+  };
+  if (!open) return null;
+  return createPortal(
+    <Modal open onClose={close} width={460} className="lle-modal">
+      <ModalHead title={isTags ? 'Edit tags' : 'Edit edge blockers'} sub={isTags ? 'Your own labels for trades — setups, mistakes, anything you want to track' : 'The habits that pull you off your plan — flag them on trades to see what they cost'} onClose={close} />
+      <div className="modal-body col gap8" style={{ maxHeight: '60vh', overflow: 'auto' }}>
+        {list.map((r, i) => (
+          <div key={i} className="row gap6 lle-row">
+            <div className="col" style={{ gap: 0 }}>
+              <button className="icon-btn" style={{ width: 20, height: 16 }} disabled={i === 0} title="Move up" onClick={() => edit((l) => { const n = [...l]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; return n; })}><ChevronUp size={13} /></button>
+              <button className="icon-btn" style={{ width: 20, height: 16 }} disabled={i === list.length - 1} title="Move down" onClick={() => edit((l) => { const n = [...l]; [n[i + 1], n[i]] = [n[i], n[i + 1]]; return n; })}><ChevronDown size={13} /></button>
+            </div>
+            <input className="input grow" style={{ height: 34 }} value={r.name} autoFocus={!r.orig && i === list.length - 1} placeholder={isTags ? 'Tag name' : 'Blocker name'} onChange={(e) => edit((l) => l.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); edit((l) => [...l, { orig: null, name: '' }]); } }} />
+            <span className="muted2" style={{ fontSize: 12, minWidth: 64, textAlign: 'right' }} title={r.orig ? `${used[r.orig] || 0} trades have it` : 'New'}>{r.orig ? `${used[r.orig] || 0} trade${used[r.orig] === 1 ? '' : 's'}` : 'new'}</span>
+            <button className="icon-btn" title="Remove from the list (trades that have it keep it)" onClick={() => edit((l) => l.filter((_, j) => j !== i))}><Trash size={14} /></button>
+          </div>
+        ))}
+        <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => edit((l) => [...l, { orig: null, name: '' }])}><Plus size={14} /> Add {isTags ? 'tag' : 'blocker'}</button>
+        <div className="muted" style={{ fontSize: 12.5 }}>Renaming one renames it on your past trades too. Removing one takes it off the list; trades that already have it keep it.</div>
+        {dupe && <div className="ec-warn">“{dupe}” is in the list twice — they’ll be merged.</div>}
+      </div>
+      <div className="modal-foot">
+        <button className="btn" onClick={close}>Cancel</button>
+        <button className="btn white" onClick={save}>Save</button>
+      </div>
+    </Modal>,
+    document.body,
+  );
+}
+
 /** Toggle the edge blockers that applied to one trade. */
 export function BlockerPicker({ value = [], onChange }) {
   const { state } = useStore();
   const pb = playbookOf(state);
   const set = new Set(value);
+  const [editing, setEditing] = useState(false);
   const extra = value.filter((b) => !pb.blockers.includes(b)); // renamed/removed in settings — still shown so it can be cleared
   return (
     <div className="row gap6 wrap">
+      <LabelListEditor kind="blockers" open={editing} onClose={() => setEditing(false)} />
       {[...pb.blockers, ...extra].map((b) => {
         const on = set.has(b);
         return (
@@ -121,6 +174,7 @@ export function BlockerPicker({ value = [], onChange }) {
           </button>
         );
       })}
+      <button type="button" className="chip ghost-chip" title="Add, rename or remove edge blockers" onClick={() => setEditing(true)}><Pencil size={11} /> Edit</button>
     </div>
   );
 }
@@ -584,7 +638,7 @@ export function PlaybookSettings({ open, onClose, initialTab = 'pre' }) {
         )}
         {tab === 'blockers' && (
           <>
-            <div className="muted" style={{ fontSize: 13 }}>Edge blockers are the habits that cost you money. Flag them on trades; renaming one starts a new count (past trades keep the old name).</div>
+            <div className="muted" style={{ fontSize: 13 }}>Edge blockers are the habits that cost you money. Flag them on trades. (To rename one on your past trades too, use Edit next to the blockers on any trade.)</div>
             {pb.blockers.map((b, i) => (
               <div key={i} className="rule">
                 <input className="input grow" style={{ height: 34 }} value={b} onChange={(e) => setPb((p) => ({ ...p, blockers: p.blockers.map((x, j) => (j === i ? e.target.value : x)) }))} />
