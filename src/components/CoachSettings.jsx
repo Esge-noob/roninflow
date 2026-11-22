@@ -94,7 +94,7 @@ export default function CoachSettings({ open, initialTab = 'ai', onClose, coach,
   if (open !== was) {
     setWas(open);
     if (open) {
-      setC({ providers: {}, chartLegend: [], chartNotes: '', includeStrategyMedia: true, ...coach });
+      setC({ providers: {}, chartLegend: [], chartNotes: '', includeStrategyMedia: true, autoLoadScreenshots: true, ...coach });
       setName(initialName);
       setSel(coach.provider || 'local');
       setTab(initialTab || 'ai');
@@ -285,12 +285,21 @@ export default function CoachSettings({ open, initialTab = 'ai', onClose, coach,
               Teach the AI Coach what every colored line and shaded zone on your chart screenshots represents. This legend is automatically included when analyzing screenshots so the Coach reads your levels, zones, and indicators — not just candlesticks.
             </div>
 
-            <div className="panel col gap10" style={{ padding: 14 }}>
+            <div className="panel col gap12" style={{ padding: 14 }}>
               <div className="row between wrap gap12">
-                <div className="col gap4">
+                <div className="col gap4" style={{ flex: '1 1 320px' }}>
+                  <b style={{ fontWeight: 600, fontSize: 13.5 }}>Auto-load trade & diary screenshots</b>
+                  <span className="muted" style={{ fontSize: 12.5 }}>
+                    Automatically load screenshots already attached to your trades and diary days for the selected period during Coach Reviews and Coach chat (up to 12 charts per day review, 10 per period review, 8 in chat).
+                  </span>
+                </div>
+                <Switch on={c.autoLoadScreenshots !== false} onChange={(v) => setC((x) => ({ ...x, autoLoadScreenshots: v }))} />
+              </div>
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }} className="row between wrap gap12">
+                <div className="col gap4" style={{ flex: '1 1 320px' }}>
                   <b style={{ fontWeight: 600, fontSize: 13.5 }}>Attach strategy reference screenshots</b>
                   <span className="muted" style={{ fontSize: 12.5 }}>
-                    When analyzing a chart linked to a strategy (from a trade or Coach Context), automatically include up to 3 example screenshots from that Strategy so the Coach can compare your entry against your ideal setup.
+                    When analyzing charts linked to a strategy, automatically include example screenshots from that Strategy so the Coach can compare your entries against your ideal setup.
                   </span>
                 </div>
                 <Switch on={c.includeStrategyMedia !== false} onChange={(v) => setC((x) => ({ ...x, includeStrategyMedia: v }))} />

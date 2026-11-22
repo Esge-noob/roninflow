@@ -3,7 +3,7 @@ import { Check, Search, SquarePen, PanelLeftClose, PanelLeft, MessageCircle, Set
 import { useStore, navigate } from '../store/store';
 import { Modal, ModalHead, Popover, useToast, fileToDataUrl } from '../components/ui';
 import { CoachLogo } from '../components/Layout';
-import { takePendingAsk, imageToDataUrl } from '../lib/askCoach';
+import { takePendingAsk, imageToDataUrl, collectPeriodImages, countPeriodImages } from '../lib/askCoach';
 import { localAnswer, askAI, buildContext } from '../lib/coach';
 import { PROVIDERS, providerConfig } from '../lib/ai';
 import CoachSettings from '../components/CoachSettings';
@@ -37,14 +37,16 @@ function useCoach() {
   const { state, setChats, setSetting } = store;
   const [ctx, setCtx] = useState({ account: 'current', range: 'All time', ...EMPTY_FILTERS });
   const [busy, setBusy] = useState(false);
+  const activePreset = useMemo(() => datePresets().find((x) => x.label === ctx.range) || null, [ctx.range]);
+  const scopePeriod = useMemo(() => (activePreset?.from && activePreset?.to ? { from: activePreset.from, to: activePreset.to } : null), [activePreset]);
   const scopeTrades = useMemo(() => {
     const acc = ctx.account === 'current' ? state.settings.account : ctx.account;
     const hidden = state.settings.hideBreached ? new Set(state.accounts.filter((a) => a.status === 'Breached').map((a) => a.id)) : null;
     let list = acc === 'all' ? state.trades.filter((t) => !hidden?.has(t.accountId)) : state.trades.filter((t) => t.accountId === acc);
-    const p = datePresets().find((x) => x.label === ctx.range);
-    if (p) list = list.filter((t) => inRange(t, p));
+    if (activePreset) list = list.filter((t) => inRange(t, activePreset));
     return filterScope(list, state, ctx);
-  }, [state, ctx]);
+  }, [state, ctx, activePreset]);
+  const scopeShots = useMemo(() => countPeriodImages(state, scopeTrades, { period: scopePeriod }), [state, scopeTrades, scopePeriod]);
   const withScope = (c) => { const f = describeScope(state, ctx, playbookOf(state).regimes); return f ? { ...c, filters: { ...f, note: 'The user narrowed the context to these trades only — every number here is for them, not the whole journal.' } } : c; };
 
   /** onOpen(id) is called as soon as a new chat exists, so the view can switch to it before the answer arrives. */
@@ -69,21 +71,54 @@ function useCoach() {
         const history = (state.chats.find((x) => x.id === id)?.messages || []).slice(-10).map(({ role, content }) => ({ role, content }));
         // chats opened from a Coach Review keep that day's / period's detailed data
         const focus = state.chats.find((x) => x.id === id)?.focus || opts.focus;
-        const context = withScope(focus ? { ...buildContext(state, scopeTrades), reviewFocus: focus } : buildContext(state, scopeTrades));
+        let context = withScope(focus ? { ...buildContext(state, scopeTrades), reviewFocus: focus } : buildContext(state, scopeTrades));
         let images;
+        let autoImages = false;
+        const stratId = opts.strategyId || (ctx.strategy && ctx.strategy !== NONE ? ctx.strategy : null);
+        const allowRefs = opts.includeRefs !== undefined ? opts.includeRefs : coach.includeStrategyMedia !== false;
         if (image) {
           images = [{ dataUrl: image, label: 'Trade / session chart to analyze' }];
-          const stratId = opts.strategyId || (ctx.strategy && ctx.strategy !== NONE ? ctx.strategy : null);
           const strat = stratId ? state.strategies.find((s) => s.id === stratId) : null;
-          const allowRefs = opts.includeRefs !== undefined ? opts.includeRefs : coach.includeStrategyMedia !== false;
           if (allowRefs && strat?.media?.length) {
             const refs = await Promise.all(strat.media.slice(0, 3).map((src) => imageToDataUrl(src, 1200).catch(() => null)));
             refs.filter(Boolean).forEach((dataUrl, idx) => {
               images.push({ dataUrl, label: `Strategy reference example ${idx + 1} for "${strat.name}"` });
             });
           }
+        } else {
+          const allowAuto = opts.autoLoad !== undefined ? opts.autoLoad : coach.autoLoadScreenshots !== false;
+          const rScope = state.chats.find((x) => x.id === id)?.reviewScope;
+          const imgTrades = rScope?.date
+            ? scopeTrades.filter((t) => String(t.entry).slice(0, 10) === rScope.date)
+            : rScope?.period
+              ? scopeTrades.filter((t) => { const d = String(t.entry).slice(0, 10); return d >= rScope.period.from && d <= rScope.period.to; })
+              : scopeTrades;
+          const imgDate = rScope?.date || null;
+          const imgPeriod = rScope?.period || scopePeriod;
+          if (allowAuto && (scopeShots.total > 0 || rScope)) {
+            const packed = await collectPeriodImages(state, imgTrades, {
+              date: imgDate,
+              period: imgPeriod,
+              strategyId: stratId,
+              maxImages: 8,
+              includeStrategyRefs: allowRefs,
+            });
+            if (packed.images.length) {
+              images = packed.images;
+              autoImages = true;
+              context = {
+                ...context,
+                attachedCharts: {
+                  includedFromPeriod: packed.included,
+                  totalInPeriod: packed.totalAvailable,
+                  ...(packed.includedRefs ? { strategyReferenceExamples: packed.includedRefs } : {}),
+                  ...(packed.truncated ? { note: `Showing ${packed.included} of ${packed.totalAvailable} charts in the selected context (prioritizing biggest losses, biggest wins, and most recent).` } : {}),
+                },
+              };
+            }
+          }
         }
-        answer = await askAI({ provider, cfg: providerConfig(coach, provider), tone: coach.tone, name: state.user.name, question, history, context, image, images, thinking: coach.thinking || 'standard' });
+        answer = await askAI({ provider, cfg: providerConfig(coach, provider), tone: coach.tone, name: state.user.name, question, history, context, image, images, autoImages, thinking: coach.thinking || 'standard' });
         if (!answer?.trim()) throw new Error('The model returned an empty answer.');
       } else {
         await new Promise((r) => setTimeout(r, 650));
@@ -96,11 +131,11 @@ function useCoach() {
     setBusy(false);
     return { id };
   };
-  return { state, ctx, setCtx, busy, send, scopeTrades };
+  return { state, ctx, setCtx, busy, send, scopeTrades, scopeShots };
 }
 
 
-function ContextPanel({ ctx, setCtx, count }) {
+function ContextPanel({ ctx, setCtx, count, shotCount = 0 }) {
   const { state } = useStore();
   const pb = playbookOf(state);
   const set = (k, v) => setCtx({ ...ctx, [k]: v });
@@ -115,7 +150,7 @@ function ContextPanel({ ctx, setCtx, count }) {
           <select className="select" value={ctx.account} onChange={(e) => set('account', e.target.value)}>
             <option value="current">Selected account</option>
             <option value="all">All accounts</option>
-            {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.id}</option>)}
+            {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
           </select>
         </div>
         <div className="field">
@@ -156,18 +191,23 @@ function ContextPanel({ ctx, setCtx, count }) {
         </div>
       </div>
       <div className="row between ctx-foot">
-        <span className="muted" style={{ fontSize: 12.5 }}><b style={{ color: 'var(--fg)' }}>{count}</b> trade{count === 1 ? '' : 's'} in context</span>
+        <span className="muted" style={{ fontSize: 12.5 }}>
+          <b style={{ color: 'var(--fg)' }}>{count}</b> trade{count === 1 ? '' : 's'}
+          {shotCount > 0 && <> · <b style={{ color: 'var(--fg)' }}>{shotCount}</b> chart{shotCount === 1 ? '' : 's'}</>}
+          {' '}in context
+        </span>
         {n > 0 && <button type="button" className="btn xs ghost" onClick={() => setCtx({ ...ctx, ...EMPTY_FILTERS })}>Clear filters</button>}
       </div>
     </div>
   );
 }
 
-function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, count = 0, onOpenLegend }) {
+function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, count = 0, shotCount = 0, onOpenLegend }) {
   const { state } = useStore();
   const [text, setText] = useState('');
   const [image, setImage] = useState(null);
   const [refsOverride, setRefsOverride] = useState(null);
+  const [autoOverride, setAutoOverride] = useState(null);
   const taRef = useRef(null);
   // a chart handed over from "Ask coach about this chart"
   useEffect(() => {
@@ -178,8 +218,10 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, co
     setTimeout(() => { const el = taRef.current || document.querySelector('.composer textarea'); el?.focus(); el?.setSelectionRange?.(el.value.length, el.value.length); }, 50);
   }, [draft]); // eslint-disable-line react-hooks/exhaustive-deps
   const coachCfg = state.settings.coach || {};
+  const hasAI = (coachCfg.provider || 'local') !== 'local';
   const useRefs = refsOverride !== null ? refsOverride : coachCfg.includeStrategyMedia !== false;
-  const noVision = image && (coachCfg.provider || 'local') === 'local';
+  const useAuto = autoOverride !== null ? autoOverride : coachCfg.autoLoadScreenshots !== false;
+  const noVision = image && !hasAI;
   const legendCount = (coachCfg.chartLegend || []).filter((x) => (x.label || x.meaning || '').trim()).length;
   const activeStratId = draft?.strategyId || (ctx.strategy && ctx.strategy !== NONE ? ctx.strategy : null);
   const activeStrat = activeStratId ? state.strategies.find((s) => s.id === activeStratId) : null;
@@ -189,7 +231,7 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, co
   const toast = useToast();
   const submit = () => {
     if (!text.trim() || busy) return;
-    onSend(text.trim(), image, { includeRefs: useRefs });
+    onSend(text.trim(), image, { includeRefs: useRefs, autoLoad: useAuto });
     setText('');
     setImage(null);
     setRefsOverride(null);
@@ -244,7 +286,7 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, co
         placeholder="Ask your Trading Coach about your trading"
         style={compact ? { minHeight: 44 } : undefined}
       />
-      <div className="row gap12">
+      <div className="row gap12 wrap">
         {!compact && (
           <Popover
             up
@@ -254,8 +296,14 @@ function Composer({ onSend, busy, ctx, setCtx, compact = false, draft = null, co
               <button className="row gap8 muted" onClick={toggle} style={{ fontSize: 15 }}><Database size={18} /> Context{filterCount(ctx) > 0 && <span className="ctx-badge">{filterCount(ctx)}</span>} <ChevronDown size={14} /></button>
             )}
           >
-            <ContextPanel ctx={ctx} setCtx={setCtx} count={count} />
+            <ContextPanel ctx={ctx} setCtx={setCtx} count={count} shotCount={shotCount} />
           </Popover>
+        )}
+        {!compact && !image && hasAI && shotCount > 0 && (
+          <label className="row gap6 muted" style={{ fontSize: 12.5, cursor: 'pointer' }} title="Automatically loads attached trade and diary chart screenshots from the selected Context period (up to 8)">
+            <input type="checkbox" className="cbx" checked={useAuto} onChange={(e) => setAutoOverride(e.target.checked)} />
+            <span>Auto-load charts ({Math.min(shotCount, 8)}{shotCount > 8 ? `/${shotCount}` : ''})</span>
+          </label>
         )}
         <div className="grow" />
         {!compact && (
@@ -300,7 +348,7 @@ function Thread({ chat, busy }) {
 }
 
 export default function Coach({ sub }) {
-  const { state, ctx, setCtx, busy, send, scopeTrades } = useCoach();
+  const { state, ctx, setCtx, busy, send, scopeTrades, scopeShots } = useCoach();
   const { setChats, setTemplates, setSetting, update } = useStore();
   const [chatId, setChatId] = useState(null);
   const [q, setQ] = useState('');
@@ -371,7 +419,7 @@ export default function Coach({ sub }) {
             <div className="col coach-welcome" style={{ alignItems: 'center', padding: '48px 24px', maxWidth: 968, width: '100%', margin: '0 auto' }}>
               <CoachLogo />
               <h1 className="coach-hi" style={{ fontSize: 31, fontWeight: 500, letterSpacing: '-0.03em', margin: '48px 0 42px' }}>Hey {first}, I'm your Trading Coach</h1>
-              <Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} draft={draft} count={scopeTrades.length} onOpenLegend={() => openSettings('legend')} />
+              <Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} draft={draft} count={scopeTrades.length} shotCount={scopeShots.total} onOpenLegend={() => openSettings('legend')} />
               <div className="row between coach-tpl-head" style={{ width: '100%', margin: '64px 0 18px' }}>
                 <div className="row gap16"><b style={{ fontWeight: 500, fontSize: 15.5 }}>My Templates</b><button onClick={() => setAddTpl('')}><Plus size={18} /></button></div>
                 <div className="row gap12">
@@ -396,7 +444,7 @@ export default function Coach({ sub }) {
             <>
               <div className="coach-thread" style={{ flex: 1, padding: '24px 24px 0' }}><Thread chat={chat} busy={busy} /></div>
               <div className="coach-compose-dock" style={{ position: 'sticky', bottom: 0, padding: '12px 24px 24px', background: 'var(--bg)' }}>
-                <div style={{ maxWidth: 820, margin: '0 auto' }}><Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} count={scopeTrades.length} onOpenLegend={() => openSettings('legend')} /></div>
+                <div style={{ maxWidth: 820, margin: '0 auto' }}><Composer onSend={go} busy={busy} ctx={ctx} setCtx={setCtx} count={scopeTrades.length} shotCount={scopeShots.total} onOpenLegend={() => openSettings('legend')} /></div>
               </div>
             </>
           )}

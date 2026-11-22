@@ -204,16 +204,28 @@ How to answer:
 6. If the data has "reviewFocus", this conversation is about that specific day or period (a coach review you already wrote is in the history). Answer from reviewFocus first — it has every trade, the plan and the notes for it.
 7. Strategies & playbook rules: "strategies" includes each strategy's description, entryRules, exitRules, riskRules, timeframes, marketConditions, targetRR, and notes. Whenever evaluating a trade or chart for a strategy, explicitly check whether the execution respected those rules and call out which rules were met or broken.
 8. Chart screenshots & Chart Legend:
+   - Chart screenshots from the user's trades and diary entries in the selected period may already be attached automatically — inspect every attached image by its label rather than asking the user to upload screenshots that are already attached.
    - If "chartLegend" is present in the journal data, you MUST read every attached chart using that exact key — do NOT only read candlesticks/bars. Identify the trader's horizontal/trend lines by BOTH color and line style (solid vs. dotted vs. dashed) and identify shaded zones by color, then reference those exact named levels and zones when judging entry location, stop placement, targets, and exits.
-   - If multiple images are attached (for example, strategy reference examples alongside the trade/session chart), check the image labels and visually compare the trade chart against the strategy's reference examples to judge setup alignment.
+   - If multiple images are attached (for example, trade/diary charts alongside strategy reference examples), check the image labels and visually compare the trade charts against the strategy's reference examples to judge setup alignment.
 
 Journal data (JSON):
 ${JSON.stringify(context)}`;
 
+const isVisionUnsupportedError = (e) => /image|vision|multimodal|media_type|does not support/i.test(String(e?.message || ''));
+
 /** Ask the configured AI provider (OpenAI, Gemini, Claude, Ollama). */
-export async function askAI({ provider, cfg, tone, name, question, history, context, image, images, thinking = 'standard' }) {
+export async function askAI({ provider, cfg, tone, name, question, history, context, image, images, autoImages = false, thinking = 'standard' }) {
   const system = coachSystemPrompt({ name, tone, context });
-  return chat(provider, cfg, { system, history: history.map((h) => ({ role: h.role, content: h.content })), question, image, images, thinking });
+  const hist = history.map((h) => ({ role: h.role, content: h.content }));
+  try {
+    return await chat(provider, cfg, { system, history: hist, question, image, images, thinking });
+  } catch (e) {
+    // If period screenshots were auto-loaded in the background and the chosen model is text-only, retry without images.
+    if (autoImages && !image && images?.length && isVisionUnsupportedError(e)) {
+      return chat(provider, cfg, { system, history: hist, question, thinking });
+    }
+    throw e;
+  }
 }
 
 /** Local, data-driven answers for when no API key is configured. */
@@ -576,6 +588,7 @@ Rules:
 - Go beyond restating numbers: explain what they mean, connect related findings (e.g. losses cluster after 7 AM AND on 7+ trade days), and name causes the data supports. Say so when a pattern rests on only a few trades.
 - Be specific: every point cites evidence — a date, a time, a trade, a dollar amount, a count, or the trader's own words from notes/reviews.
 - If "strategyPlaybook" is present, judge trades and notes against those defined strategy entryRules, exitRules, riskRules, and descriptions where relevant.
+- If chart screenshots are attached to this request, inspect them using "chartLegend" (matching lines by BOTH color and solid/dotted/dashed style, and shaded zones by color) and "strategyPlaybook" rules, and compare trade charts against any attached strategy reference examples. Cite concrete visual observations from the charts (entry location relative to named lines/zones, stop/target placement, chase vs. pullback) — do NOT ask the trader to attach screenshots that are already provided.
 - Prioritise: lead each section with the most important point. Avoid generic advice that could apply to anyone.
 - Money in US dollars like +$253.45 / -$78.45. Percentages rounded.
 
@@ -589,12 +602,21 @@ ${JSON.stringify(context)}`;
 };
 
 /** Generate a review with the configured AI provider. */
-export async function askReview({ provider, cfg, tone, name, context, thinking = 'standard' }) {
+export async function askReview({ provider, cfg, tone, name, context, images, thinking = 'standard' }) {
   const system = reviewSystemPrompt({ name, tone, context });
   const long = ['monthly', 'quarterly', 'yearly', 'risk'].includes(context.kind);
   // longer periods get more thinking time and room to write (unless thinking is switched off)
   const level = thinking === 'off' ? 'off' : long ? 'deep' : thinking;
-  return chat(provider, cfg, { system, history: [], question: `Write the full coach review of ${context.reviewing}.`, thinking: level, maxTokens: long ? 6000 : 3000, longContext: true });
+  const question = `Write the full coach review of ${context.reviewing}.${images?.length ? ' Review the attached chart screenshots from this period alongside the journal data.' : ''}`;
+  const req = { system, history: [], question, thinking: level, maxTokens: long ? 6000 : 3000, longContext: true };
+  try {
+    return await chat(provider, cfg, images?.length ? { ...req, images } : req);
+  } catch (e) {
+    if (images?.length && isVisionUnsupportedError(e)) {
+      return chat(provider, cfg, req);
+    }
+    throw e;
+  }
 }
 
 /** Data-driven review for when no AI provider is set up. */
